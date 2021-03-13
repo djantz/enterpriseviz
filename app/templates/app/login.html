@@ -1,0 +1,55 @@
+{% extends "app/base_site.html" %}
+
+{% block title %} Login {% endblock title %}
+
+{% block stylesheets %}
+    {{ block.super }}
+{% endblock stylesheets %}
+
+{% block body_class %}login{% endblock body_class %}
+
+{% block body %}
+    <div>
+        <div class="login_wrapper">
+            <div class="form login_form">
+                <section class="login_content">
+                    <h1>Login</h1>
+                    <form method="post" autocomplete="off">
+                        {% csrf_token %}
+                        {% for field in form %}
+                            {% if field.name == 'username' %}
+                                <div>
+                                    <input type="text" id="{{ field.name }}" name="{{ field.name }}"
+                                           class="form-control" placeholder="{{ field.label }}" required=""/>
+                                </div>
+                            {% else %}
+                                <div>
+                                    <input type="password" id="{{ field.name }}" name="{{ field.name }}"
+                                           class="form-control" placeholder="{{ field.label }}" required=""/>
+                                </div>
+                            {% endif %}
+                        {% endfor %}
+                        {% if form.errors %}
+                            <p class=" label label-danger">
+                                Your username and password didn't match.
+                                Please try again.
+                            </p><br>
+                        {% endif %}
+                        <button type="submit" class="btn btn-primary btn-sm btn-dark">Log in</button>
+                    </form>
+                    <div class="clearfix"></div>
+                    <div>
+                        <br>
+                        <p><strong>-- OR --</strong></p>
+                        <a href="{% url 'social:begin' 'arcgis' %}">Login with ArcGIS</a><br><br>
+                        <h1><i class="fas fa-map-marked-alt"></i> EnterpriseViz<br></h1><small>©2021 David C
+                        Jantz</small>
+
+                    </div>
+                </section>
+            </div>
+
+        </div>
+    </div>
+{% endblock body %}
+

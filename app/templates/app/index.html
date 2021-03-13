@@ -1,0 +1,335 @@
+{% extends "app/base_site.html" %}
+{% load filter_tags %}
+
+{% block title %} Webmaps {% endblock title %}
+
+
+
+{% block stylesheets %}
+    {{ block.super }}
+{% endblock stylesheets %}
+
+{% block content %}
+
+
+    <div class="container body">
+        <div class="main_container">
+            <div class="right_col" role="main">
+                <div class="clearfix"></div>
+                {% if message_type == 'success' %}
+                    <div class="alert alert-success">
+                        <strong>{{ result|escape }}</strong>
+                    </div>
+                {% endif %}
+                {% if message_type == 'error' %}
+                    <div class="alert alert-danger">
+                        <strong>{{ result|escape }}</strong>
+                    </div>
+                {% endif %}
+                {% if instance %}
+                    <div class="row">
+                        <div class="col-md-12 col-sm-12 col-xs-12">
+                            <div class="x_panel">
+                                <div class="x_title">
+                                    <h2>View the ArcGIS Online or Portal Instance:</h2>
+                                    <div class="clearfix"></div>
+                                    <p><a href={{ updated.url }}>{{ updated.url }}</a>
+                                    </p>
+                                </div>
+                                <div class="x_content">
+                                    {% if request.path != '/' %}
+                                        {% if user.is_superuser %}
+                                            <form class="" action="" method="POST">
+                                                {% csrf_token %}
+                                                {{ form.as_p }}
+                                                <button type="button" class="btn btn-secondary badge badge-dark"
+                                                        name="Get Unused Services"
+                                                        value="getUnusedServices">
+                                                    <span class="fas fa-search"></span> Find Unused
+                                                    Services
+                                                </button>
+                                            </form>
+                                        {% endif %}
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="clearfix"></div>
+                {% else %}{% endif %}
+                <div class="row">
+                    <div class="col-md-12 col-sm-12 col-xs-12">
+                        <div class="x_panel">
+                            <div class="x_title">
+                                <h2><span class="far fa-map"></span>
+                                    {% if instance %}{{ instance }}{% else %}All{% endif %} Web Maps</h2>
+                                <ul class="nav navbar-right panel_toolbox">
+                                    <li><a class="collapse-link"><i class="fas fa-chevron-up"></i></a>
+                                    </li>
+                                    <li><a class="close-link"><i class="fas fa-times"></i></a>
+                                    </li>
+                                </ul>
+                                <div class="clearfix"></div>
+                            </div>
+                            <div class="x_content">
+                                <p class="text-muted font-13 m-b-30">
+                                    {% if instance and updated.webmap_updated %}This list was last updated
+                                        {{ updated.webmap_updated }}{% endif %}
+                                </p>
+                                {% if request.path != '/' %}
+                                    {% if user.is_superuser %}
+                                        <form class="" action="" method="POST">
+                                            {% csrf_token %}
+                                            {{ form.as_p }}
+                                            <button type="submit" class="btn btn-secondary badge badge-dark"
+                                                    name="Refresh Webmap"
+                                                    value="refreshWebmap">
+                                                <span class="fas fa-sync-alt"></span> Refresh
+                                            </button>
+                                        </form>
+                                    {% endif %}
+                                {% endif %}
+                                <table id="datatable-maps" class="table table-striped table-bordered" width="100%">
+                                    <thead>
+                                    <tr>
+                                        {% if request.path != '/' %}
+                                            <th class="details">Details</th>
+                                        {% endif %}
+                                        <th>Webmap Title</th>
+                                        <th>URL</th>
+                                        <th>Owner</th>
+                                        <th>Created</th>
+                                        <th>Modified</th>
+                                        <th>Access</th>
+                                        <th>Views</th>
+                                    </tr>
+                                    </thead>
+                                    <tbody>
+                                    {% for item in query_results %}
+                                        <tr>
+                                            {% if request.path != '/' %}
+                                                <td><a href={{ request.path }}map/{{ item.webmap_id }}>
+                                                    <button class="btn btn-secondary badge badge-dark">More
+                                                        Information
+                                                    </button>
+                                                </a></td>
+                                            {% endif %}
+                                            <td>{% if request.path != '/' %}
+                                                <a href={{ request.path }}map/{{ item.webmap_id }}>{{ item.webmap_title }}</a>
+                                            {% else %}{{ item.webmap_title }}{% endif %}</td>
+                                            <td>{% if request.path != '/' %}
+                                                <a href={{ item.webmap_url }}>{{ item.webmap_url }}</a>
+                                            {% else %}{{ item.webmap_url }}{% endif %}</td>
+                                            <td>{{ item.webmap_owner }}</td>
+                                            <td>{{ item.webmap_created }}</td>
+                                            <td>{{ item.webmap_modified }}</td>
+                                            <td>{{ item.webmap_access }}</td>
+                                            <td>{{ item.webmap_views }}</td>
+                                        </tr>
+                                    {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="clearfix"></div>
+                <div class="row">
+                    <div class="col-md-12 col-sm-12 col-xs-12">
+                        <div class="x_panel">
+                            <div class="x_title">
+                                <h2><span class="fa fa-map-signs"></span>
+                                    {% if instance %}{{ instance }}{% else %}All{% endif %} Services</h2>
+                                <ul class="nav navbar-right panel_toolbox">
+                                    <li><a class="collapse-link"><i class="fas fa-chevron-up"></i></a>
+                                    </li>
+                                    <li><a class="close-link"><i class="fas fa-times"></i></a>
+                                    </li>
+                                </ul>
+                                <div class="clearfix"></div>
+                            </div>
+                            <div class="x_content">
+                                <p class="text-muted font-13 m-b-30">
+                                    {% if instance and updated.service_updated %}This list was last updated
+                                        {{ updated.service_updated }}{% endif %}
+                                </p>
+                                {% if request.path != '/' %}
+                                    {% if user.is_superuser %}
+                                        <form class="" action="" method="POST">
+                                            {% csrf_token %}
+                                            {{ form.as_p }}
+                                            <button type="submit" class="btn btn-secondary badge badge-dark"
+                                                    name="Refresh Services"
+                                                    value="refreshServices">
+                                                <span class="fas fa-sync-alt"></span> Refresh
+                                            </button>
+                                        </form>
+                                    {% endif %}
+                                {% endif %}
+                                <table id="datatable-services" class="table table-striped table-bordered" width="100%">
+                                    <thead>
+                                    <tr>
+                                        <th>Name</th>
+                                        <th>URL</th>
+                                        <th>Layers</th>
+                                        <th>Server</th>
+                                        <th>MXD</th>
+                                    </tr>
+                                    </thead>
+                                    <tbody>
+                                    {% for item in services %}
+                                        <tr>
+                                            <td>{{ item.service_name }}</td>
+                                            <td>
+                                                <ul>{% for url in item.service_url.keys %}
+                                                    <li>{{ url }}</li>
+                                                {% endfor %}</ul>
+                                            </td>
+                                            <td>
+                                                <ul>{% for layer,db in item.service_layers.items %}
+                                                    <li><b>{{ layer }}:</b> {{ db }}</li>
+                                                {% endfor %}</ul>
+                                            </td>
+                                            <td>{{ item.service_mxd_server }}</td>
+                                            <td>{{ item.service_mxd }}</td>
+                                        </tr>
+                                    {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="clearfix"></div>
+                <div class="row">
+                    <div class="col-md-12 col-sm-12 col-xs-12">
+                        <div class="x_panel">
+                            <div class="x_title">
+                                <h2><span class="fa fa-layer-group"></span>
+                                    {% if instance %}{{ instance }}{% else %}All{% endif %} Layers</h2>
+                                <ul class="nav navbar-right panel_toolbox">
+                                    <li><a class="collapse-link"><i class="fas fa-chevron-up"></i></a>
+                                    </li>
+                                    <li><a class="close-link"><i class="fas fa-times"></i></a>
+                                    </li>
+                                </ul>
+                                <div class="clearfix"></div>
+                            </div>
+                            <div class="x_content">
+                                <p class="text-muted font-13 m-b-30">
+                                    {% if instance and updated.service_updated %}This list was last updated
+                                        {{ updated.service_updated }}{% endif %}
+                                </p>
+                                <table id="datatable-layers"
+                                       class="table table-striped table-bordered" width="100%">
+                                    <thead>
+                                    <tr>
+                                        {% if request.path != '/' %}
+                                            <th class="details">Details</th>
+                                        {% endif %}
+                                        <th>Name</th>
+                                        <th>Server</th>
+                                        <th>Database</th>
+                                        <th>Version</th>
+                                    </tr>
+                                    </thead>
+                                    <tbody>
+                                    {% for item in layers %}
+                                        <tr>
+                                            {% if request.path != '/' %}
+                                                <td>
+                                                    <a href="/layer/{{ item.layer_name }}/?server={{ item.layer_server }}&database={{ item.layer_database }}&version={{ item.layer_version }}">
+                                                        <button class="btn btn-secondary badge badge-dark">More
+                                                            Information
+                                                        </button>
+                                                    </a></td>
+                                            {% endif %}
+                                            <td>{% if request.path != '/' %}
+                                                <a href="/layer/{{ item.layer_name }}/?server={{ item.layer_server }}&database={{ item.layer_database }}&version={{ item.layer_version }}">{{ item.layer_name }}</a>
+                                            {% else %}{{ item.layer_name }}{% endif %}</td>
+                                            <td>{{ item.layer_server }}</td>
+                                            <td>{{ item.layer_database }}</td>
+                                            <td>{{ item.layer_version }}</td>
+                                        </tr>
+                                    {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="clearfix"></div>
+
+                <div class="row">
+                    <div class="col-md-12 col-sm-12 col-xs-12">
+                        <div class="x_panel">
+                            <div class="x_title">
+                                <h2><span class="fas fa-th"></span>
+                                    {% if instance %}{{ instance }}{% else %}All{% endif %} Apps<small>Web Mapping
+                                        Application & Dashboard</small></h2>
+                                <ul class="nav navbar-right panel_toolbox">
+                                    <li><a class="collapse-link"><i class="fas fa-chevron-up"></i></a>
+                                    </li>
+                                    <li><a class="close-link"><i class="fas fa-times"></i></a>
+                                    </li>
+                                </ul>
+                                <div class="clearfix"></div>
+                            </div>
+                            <div class="x_content">
+                                <p class="text-muted font-13 m-b-30">
+                                    {% if instance and updated.app_updated %}This list was last updated
+                                        {{ updated.app_updated }}{% endif %}
+                                </p>
+                                {% if request.path != '/' %}
+                                    {% if user.is_superuser %}
+                                        <form class="" action="" method="POST">
+                                            {% csrf_token %}
+                                            {{ form.as_p }}
+                                            <button type="submit" class="btn btn-secondary badge badge-dark"
+                                                    name="Refresh Webapp"
+                                                    value="refreshWebapps">
+                                                <span class="fas fa-sync-alt"></span> Refresh
+                                            </button>
+                                        </form>
+                                    {% endif %}
+                                {% endif %}
+                                <table id="datatable-apps" class="table table-striped table-bordered" width="100%">
+                                    <thead>
+                                    <tr>
+                                        <th>Name</th>
+                                        <th>URL</th>
+                                        <th>Owner</th>
+                                        <th>Created</th>
+                                        <th>Modified</th>
+                                        <th>Access</th>
+                                        <th>Views</th>
+                                    </tr>
+                                    </thead>
+                                    <tbody>
+                                    {% for item in apps %}
+                                        <tr>
+                                            <td>{{ item.app_title }}</td>
+                                            <td>{{ item.app_url }}</td>
+                                            <td>{{ item.app_owner }}</td>
+                                            <td>{{ item.app_created }}</td>
+                                            <td>{{ item.app_modified }}</td>
+                                            <td>{{ item.app_access }}</td>
+                                            <td>{{ item.app_views }}</td>
+                                        </tr>
+                                    {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="clearfix"></div>
+            </div>
+        </div>
+    </div>
+
+{% endblock content %}
+
+{% block javascripts %}
+    {{ block.super }}
+{% endblock javascripts %}
