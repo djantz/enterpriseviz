@@ -30,7 +30,7 @@ def connect(instance, username=None, password=None):
         token_expiration = instance_item.token_expiration
         if username and password:
             target = gis.GIS(url, username, password)
-        elif token_expiration is None or token_expiration < datetime.datetime.now() or instance == "AGOL":
+        elif token_expiration is None or token_expiration < datetime.datetime.now() or instance_item.portal_type == "agol":
             instance_username = instance_item.username
             instance_password = instance_item.password
             target = gis.GIS(url, instance_username, instance_password)
@@ -46,7 +46,7 @@ def connect(instance, username=None, password=None):
         return False
 
 
-def update_webmaps(instance, username=None, password=None):
+def update_webmaps(instance, overwrite=True, username=None, password=None):
     try:
         instance_item = Portal.objects.get(alias=instance)
         target = connect(instance, username, password)
@@ -57,79 +57,84 @@ def update_webmaps(instance, username=None, password=None):
         result = "Unable to connect to {0}...{1}".format(instance, e)
         return message_type, result
     try:
-        Webmap.objects.filter(portal_instance=instance).delete()
+        if overwrite:
+            Webmap.objects.filter(portal_instance=instance).delete()
         for wm in wms:
-            services = []
-            layers = {}
-            alt_dependency = []
-            print(wm.title)
-            if wm.access == 'shared':  # or used .shared_with https://developers.arcgis.com/python/api-reference/arcgis.gis.toc.html#arcgis.gis.Item.shared_with
-                access = "Groups: " + ", ".join(x.title for x in wm.shared_with['groups'])
-            else:
-                access = wm.access.title()
-            try:
-                m = WebMap(wm)
-                for layer in m.layers:
-                    if hasattr(layer, 'url'):
-                        url = layer.url if not layer.url.split("/")[-1].isdigit() else "/".join(
-                            layer.url.split("/")[:-1])
+            if not Webmap.objects.filter(portal_instance=instance, webmap_id=wm.id, webmap_title=wm.title).exists():
+                services = []
+                layers = {}
+                alt_dependency = []
+                if wm.access == 'shared':  # or used .shared_with https://developers.arcgis.com/python/api-reference/arcgis.gis.toc.html#arcgis.gis.Item.shared_with
+                    access = "Groups: " + ", ".join(x.title for x in wm.shared_with['groups'])
+                else:
+                    access = wm.access.title()
+                try:
+                    m = WebMap(wm)
+                    for layer in m.layers:
+                        if hasattr(layer, 'url'):
+                            url = layer.url if not layer.url.split("/")[-1].isdigit() else "/".join(
+                                layer.url.split("/")[:-1])
+                        else:
+                            url = None
+                        try:
+                            service_title = '/'.join(url.split('/rest/services/')[1].split('/')[:-1])
+                        except:
+                            service_title = url
+                        if url not in services:
+                            services.append(url)
+                        if hasattr(layer, 'layerType'):
+                            ltype = layer.layerType
+                        else:
+                            ltype = None
+                        layers[layer.title] = [url, ltype, layer.id]
+                    if wm.dependent_upon()['total'] > 0:
+                        d = [i.get('id') for i in wm.dependent_upon()['list']]
+                        dl = []
+                        for i in d:
+                            try:
+                                if target.content.get(i) is not None:
+                                    dl.append(
+                                        "{}, {}, {}".format(target.content.get(i).title, target.content.get(i).homepage,
+                                                            target.content.get(i).type))
+                                else:
+                                    dl.append("{}".format(i))
+                            except Exception as e:
+                                dl.append("{}".format(i))
+                        alt_dependency.append(
+                            "Item: {2} id {0} is dependent on {3} items:\r\n{1}".format(wm.itemid, "\r\n".join(dl),
+                                                                                        wm.title,
+                                                                                        wm.dependent_upon()['total']))
                     else:
-                        url = None
-                    try:
-                        service_title = '/'.join(url.split('/rest/services/')[1].split('/')[:-1])
-                    except:
-                        service_title = url
-                    if url not in services:
-                        services.append(url)
-                    layers[layer.title] = [layer.url, layer.layerType, layer.id]
-                if wm.dependent_upon()['total'] > 0:
-                    d = [i.get('id') for i in wm.dependent_upon()['list']]
-                    dl = []
-                    for i in d:
-                        try:
-                            if target.content.get(i) is not None:
-                                dl.append(
-                                    "{}, {}, {}".format(target.content.get(i).title, target.content.get(i).homepage,
-                                                        target.content.get(i).type))
-                            else:
+                        alt_dependency.append("Item is not dependent on any items.")
+                    if wm.dependent_to()['total'] > 0:
+                        d = [i.get('id') for i in wm.dependent_to()['list']]
+                        dl = []
+                        for i in d:
+                            try:
+                                if target.content.get(i) is not None:
+                                    dl.append(
+                                        "{}, {}, {}".format(target.content.get(i).title, target.content.get(i).homepage,
+                                                            target.content.get(i).type))
+                                else:
+                                    dl.append("{}".format(i))
+                            except Exception as e:
                                 dl.append("{}".format(i))
-                        except Exception as e:
-                            dl.append("{}".format(i))
-                    alt_dependency.append(
-                        "Item: {2} id {0} is dependent on {3} items:\r\n{1}".format(wm.itemid, "\r\n".join(dl),
-                                                                                    wm.title,
-                                                                                    wm.dependent_upon()['total']))
-                else:
-                    alt_dependency.append("Item is not dependent on any items.")
-                if wm.dependent_to()['total'] > 0:
-                    d = [i.get('id') for i in wm.dependent_to()['list']]
-                    dl = []
-                    for i in d:
-                        try:
-                            if target.content.get(i) is not None:
-                                dl.append(
-                                    "{}, {}, {}".format(target.content.get(i).title, target.content.get(i).homepage,
-                                                        target.content.get(i).type))
-                            else:
-                                dl.append("{}".format(i))
-                        except Exception as e:
-                            dl.append("{}".format(i))
-                    alt_dependency.append(
-                        "Item: {2} id {0} is a dependency to {3} items:\r\n{1}".format(wm.itemid, "\r\n,".join(dl),
-                                                                                       wm.title,
-                                                                                       wm.dependent_to()['total']))
-                else:
-                    alt_dependency.append("Item is not a dependency to any items.")
-                new_entry = Webmap(portal_instance=instance, webmap_id=wm.id, webmap_title=wm.title,
-                                   webmap_url=wm.homepage,
-                                   webmap_owner=wm.owner, webmap_created=ts(wm.created),
-                                   webmap_modified=ts(wm.modified),
-                                   webmap_access=access, webmap_extent=wm.extent, webmap_description=wm.description,
-                                   webmap_views=wm.numViews, webmap_layers=layers, webmap_services=services,
-                                   webmap_dependency=alt_dependency)
-                new_entry.save()
-            except:
-                pass
+                        alt_dependency.append(
+                            "Item: {2} id {0} is a dependency to {3} items:\r\n{1}".format(wm.itemid, "\r\n,".join(dl),
+                                                                                           wm.title,
+                                                                                           wm.dependent_to()['total']))
+                    else:
+                        alt_dependency.append("Item is not a dependency to any items.")
+                    new_entry = Webmap(portal_instance=instance, webmap_id=wm.id, webmap_title=wm.title,
+                                       webmap_url=wm.homepage,
+                                       webmap_owner=wm.owner, webmap_created=ts(wm.created),
+                                       webmap_modified=ts(wm.modified),
+                                       webmap_access=access, webmap_extent=wm.extent, webmap_description=wm.description,
+                                       webmap_views=wm.numViews, webmap_layers=layers, webmap_services=services,
+                                       webmap_dependency=alt_dependency)
+                    new_entry.save()
+                except Exception as e:
+                    print(e)
         instance_item.webmap_updated = datetime.datetime.now()
         instance_item.save()
         message_type = "success"
@@ -141,20 +146,21 @@ def update_webmaps(instance, username=None, password=None):
         return message_type, result
 
 
-def update_services(instance, username=None, password=None):
+def update_services(instance, overwrite=True, username=None, password=None):
     try:
         import re
         instance_item = Portal.objects.get(alias=instance)
         target = connect(instance, username, password)
         gis_servers = target.admin.servers.list()
-    except:
+    except Exception as e:
         message_type = "error"
         result = "Unable to connect to {0}...{1}".format(instance, e)
         return message_type, result
 
     try:
-        Service.objects.filter(portal_instance=instance).delete()
-        Layer.objects.filter(portal_instance=instance).delete()
+        if overwrite:
+            Service.objects.filter(portal_instance=instance).delete()
+            Layer.objects.filter(portal_instance=instance).delete()
 
         regexp_server = re.compile("(?<=SERVER=)([^;]*)")
         regexp_version = re.compile("(?<=VERSION=)([^;]*)")
@@ -237,7 +243,7 @@ def update_services(instance, username=None, password=None):
         return message_type, result
 
 
-def update_webapps(instance, username=None, password=None):
+def update_webapps(instance, overwrite=True, username=None, password=None):
     try:
         instance_item = Portal.objects.get(alias=instance)
         target = connect(instance, username, password)
@@ -246,64 +252,70 @@ def update_webapps(instance, username=None, password=None):
         result = "Unable to connect to {0}...{1}".format(instance, e)
         return message_type, result
     try:
-        App.objects.filter(portal_instance=instance).delete()
+        if overwrite:
+            App.objects.filter(portal_instance=instance).delete()
         items = (target.content.search("NOT owner:esri*", "Web Mapping Application", max_items=2000) +
-                 target.content.search("NOT owner:esri*", "Dashboard", max_items=2000))
+                 target.content.search("NOT owner:esri*", "Dashboard", max_items=2000) +
+                 target.content.search("NOT owner:esri*", "Web AppBuilder Apps", max_items=2000))
         for item in items:
-            alt_dependent = {}
-            if item.access == 'shared':  # or used .shared_with https://developers.arcgis.com/python/api-reference/arcgis.gis.toc.html#arcgis.gis.Item.shared_with
-                access = "Groups: " + ", ".join(x.title for x in item.shared_with['groups'])
-            else:
-                access = item.access.title()
-            if item.dependent_upon()['total'] > 0:
-                d = [i.get('id') for i in item.dependent_upon()['list']]
-                alt_dependent['Upon'] = []
-                for i in d:
-                    if i is not None:
-                        try:
-                            if target.content.get(i) is not None:
-                                alt_dependent['Upon'].append({'Title': '{}'.format(target.content.get(i).title),
-                                                              'URL': '{}'.format(target.content.get(i).homepage),
-                                                              'Type': '{}'.format(target.content.get(i).type)})
-                            else:
+            if not App.objects.filter(portal_instance=instance, app_id=item.id, app_title=item.title).exists():
+                try:
+                    alt_dependent = {}
+                    if item.access == 'shared':  # or used .shared_with https://developers.arcgis.com/python/api-reference/arcgis.gis.toc.html#arcgis.gis.Item.shared_with
+                        access = "Groups: " + ", ".join(x.title for x in item.shared_with['groups'])
+                    else:
+                        access = item.access.title()
+                    if item.dependent_upon()['total'] > 0:
+                        d = [i.get('id') for i in item.dependent_upon()['list']]
+                        alt_dependent['Upon'] = []
+                        for i in d:
+                            if i is not None:
+                                try:
+                                    if target.content.get(i) is not None:
+                                        alt_dependent['Upon'].append({'Title': '{}'.format(target.content.get(i).title),
+                                                                      'URL': '{}'.format(target.content.get(i).homepage),
+                                                                      'Type': '{}'.format(target.content.get(i).type)})
+                                    else:
+                                        alt_dependent['Upon'].append({'id': '{}'.format(i)})
+                                except Exception as e:
+                                    print(e)
+                                    alt_dependent['Upon'].append({'id': '{}'.format(i)})
+                    else:
+                        result = item.get_data()
+                        if hasattr(result, 'map'):
+                            i = result['map']['itemId']
+                            try:
+                                if target.content.get(i) is not None:
+                                    alt_dependent['Upon'].append({'Title': '{}'.format(target.content.get(i).title),
+                                                                  'URL': '{}'.format(target.content.get(i).homepage),
+                                                                  'Type': '{}'.format(target.content.get(i).type)})
+                                else:
+                                    alt_dependent['Upon'].append({'id': '{}'.format(i)})
+                            except Exception as e:
+                                print(e)
                                 alt_dependent['Upon'].append({'id': '{}'.format(i)})
-                        except Exception as e:
-                            print(e)
-                            alt_dependent['Upon'].append({'id': '{}'.format(i)})
-            else:
-                result = item.get_data()
-                if hasattr(result, 'map'):
-                    i = result['map']['itemId']
-                    try:
-                        if target.content.get(i) is not None:
-                            alt_dependent['Upon'].append({'Title': '{}'.format(target.content.get(i).title),
-                                                          'URL': '{}'.format(target.content.get(i).homepage),
-                                                          'Type': '{}'.format(target.content.get(i).type)})
-                        else:
-                            alt_dependent['Upon'].append({'id': '{}'.format(i)})
-                    except Exception as e:
-                        print(e)
-                        alt_dependent['Upon'].append({'id': '{}'.format(i)})
-            if item.dependent_to()['total'] > 0:
-                d = [i.get('id') for i in item.dependent_to()['list']]
-                alt_dependent['To'] = []
-                for i in d:
-                    if i is not None:
-                        try:
-                            if target.content.get(i) is not None:
-                                alt_dependent['To'].append({'Title': '{}'.format(target.content.get(i).title),
-                                                            'URL': '{}'.format(target.content.get(i).homepage),
-                                                            'Type': '{}'.format(target.content.get(i).type)})
-                            else:
-                                alt_dependent['To'].append({'id': '{}'.format(i)})
-                        except Exception as e:
-                            alt_dependent['To'].append({'id': '{}'.format(i)})
+                    if item.dependent_to()['total'] > 0:
+                        d = [i.get('id') for i in item.dependent_to()['list']]
+                        alt_dependent['To'] = []
+                        for i in d:
+                            if i is not None:
+                                try:
+                                    if target.content.get(i) is not None:
+                                        alt_dependent['To'].append({'Title': '{}'.format(target.content.get(i).title),
+                                                                    'URL': '{}'.format(target.content.get(i).homepage),
+                                                                    'Type': '{}'.format(target.content.get(i).type)})
+                                    else:
+                                        alt_dependent['To'].append({'id': '{}'.format(i)})
+                                except Exception as e:
+                                    alt_dependent['To'].append({'id': '{}'.format(i)})
 
-            new_entry = App(portal_instance=instance, app_id=item.id, app_title=item.title, app_url=item.homepage,
-                            app_owner=item.owner, app_created=ts(item.created), app_modified=ts(item.modified),
-                            app_access=access, app_extent=item.extent, app_description=item.description,
-                            app_views=item.numViews, app_dependent=alt_dependent)
-            new_entry.save()
+                    new_entry = App(portal_instance=instance, app_id=item.id, app_title=item.title, app_url=item.homepage,
+                                    app_owner=item.owner, app_created=ts(item.created), app_modified=ts(item.modified),
+                                    app_access=access, app_extent=item.extent, app_description=item.description,
+                                    app_views=item.numViews, app_dependent=alt_dependent)
+                    new_entry.save()
+                except Exception as e:
+                    print(e)
         instance_item.app_updated = datetime.datetime.now()
         instance_item.save()
         message_type = "success"
@@ -327,7 +339,10 @@ def map_details(item):
     counter = 0
     for layer, values in layers.items():
         counter += 1
-        url = values[0] if not values[0].split("/")[-1].isdigit() else "/".join(values[0].split("/")[:-1])
+        if values[0]:
+            url = values[0] if not values[0].split("/")[-1].isdigit() else "/".join(values[0].split("/")[:-1])
+        else:
+            url = None
         try:
             service_title = '/'.join(url.split('/rest/services/')[1].split('/')[:-1])
         except:
@@ -355,6 +370,39 @@ def map_details(item):
     c = get_children(result)
     gc = get_grandchildren(result)
     return result, wm_item.webmap_dependency, c, gc
+
+
+def service_details(item):
+    s = Service.objects.get(service_name=item)
+    l = []
+    l.append([-1, 0, s.service_name, list(s.service_url)[0], None, s.service_mxd_server, None, None, None, None,
+                       None, s.portal_instance])
+    for url in s.service_url.keys():
+        wm_set = Webmap.objects.filter(webmap_services__contains=url)
+        wm_counter = 0
+        for wm in wm_set:
+            wm_counter += 1
+            if [0, wm_counter, wm.webmap_title, wm.webmap_url, None, wm.webmap_owner, wm.webmap_access,
+                wm.webmap_created, wm.webmap_modified, wm.webmap_views, wm.webmap_id, wm.portal_instance] not in l:
+                l.append(
+                    [0, wm_counter, wm.webmap_title, wm.webmap_url, None, wm.webmap_owner, wm.webmap_access,
+                     wm.webmap_created, wm.webmap_modified, wm.webmap_views, wm.webmap_id, wm.portal_instance])
+            app_set = App.objects.filter(app_dependent__Upon__0__URL=wm.webmap_url)
+            app_counter = wm_counter
+            for app in app_set:
+                app_counter += 1
+                if [wm_counter, app_counter, app.app_title, app.app_url, None, app.app_owner, app.app_access,
+                    app.app_created,
+                    app.app_modified, app.app_views, None, app.portal_instance] not in l:
+                    l.append(
+                        [wm_counter, app_counter, app.app_title, app.app_url, None, app.app_owner, app.app_access,
+                         app.app_created, app.app_modified, app.app_views, None, app.portal_instance])
+            wm_counter = app_counter
+
+    result = make_tree(l, 0)
+    c = get_children(result)
+    gc = get_grandchildren(result)
+    return result, c, gc
 
 
 def layer_details(dbserver, database, version, name):
@@ -538,7 +586,7 @@ def get_unused(instance, username=None, password=None):
                     if service.url in layer.url:
                         services.remove(service)
 
-    print('The following services are not used in any webmaps in {}'.format(target))
+    print('The following services are not used in any Web Maps in {}'.format(target))
     # as we have removed all services being used in active portal, print list of remaining unused services
     for service in services:
         print("{} | {}".format(service.title, target.url + r'home/item.html?id=' + service.id))

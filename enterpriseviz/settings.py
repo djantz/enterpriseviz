@@ -215,10 +215,11 @@ CSP_STYLE_SRC = [
     "https://cdn.datatables.net",
     "https://cdnjs.cloudflare.com",
     "'self'",
-    "'sha256-DxxaJ/iVp+IBMDD8r4H7YeQwjR5AMwIcdsYe0+t4oNg='",  # layer style
+    "'sha256-1ee8zX8bv7ddYqJOCQgd0yuqkHQ+mjNrBQBz9hHfWEk='",  # index style
+    "'sha256-HVqbCNCXFA2p8pgNk1YpdQJC+PWO6vlvj+Z2Bf2ZKVA='",  # layer style
     "'sha256-z7zcnw/4WalZqx+PrNaRnoeLz/G9WXuFqV1WCJ129sg='",  # layer style for chart
     "'sha256-e09hlj/IWDMJdhnf08u3EkBQ/Y3jM0R3lZycSyd0vG0='",  # add portal style
-    "'sha256-HP6/UfBxn2b1cG+U0cEJiZtEMlVDaTs70ium0CpD+3k='",  # map style
+    "'sha256-g86JUhttWo7/Zkdl3t4uaZPVQ79QFHKJM2Og/CvQ3ww='",  # map style
 ]
 CSP_IMG_SRC = [
     "https://cdnjs.cloudflare.com",

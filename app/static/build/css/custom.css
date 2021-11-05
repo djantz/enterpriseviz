@@ -997,6 +997,10 @@ div.dataTables_scrollBody table.dataTable thead th.sorting_asc:after,
 div.dataTables_scrollBody table.dataTable thead th.sorting_desc:after {
     content: "";
 }
+table.dataTable tbody td {
+  word-break: break-word;
+  vertical-align: top;
+}
 
 /* In Bootstrap and Foundation the padding top is a little different from the DataTables stylesheet */
 table.table thead th.sorting:after,
@@ -1184,6 +1188,189 @@ span.right {
 
 .sidebar-footer a:hover {
     color: #fff;
+}
+.tile_count {
+    margin-bottom: 20px;
+    margin-top: 20px;
+    width: 100%;
+}
+.tile_count .tile_stats_count {
+    border-bottom: 1px solid #D9DEE4;
+    padding: 0 10px 0 20px;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+    position: relative
+}
+@media (min-width: 992px) {
+    footer {
+        margin-left: 230px
+    }
+}
+@media (min-width: 992px) {
+    .tile_count .tile_stats_count {
+        margin-bottom: 10px;
+        border-bottom: 0;
+        padding-bottom: 10px
+    }
+}
+.tile_count .tile_stats_count:before {
+    content: "";
+    position: absolute;
+    left: 0;
+    height: 65px;
+    border-left: 2px solid #ADB2B5;
+    margin-top: 10px
+}
+@media (min-width: 992px) {
+    .tile_count .tile_stats_count:first-child:before {
+        border-left: 0
+    }
+}
+.tile_count .tile_stats_count .count {
+    font-size: 30px;
+    line-height: 47px;
+    font-weight: 600
+}
+@media (min-width: 768px) {
+    .tile_count .tile_stats_count .count {
+        font-size: 40px
+    }
+}
+@media (min-width: 992px) and (max-width: 1100px) {
+    .tile_count .tile_stats_count .count {
+        font-size: 30px
+    }
+}
+.tile_count .tile_stats_count span {
+    font-size: 12px
+}
+@media (min-width: 768px) {
+    .tile_count .tile_stats_count span {
+        font-size: 13px
+    }
+}
+.tile_count .tile_stats_count .count_bottom i {
+    width: 12px
+}
+.tile-stats {
+    position: relative;
+    display: block;
+    margin-bottom: 12px;
+    border: 1px solid #E4E4E4;
+    -webkit-border-radius: 5px;
+    overflow: hidden;
+    padding-bottom: 5px;
+    -webkit-background-clip: padding-box;
+    -moz-border-radius: 5px;
+    -moz-background-clip: padding;
+    border-radius: 5px;
+    background-clip: padding-box;
+    background: #FFF;
+    transition: all 300ms ease-in-out
+}
+.tile-stats:hover .icon i {
+    animation-name: transformAnimation;
+    animation-duration: .5s;
+    animation-iteration-count: 1;
+    color: rgba(58, 58, 58, 0.41);
+    animation-timing-function: ease;
+    animation-fill-mode: forwards;
+    -webkit-animation-name: transformAnimation;
+    -webkit-animation-duration: .5s;
+    -webkit-animation-iteration-count: 1;
+    -webkit-animation-timing-function: ease;
+    -webkit-animation-fill-mode: forwards;
+    -moz-animation-name: transformAnimation;
+    -moz-animation-duration: .5s;
+    -moz-animation-iteration-count: 1;
+    -moz-animation-timing-function: ease;
+    -moz-animation-fill-mode: forwards
+}
+.tile-stats .icon {
+    width: 20px;
+    height: 20px;
+    color: #BAB8B8;
+    position: absolute;
+    right: 53px;
+    top: 22px;
+    z-index: 1
+}
+.tile-stats .icon i {
+    margin: 0;
+    font-size: 60px;
+    line-height: 0;
+    vertical-align: bottom;
+    padding: 0
+}
+.tile-stats .count {
+    font-size: 38px;
+    font-weight: bold;
+    line-height: 1.65857
+}
+.tile-stats .count,
+.tile-stats h3,
+.tile-stats p {
+    position: relative;
+    margin: 0;
+    margin-left: 10px;
+    z-index: 5;
+    padding: 0
+}
+.tile-stats h3 {
+    color: #BAB8B8
+}
+.tile-stats p {
+    margin-top: 5px;
+    font-size: 12px
+}
+.tile-stats>.dash-box-footer {
+    position: relative;
+    text-align: center;
+    margin-top: 5px;
+    padding: 3px 0;
+    color: #fff;
+    color: rgba(255, 255, 255, 0.8);
+    display: block;
+    z-index: 10;
+    background: rgba(0, 0, 0, 0.1);
+    text-decoration: none
+}
+.tile-stats>.dash-box-footer:hover {
+    color: #fff;
+    background: rgba(0, 0, 0, 0.15)
+}
+.tile-stats>.dash-box-footer:hover {
+    color: #fff;
+    background: rgba(0, 0, 0, 0.15)
+}
+table.tile_info {
+    padding: 10px 15px
+}
+table.tile_info span.right {
+    margin-right: 0;
+    float: right;
+    position: absolute;
+    right: 4%
+}
+.tile:hover {
+    text-decoration: none
+}
+.tile_header {
+    border-bottom: transparent;
+    padding: 7px 15px;
+    margin-bottom: 15px;
+    background: #E7E7E7
+}
+.tile_head h4 {
+    margin-top: 0;
+    margin-bottom: 5px
+}
+.tiles-bottom {
+    padding: 5px 10px;
+    margin-top: 10px;
+    background: rgba(194, 194, 194, 0.3);
+    text-align: left
 }
 
 .nav-sm .sidebar-footer {
@@ -1931,4 +2118,27 @@ header {
 /*}*/
 table.dataTable > thead .sorting_asc:after, table.dataTable > thead .sorting_desc:after {
     opacity: 1;
+}
+.bootstrap-select>.dropdown-toggle.bs-placeholder.btn-danger, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-danger:active, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-danger:focus, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-danger:hover, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-dark, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-dark:active, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-dark:focus, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-dark:hover, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-info, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-info:active, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-info:focus, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-info:hover, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-primary, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-primary:active, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-primary:focus, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-primary:hover, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-secondary, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-secondary:active, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-secondary:focus, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-secondary:hover, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-success, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-success:active, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-success:focus, .bootstrap-select>.dropdown-toggle.bs-placeholder.btn-success:hover {
+    color: #fff;
+}
+.bootstrap-select>.dropdown-toggle.bs-placeholder:active, .bootstrap-select>.dropdown-toggle.bs-placeholder:focus, .bootstrap-select>.dropdown-toggle.bs-placeholder:hover{
+    color: #fff;
+    background-color: #5a6268;
+    border-color: #545b62;
+}
+.bootstrap-select .dropdown-toggle:focus, .bootstrap-select>select.mobile-device:focus+.dropdown-toggle {
+    outline: 0!important;
+    outline-offset: 0px;
+}
+.btn-secondary.focus, .btn-secondary:focus {
+    color: #fff;
+    background-color: #5a6268;
+    border-color: #545b62;
+    box-shadow: none;
+}
+.page-link:focus {
+    z-index: 3;
+    outline: 0;
+    box-shadow: none;
 }

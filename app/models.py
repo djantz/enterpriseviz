@@ -34,13 +34,18 @@ class Portal(models.Model):
     alias = models.TextField(blank=False, null=False, unique=True)
     url = models.TextField(blank=False, null=False)
     store_password = models.BooleanField(default=False)
+    types = (
+        ('agol','ArcGIS Online'),
+        ('portal', 'Enterprise Portal'),
+    )
+    portal_type = models.CharField(max_length=32, choices=types, blank=True, null=True)
     username = models.TextField(blank=True, null=False)
     password = models.TextField(blank=True, null=False)
     token = models.TextField(blank=True, null=True)
-    token_expiration = models.DateTimeField(blank=False, null=True)
-    webmap_updated = models.DateTimeField(blank=False, null=True)
-    service_updated = models.DateTimeField(blank=False, null=True)
-    app_updated = models.DateTimeField(blank=False, null=True)
+    token_expiration = models.DateTimeField(blank=True, null=True)
+    webmap_updated = models.DateTimeField(blank=True, null=True)
+    service_updated = models.DateTimeField(blank=True, null=True)
+    app_updated = models.DateTimeField(blank=True, null=True)
 
     def __str__(self):
         return self.alias
@@ -56,6 +61,9 @@ class Service(models.Model):
     service_type = models.TextField(blank=False, null=False)
     portal_id = models.JSONField(default=dict)
 
+    def __str__(self):
+        return '%s' % self.service_name
+
 
 class Layer(models.Model):
     portal_instance = models.TextField(blank=False, null=True)
@@ -64,11 +72,14 @@ class Layer(models.Model):
     layer_database = models.TextField(blank=False, null=True)
     layer_name = models.TextField(blank=False, null=True)
 
+    def __str__(self):
+        return '%s.%s.%s.%s' % (self.layer_name,self.layer_server,self.layer_database,self.layer_version)
+
 
 class PortalCreateForm(forms.ModelForm):
     class Meta:
         model = Portal
-        fields = ('alias', 'url', 'store_password', 'username', 'password')
+        fields = ('alias', 'url', 'portal_type', 'store_password', 'username', 'password')
 
     def clean(self):
         cleaned_data = super(PortalCreateForm, self).clean()

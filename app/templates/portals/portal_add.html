@@ -80,6 +80,14 @@
                             <input type="text" id="{{ form.url.name }}" name={{ form.url.name }} required="required" class="form-control">
                         </div>
                 <div class="form-group">
+                        <label for="{{ form.portal_type.name }}">{{ form.portal_type.label }}<span class="required">*</span>
+                        </label>
+                            <select class="form-control" id="{{ form.portal_type.name }}" name={{ form.portal_type.name }} required="required">
+                                <option value="agol">ArcGIS Online</option>
+                                <option value="portal">Enterprise Portal</option>
+                            </select>
+                        </div>
+                <div class="form-group">
                         <label for="{{ form.store_password.name }}">{{ form.store_password.label }}
                         </label>
                             <input type="checkbox" id="{{ form.store_password.name }}" name="{{ form.store_password.name }}" value="True" class="form-control">

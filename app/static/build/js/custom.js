@@ -238,9 +238,6 @@ function init_PNotify() {
 /* CUSTOM NOTIFICATION */
 
 function init_CustomNotification() {
-
-    console.log('run_customtabs');
-
     if (typeof (CustomTabs) === 'undefined') {
         return;
     }
@@ -299,16 +296,62 @@ function init_CustomNotification() {
 
 function init_DataTables() {
     $.fn.dataTable.moment('ddd, MMMM Do, YYYY, h:mm:ss A');
-    console.log('run_datatables');
 
     if (typeof ($.fn.DataTable) === 'undefined') {
         return;
     }
-    console.log('init_DataTables');
 
     var handleDataTableButtons = function () {
-        console.log('dataTable_buttons');
         $("#datatable-maps").DataTable({
+            autoWidth: false,
+            order: [[1, "asc"]],
+            dom: "Bfrtip",
+            buttons: [{
+                extend: "copy",
+                className: "badge badge-dark"
+            }, {
+                extend: "csv",
+                className: "badge badge-dark"
+            }, {
+                extend: "excel",
+                className: "badge badge-dark"
+            }, {
+                //     extend: "searchBuilder",
+                //     className: "badge badge-dark"
+                // }, {
+                extend: "print",
+                className: "badge badge-dark"
+            },],
+            responsive: true,
+            columnDefs: [
+                {'width': '40px', targets: 'details', 'orderable': false},
+                {targets: 'instance', visible: false, searchable: true}
+            ],
+            initComplete: function () {
+            this.api().columns(':contains(Instance)').every( function (d) {
+                var column = this;
+                var theadname = $("#datatable-maps th").eq([d]).text()
+                var select = $('<select class="selectpicker" data-toggle="dropdown" data-dropdown-align-right="true" data-dropup-auto="false" data-width="60px" data-size="7" data-style="btn btn-secondary badge badge-dark" data-flip="false"><option value="">Instance</option></select>')
+                    .appendTo( '#datatable-maps-filter' )
+                    .on( 'change', function () {
+                        var val = $.fn.dataTable.util.escapeRegex(
+                            $(this).val()
+                        );
+
+                        column
+                            .search( val ? '^'+val+'$' : '', true, false )
+                            .draw();
+                    } );
+
+                column.data().unique().sort().each( function ( d, j ) {
+                    var val = $('<div/>').html(d).text();
+                    select.append( '<option value="'+val+'">'+val.substr(0,30)+'</option>' )
+                } );
+            } );
+        }
+        });
+        $("#datatable-services").DataTable({
+            autoWidth: false,
             order: [[1, "asc"]],
             dom: "Bfrtip",
             buttons: [{
@@ -329,57 +372,36 @@ function init_DataTables() {
             },],
             responsive: true,
             columnDefs: [
-                {'width': '60px', targets: 'details', 'orderable': false}
-            ],
-        });
-        $("#datatable-services").DataTable({
-            order: [[0, "asc"]],
-            dom: "Bfrtip",
-            buttons: [{
-                extend: "copy",
-                className: "badge badge-dark"
-            }, {
-                extend: "csv",
-                className: "badge badge-dark"
-            }, {
-                extend: "excel",
-                className: "badge badge-dark"
-            }, {
-                //     extend: "pdfHtml5",
-                //     className: "badge badge-dark"
-                // }, {
-                extend: "print",
-                className: "badge badge-dark"
-            },],
-            responsive: true,
-            columnDefs: [
-                {'width': '60px', targets: 'details', 'orderable': false}
+                {'width': '40px', targets: 'details', 'orderable': false},
+                {targets: 'instance', visible: false, searchable: true}
+
             ],
             orderCellsTop: true,
             initComplete: function () {
-                this.api().columns([4]).every(function (d) {
-                    var column = this;
-                    var headingVal = $('#datatable-buttons1 th').eq([d]).text();
-                    var select = $('<select><option value="">' + headingVal + ': All' + '</option></select>')
-                        .appendTo($('#datatable-buttons1 thead tr:eq(1) th').eq(column.index()).empty())
-                        .on('change', function () {
-                            var val = $.fn.dataTable.util.escapeRegex(
-                                $(this).val()
-                            );
+            this.api().columns(':contains(Instance)').every( function (d) {
+                var column = this;
+                var theadname = $("#datatable-maps th").eq([d]).text()
+                var select = $('<select class="selectpicker" data-toggle="dropdown" data-dropdown-align-right="true" data-dropup-auto="false" data-width="60px" data-size="7" data-style="btn btn-secondary badge badge-dark" data-flip="false"><option value="">Instance</option></select>')
+                    .appendTo( '#datatable-services-filter' )
+                    .on( 'change', function () {
+                        var val = $.fn.dataTable.util.escapeRegex(
+                            $(this).val()
+                        );
 
-                            column
-                                .search(val ? '^' + val + '$' : '', true, false)
-                                .draw();
-                        });
+                        column
+                            .search( val ? '^'+val+'$' : '', true, false )
+                            .draw();
+                    } );
 
-                    column.data().unique().sort().each(function (d, j) {
-                        var val = $('<div/>').html(d).text();
-                        select.append('<option value="' + val + '">' + val + '</option>')
-                    });
-                });
-            }
+                column.data().unique().sort().each( function ( d, j ) {
+                    var val = $('<div/>').html(d).text();
+                    select.append( '<option value="'+val+'">'+val.substr(0,30)+'</option>' )
+                } );
+            } );
+        }
         });
         $("#datatable-layers").DataTable({
+            autoWidth: false,
             order: [[1, "asc"]],
             dom: "Bfrtip",
             buttons: [{
@@ -400,7 +422,8 @@ function init_DataTables() {
             },],
             responsive: true,
             columnDefs: [
-                {'width': '60px', targets: 'details', 'orderable': false}
+                {'width': '40px', targets: 'details', 'orderable': false},
+                {targets: 'instance', visible: false, searchable: true}
             ],
         });
         $("#datatable-apps").DataTable({
@@ -424,8 +447,31 @@ function init_DataTables() {
             },],
             responsive: true,
             columnDefs: [
-                {'width': '60px', targets: 'details', 'orderable': false}
+                {'width': '40px', targets: 'details', 'orderable': false},
+                {targets: 'instance', visible: false, searchable: true}
             ],
+            initComplete: function () {
+            this.api().columns(':contains(Instance)').every( function (d) {
+                var column = this;
+                var theadname = $("#datatable-maps th").eq([d]).text()
+                var select = $('<select class="selectpicker" data-toggle="dropdown" data-dropdown-align-right="true" data-dropup-auto="false" data-width="60px" data-size="7" data-style="btn btn-secondary badge badge-dark" data-flip="false"><option value="">Instance</option></select>')
+                    .appendTo( '#datatable-apps-filter' )
+                    .on( 'change', function () {
+                        var val = $.fn.dataTable.util.escapeRegex(
+                            $(this).val()
+                        );
+
+                        column
+                            .search( val ? '^'+val+'$' : '', true, false )
+                            .draw();
+                    } );
+
+                column.data().unique().sort().each( function ( d, j ) {
+                    var val = $('<div/>').html(d).text();
+                    select.append( '<option value="'+val+'">'+val.substr(0,30)+'</option>' )
+                } );
+            } );
+        }
         });
     };
 
@@ -542,3 +588,13 @@ $(document).ready(function () {
     init_PNotify();
     init_CustomNotification();
 });
+$('.dropdown-select').on( 'click', '.dropdown-menu li a', function() {
+	   var target = $(this).html();
+
+	   //Adds active class to selected item
+	   $(this).parents('.dropdown-menu').find('li').removeClass('active');
+	   $(this).parent('li').addClass('active');
+
+	   //Displays selected text on dropdown-toggle button
+	   $(this).parents('.dropdown-select').find('.dropdown-toggle').html(target + ' <span class="caret"></span>');
+	});

@@ -39,6 +39,11 @@
         .d3chart {
             height: 400px;
         }
+
+        .datatables-filter{
+            float: right;
+            margin-bottom: 8px;
+        }
     </style>
 
 {% endblock stylesheets %}
@@ -103,20 +108,30 @@
                                 <div class="clearfix"></div>
                             </div>
                             <div class="x_content">
+                            <div class="line">
+                                <div class="datatables-filter" id="datatable-services-filter"></div>
+                            </div>
                                 <table id="datatable-services" class="table table-striped table-bordered" width="100%">
                                     <thead>
                                     <tr>
+                                        <th class="details">Details</th>
                                         <th>Name</th>
                                         <th>URL</th>
                                         <th>Type</th>
                                         <th>Publishing Server</th>
                                         <th>GDB</th>
-                                        <th>Instance</th>
+                                        <th class="instance">Instance</th>
                                     </tr>
                                     </thead>
                                     <tbody>
                                     {% for item in details.1 %}
                                         <tr>
+
+                                            <td><a href="/portal/{{ item.instance }}/service/{{ item.name|urlencode:"" }}">
+                                                    <button class="btn btn-secondary badge badge-dark" {% if item.instance is None %}
+                                                    Disabled {% endif %}>More Information
+                                                    </button>
+                                            </a></td>
                                             <td>{{ item.name }}</td>
                                             <td>{{ item.url }}</td>
                                             <td>{{ item.type }}</td>
@@ -163,11 +178,10 @@
                                         <tr>
                                             <td>
                                                 <a href="/layer/{{ item.name }}/">
-                                                    <button class="btn btn-secondary badge badge-dark">More
-                                                        Information
+                                                    <button class="btn btn-secondary badge badge-dark">More Information
                                                     </button>
                                                 </a></td>
-                                            <td><a href="/layer/{{ item.name }}/">{{ item.name }}</a></td>
+                                            <td>{{ item.name }}</td>
                                             <td>{{ item.url }}</td>
                                             <td>{{ item.database }}</td>
                                         </tr>

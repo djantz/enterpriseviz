@@ -8,7 +8,8 @@ urlpatterns = [
     path('login/', login_view, name='login'),
     path('logout/', logout_view, name='logout'),
     path('layer/<name>/', PortalLayerView.as_view(), name='layer'),
-    path('portal/<instance>/',viz_html, name='viz'),
+    path('portal/<instance>/', viz_html, name='viz'),
+    path('portal/<instance>/service/<path:url>/', PortalServiceView.as_view(), name='service'),
     path('portal/<instance>/map/<id>', PortalMapView.as_view(), name='map'),
 
 
