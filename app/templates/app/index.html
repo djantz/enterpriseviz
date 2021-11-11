@@ -144,7 +144,7 @@
                                                 <li><form class="dropdown-item refresh-button" action="" method="POST">
                                                 {% csrf_token %}
                                                 {{ form.as_p }}
-                                                <button type="submit" class="btn btn-secondary badge badge-dark"
+                                                <button type="submit" class="btn btn-secondary badge badge-dark refresh-button"
                                                         name="Refresh Webmap Add"
                                                         value="refreshWebmapAdd">
                                                     <span class="fas fa-plus-square"></span>  Add To
@@ -280,7 +280,7 @@
                                             {% endif %}
                                             <td>{{ item.service_name }}</td>
                                             <td>
-                                                <ul>{% for url in item.service_url.keys %}
+                                                <ul>{% for url in item.service_url_as_list %}
                                                     <li>{{ url }}</li>
                                                 {% endfor %}</ul>
                                             </td>

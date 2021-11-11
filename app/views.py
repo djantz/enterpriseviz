@@ -124,43 +124,42 @@ def index(request):
 
 @login_required
 def viz_html(request, instance):
-    print(Webmap.objects.filter(portal_instance=instance))
     message_type = ""
     result = ""
     if request.POST.get('Refresh Webmap Add'):
-        overwrite = False
+        delete = False
         if not Portal.objects.get(alias=instance).store_password:
             username, password = webmaps.get_connection(instance)
-            message_type, result = webmaps.update_webmaps(instance, overwrite, username, password)
+            message_type, result = webmaps.update_webmaps(instance, delete, username, password)
         else:
             print("post refresh webmaps")
-            message_type, result = webmaps.update_webmaps(instance, overwrite)
-    if request.POST.get('Refresh Webmap Overwrite'):
-        overwrite = True
+            message_type, result = webmaps.update_webmaps(instance, delete)
+    if request.POST.get('Refresh Webmap Delete'):
+        delete = True
         if not Portal.objects.get(alias=instance).store_password:
             username, password = webmaps.get_connection(instance)
-            message_type, result = webmaps.update_webmaps(instance, overwrite, username, password)
+            message_type, result = webmaps.update_webmaps(instance, delete, username, password)
         else:
             print("post refresh webmaps")
-            message_type, result = webmaps.update_webmaps(instance, overwrite)
+            message_type, result = webmaps.update_webmaps(instance, delete)
     if request.POST.get('Refresh Services Add'):
-        overwrite = False
+        delete = False
         if not Portal.objects.get(alias=instance).store_password:
             username, password = webmaps.get_connection(instance)
-            message_type, result = webmaps.update_services(instance, overwrite, username, password)
+            message_type, result = webmaps.update_services(instance, delete, username, password)
         else:
             print("post refresh services")
-            username, password = Portal.objects.get(alias=instance)
-            message_type, result = webmaps.update_services(instance, overwrite, username, password)
-    if request.POST.get('Refresh Services Overwrite'):
-        overwrite = True
+            portal = Portal.objects.get(alias=instance)
+            message_type, result = webmaps.update_services(instance, delete, portal.username, portal.password)
+    if request.POST.get('Refresh Services Delete'):
+        delete = True
         if not Portal.objects.get(alias=instance).store_password:
             username, password = webmaps.get_connection(instance)
-            message_type, result = webmaps.update_services(instance, overwrite, username, password)
+            message_type, result = webmaps.update_services(instance, delete, username, password)
         else:
             print("post refresh services")
-            username, password = Portal.objects.get(alias=instance)
-            message_type, result = webmaps.update_services(instance, overwrite, username, password)
+            portal = Portal.objects.get(alias=instance)
+            message_type, result = webmaps.update_services(instance, delete, portal.username, portal.password)
     if request.POST.get('Get Unused Services'):
         if not Portal.objects.get(alias=instance).store_password:
             username, password = webmaps.get_connection(instance)
@@ -169,21 +168,21 @@ def viz_html(request, instance):
             print("Get Unused Services")
             message_type, result = webmaps.get_unused(instance)
     if request.POST.get('Refresh Webapp Add'):
-        overwrite = False
+        delete = False
         if not Portal.objects.get(alias=instance).store_password:
             username, password = webmaps.get_connection(instance)
-            message_type, result = webmaps.update_webapps(instance, overwrite, username, password)
+            message_type, result = webmaps.update_webapps(instance, delete, username, password)
         else:
             print('post refresh webapps')
-            message_type, result = webmaps.update_webapps(instance, overwrite)
-    if request.POST.get('Refresh Webapp Overwrite'):
-        overwrite = True
+            message_type, result = webmaps.update_webapps(instance, delete)
+    if request.POST.get('Refresh Webapp Delete'):
+        delete = True
         if not Portal.objects.get(alias=instance).store_password:
             username, password = webmaps.get_connection(instance)
-            message_type, result = webmaps.update_webapps(instance, overwrite, username, password)
+            message_type, result = webmaps.update_webapps(instance, delete, username, password)
         else:
             print('post refresh webapps')
-            message_type, result = webmaps.update_webapps(instance, overwrite)
+            message_type, result = webmaps.update_webapps(instance, delete)
     context = {'query_results': Webmap.objects.filter(portal_instance=instance),
                'portal': Portal.objects.values_list('alias', flat=True),
                'updated': Portal.objects.get(alias=instance), 'instance': instance,

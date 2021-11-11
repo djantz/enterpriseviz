@@ -171,53 +171,56 @@ def update_services(instance, overwrite=True, username=None, password=None):
                 services = gis_server.services.list(folder=folder)
                 for service in services:
                     try:
-                        url = {}
+                        url = []
                         portal_ids = {}
                         service_layers = {}
                         service_type = service.properties["type"]
                         if folder == '/':
                             name = "{}".format(service.properties["serviceName"])
-                            url[service._con.baseurl + "{}/{}".format(name, service_type)] = []
+                            url.append(service._con.baseurl + "{}/{}".format(name, service_type))
                         else:
                             name = "{}/{}".format(folder, service.properties["serviceName"])
-                            url[service._con.baseurl + "{}/{}".format(name, service_type)] = []
+                            url.append(service._con.baseurl + "{}/{}".format(name, service_type))
                         portal_items = service._json_dict['portalProperties']['portalItems']
                         for item in portal_items:
                             portal_ids[item['type']] = item['itemID']
-                            if item['type'] == "FeatureServer":
-                                url[service._con.baseurl + "{}/{}".format(name, "FeatureServer")] = []
+                            if item['type'] == "FeatureServer" and not service._con.baseurl + "{}/{}".format(name, "FeatureServer") in url:
+                                url.append(service._con.baseurl + "{}/{}".format(name, "FeatureServer"))
                         sm = json.loads(service._service_manifest())
-                        if 'databases' in sm.keys():
-                            db_obj = sm["databases"]
-                            for obj in db_obj:
-                                db_server = ""
-                                db_version = ""
-                                db_database = ""
-                                if "Sde" in obj["onServerWorkspaceFactoryProgID"]:
-                                    db_server = str(
-                                        regexp_server.search(obj["onServerConnectionString"]).group(0)).upper()
-                                    db_version = str(
-                                        regexp_version.search(obj["onServerConnectionString"]).group(0)).upper()
-                                    db_database = str(
-                                        regexp_database.search(obj["onServerConnectionString"]).group(0)).upper()
-                                    db = "{}@{}@{}".format(db_server, db_database, db_version)
-                                elif "FileGDB" in obj["onServerWorkspaceFactoryProgID"]:
-                                    db_database = obj["onServerConnectionString"].split("DATABASE=")[1].replace('\\\\',
-                                                                                                                '\\')
-                                    db = db_database
-                                datasets = obj["datasets"]
-                                for dataset in datasets:
-                                    service_layers[dataset["onServerName"]] = db
-                                    if db_database and not Layer.objects.filter(portal_instance=instance,
-                                                                                layer_server=db_server,
-                                                                                layer_version=db_version,
-                                                                                layer_database=db_database,
-                                                                                layer_name=dataset[
-                                                                                    "onServerName"]).exists():
-                                        new_layer = Layer(portal_instance=instance, layer_server=db_server,
-                                                          layer_version=db_version, layer_database=db_database,
-                                                          layer_name=dataset["onServerName"])
-                                        new_layer.save()
+                        if sm.get('code') == 500 and sm.get('status') == 'error' and 'FeatureServer' in portal_ids.keys():
+                            pass
+                        else:
+                            if 'databases' in sm.keys():
+                                db_obj = sm["databases"]
+                                for obj in db_obj:
+                                    db_server = ""
+                                    db_version = ""
+                                    db_database = ""
+                                    if "Sde" in obj["onServerWorkspaceFactoryProgID"]:
+                                        db_server = str(
+                                            regexp_server.search(obj["onServerConnectionString"]).group(0)).upper()
+                                        db_version = str(
+                                            regexp_version.search(obj["onServerConnectionString"]).group(0)).upper()
+                                        db_database = str(
+                                            regexp_database.search(obj["onServerConnectionString"]).group(0)).upper()
+                                        db = "{}@{}@{}".format(db_server, db_database, db_version)
+                                    elif "FileGDB" in obj["onServerWorkspaceFactoryProgID"]:
+                                        db_database = obj["onServerConnectionString"].split("DATABASE=")[1].replace('\\\\',
+                                                                                                                    '\\')
+                                        db = db_database
+                                    datasets = obj["datasets"]
+                                    for dataset in datasets:
+                                        service_layers[dataset["onServerName"]] = db
+                                        if db_database and not Layer.objects.filter(portal_instance=instance,
+                                                                                    layer_server=db_server,
+                                                                                    layer_version=db_version,
+                                                                                    layer_database=db_database,
+                                                                                    layer_name=dataset[
+                                                                                        "onServerName"]).exists():
+                                            new_layer = Layer(portal_instance=instance, layer_server=db_server,
+                                                              layer_version=db_version, layer_database=db_database,
+                                                              layer_name=dataset["onServerName"])
+                                            new_layer.save()
                         if 'resources' in sm.keys():
                             res_obj = sm["resources"]
                             for obj in res_obj:
@@ -226,12 +229,12 @@ def update_services(instance, overwrite=True, username=None, password=None):
                         else:
                             mxd = None
                             mxd_server = None
-                        new_entry = Service(portal_instance=instance, service_name=name, service_url=url,
+                        new_entry = Service(portal_instance=instance, service_name=name, service_url=",".join(url),
                                             service_layers=service_layers, service_mxd_server=mxd_server,
                                             service_mxd=mxd, portal_id=portal_ids, service_type=service_type)
                         new_entry.save()
-                    except:
-                        pass
+                    except Exception as e:
+                        print(e)
         instance_item.service_updated = datetime.datetime.now()
         instance_item.save()
         message_type = "success"
@@ -351,7 +354,7 @@ def map_details(item):
         if service_title not in temp_layers:
             temp_layers.append(service_title)
             if url is not None:
-                qs = Service.objects.filter(service_url__has_key=url)
+                qs = Service.objects.filter(service_url__icontains=url)
                 if not qs:
                     l.append([0, counter, service_title, url, None, None, None, None, None, None, None, None, None])
                 else:
@@ -375,10 +378,10 @@ def map_details(item):
 def service_details(item):
     s = Service.objects.get(service_name=item)
     l = []
-    l.append([-1, 0, s.service_name, list(s.service_url)[0], None, s.service_mxd_server, None, None, None, None,
+    l.append([-1, 0, s.service_name, list(s.service_url[0]), None, s.service_mxd_server, None, None, None, None,
                        None, s.portal_instance])
-    for url in s.service_url.keys():
-        wm_set = Webmap.objects.filter(webmap_services__contains=url)
+    for url in s.service_url_as_list():
+        wm_set = Webmap.objects.filter(webmap_services__icontains=url)
         wm_counter = 0
         for wm in wm_set:
             wm_counter += 1
@@ -387,7 +390,7 @@ def service_details(item):
                 l.append(
                     [0, wm_counter, wm.webmap_title, wm.webmap_url, None, wm.webmap_owner, wm.webmap_access,
                      wm.webmap_created, wm.webmap_modified, wm.webmap_views, wm.webmap_id, wm.portal_instance])
-            app_set = App.objects.filter(app_dependent__Upon__0__URL=wm.webmap_url)
+            app_set = App.objects.filter(app_dependent__Upon__0__URL__iexact=wm.webmap_url)
             app_counter = wm_counter
             for app in app_set:
                 app_counter += 1
@@ -417,10 +420,10 @@ def layer_details(dbserver, database, version, name):
     s_counter = 0
     for s in services_set:
         s_counter += 1
-        layers.append([0, s_counter, s.service_name, s.service_url, None, s.service_mxd_server, None, None, None, None,
+        layers.append([0, s_counter, s.service_name, s.service_url_as_list(), None, s.service_mxd_server, None, None, None, None,
                        s.service_layers.get(name), s.portal_instance])
-        for url in s.service_url.keys():
-            wm_set = Webmap.objects.filter(webmap_services__contains=url)
+        for url in s.service_url_as_list():
+            wm_set = Webmap.objects.filter(webmap_services__icontains=url)
             wm_counter = s_counter
             for wm in wm_set:
                 wm_counter += 1
@@ -429,7 +432,7 @@ def layer_details(dbserver, database, version, name):
                     layers.append(
                         [s_counter, wm_counter, wm.webmap_title, wm.webmap_url, None, wm.webmap_owner, wm.webmap_access,
                          wm.webmap_created, wm.webmap_modified, wm.webmap_views, wm.webmap_id, wm.portal_instance])
-                app_set = App.objects.filter(app_dependent__Upon__0__URL=wm.webmap_url)
+                app_set = App.objects.filter(app_dependent__Upon__0__URL__iexact=wm.webmap_url)
                 app_counter = wm_counter
                 for app in app_set:
                     app_counter += 1

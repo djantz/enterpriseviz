@@ -54,15 +54,17 @@ class Portal(models.Model):
 class Service(models.Model):
     portal_instance = models.TextField(blank=False, null=True)
     service_name = models.TextField(blank=False, null=False)
-    service_url = models.JSONField(default=dict)
+    service_url = models.TextField(blank=True, null=True)
     service_layers = models.JSONField(default=dict)
-    service_mxd_server = models.TextField(blank=False, null=False)
-    service_mxd = models.TextField(blank=False, null=False)
+    service_mxd_server = models.TextField(blank=True, null=True)
+    service_mxd = models.TextField(blank=True, null=True)
     service_type = models.TextField(blank=False, null=False)
     portal_id = models.JSONField(default=dict)
 
     def __str__(self):
         return '%s' % self.service_name
+    def service_url_as_list(self):
+        return self.service_url.split(",")
 
 
 class Layer(models.Model):

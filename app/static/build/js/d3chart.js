@@ -26,7 +26,6 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
 EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.*/
 
 var data = JSON.parse(document.getElementById('d3data').textContent);
-console.log(document.getElementById('d3data').textContent)
 // Calculate total nodes, max label length
 var totalNodes = 0;
 var maxLabelLength = 0;
@@ -402,7 +401,6 @@ function update(source) {
 
     // Normalize for fixed-depth.
     nodes.forEach(function (d) {
-        console.log(maxLabelLength)
         d.y = (d.depth * (maxLabelLength * 6 + 20));
     });
 
