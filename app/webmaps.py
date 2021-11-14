@@ -1,7 +1,6 @@
 from .models import Webmap, Portal, Service, Layer, App
 from arcgis import gis
 from arcgis.gis import server, admin
-from arcgis.mapping import WebMap
 import time
 import datetime
 import json
@@ -69,11 +68,11 @@ def update_webmaps(instance, overwrite=True, username=None, password=None):
                 else:
                     access = wm.access.title()
                 try:
-                    m = WebMap(wm)
-                    for layer in m.layers:
-                        if hasattr(layer, 'url'):
-                            url = layer.url if not layer.url.split("/")[-1].isdigit() else "/".join(
-                                layer.url.split("/")[:-1])
+                    m = wm.get_data()['operationalLayers']
+                    for layer in m:
+                        if layer.get('url') is not None:
+                            url = layer.get('url') if not layer.get('url').split("/")[-1].isdigit() else "/".join(
+                                layer.get('url').split("/")[:-1])
                         else:
                             url = None
                         try:
@@ -82,11 +81,11 @@ def update_webmaps(instance, overwrite=True, username=None, password=None):
                             service_title = url
                         if url not in services:
                             services.append(url)
-                        if hasattr(layer, 'layerType'):
-                            ltype = layer.layerType
+                        if layer.get('layerType') is not None:
+                            ltype = layer.get('layerType')
                         else:
                             ltype = None
-                        layers[layer.title] = [url, ltype, layer.id]
+                        layers[layer.get('title')] = [url, ltype, layer.get('id')]
                     if wm.dependent_upon()['total'] > 0:
                         d = [i.get('id') for i in wm.dependent_upon()['list']]
                         dl = []
