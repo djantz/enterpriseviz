@@ -214,7 +214,7 @@ class ScheduleForm(forms.Form):
                         "crontab": schedule if isinstance(schedule, CrontabSchedule) else None,
                         "task": "app.tasks.update_all",
                         "kwargs": json.dumps(cleaned_data, default=json_serial),
-                        "enabled": False,
+                        "enabled": True,
                         "start_time": cleaned_data.get("beginning_on"),
                         "expires": None if cleaned_data.get("ending_on") != "date" else cleaned_data.get(
                             "ending_on_date")
