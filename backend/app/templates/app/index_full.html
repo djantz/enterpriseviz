@@ -101,24 +101,6 @@
               <calcite-tooltip reference-element="duplicates" placement="bottom">
                 <span>Find potential duplicate maps, services, and apps.</span>
               </calcite-tooltip>
-              <calcite-button id="unused" alignment="center" appearance="solid" icon-start="content-none" kind="inverse"
-                              scale="s" width="auto" type="submit"
-                              name="Get Unused Services"
-                              hx-vals='{"instance": "{{ instance }}", "items": "unused"}'
-                              hx-post="{% url 'enterpriseviz:unused' instance=instance %}"
-                              {% if instance.store_password %}
-                              hx-target="#mainbodycontent"
-                              hx-push-url="{% url 'enterpriseviz:unused' instance=instance %}"
-                              hx-swap="show:window:top"
-                              hx-on:htmx:beforeSwap="if (event.detail.xhr.status >= 400) { event.detail.shouldSwap = false; }"
-                              {% else %}
-                              hx-target="#credentials-input"
-                              {% endif %}>
-                Find unused items
-              </calcite-button>
-              <calcite-tooltip reference-element="unused" placement="bottom">
-                <span>Find potentially unused services</span>
-              </calcite-tooltip>
               <calcite-button id="metadata" alignment="center" appearance="solid" icon-start="article" kind="inverse"
                               scale="s" width="auto" type="submit"
                               name="Get Metadata Report"

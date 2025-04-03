@@ -35,7 +35,6 @@ urlpatterns = [
     path(r"/portal/<instance>/map/<id>", portal_map_view, name="map"),
     path(r"/portal/schedule/<instance>/", schedule_task_view, name="schedule"),
     path(r"/portal/<instance>/duplicates/", duplicates_view, name="duplicate"),
-    path(r"/portal/<instance>/unused/", unused_view, name="unused"),
     path(r"/portal/<instance>/layerid/", layerid_view, name="layerid"),
     path(r"/portal/<instance>/metadata/", metadata_view, name="metadata"),
     path(r"/portal/<instance>/", index_view, name="viz"),

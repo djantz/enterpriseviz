@@ -130,6 +130,7 @@ Once you've configured the `.env` files, you can deploy EnterpriseViz using Dock
 
 
 ## Screenshots
+
 ![Home](images/home_page.png)
 ![Dark Mode](images/dark_mode.png)
 ![Layer Details](images/layer_details.png)
@@ -143,29 +144,22 @@ Once you've configured the `.env` files, you can deploy EnterpriseViz using Dock
 
 
 ## Credits & Attributions
-This project was inspired by **Mapping Item Dependencies Across ArcGIS Enterprise with Python and d3
-** by **Seth Lewis, Ayan Mitra, Stephanie Deitrick**
+
+This project was inspired by **Mapping Item Dependencies Across ArcGIS Enterprise with Python and d3** 
+by **Seth Lewis, Ayan Mitra, Stephanie Deitrick**
 (https://community.esri.com/t5/devsummit-past-user-presentations/mapping-item-dependencies-across-arcgis-enterprise/ta-p/909500)
 
 D3 collapsible tree graph used from **D3.js Drag and Drop, Zoomable, Panning, Collapsible Tree with auto-sizing.**
 by **Rob Schmuecker** (https://gist.github.com/robschmuecker/7880033)
 
-Finding unused services based on **gis-administration** by **Joshua Sharp Heward**
-(https://github.com/joshsharpheward/gis-administration)
-
-**Original License**
-(C) 2019 Joshua Sharp-Heward, Whangarei, New Zealand
-released under GNU Lesser Public License v3.0 (GPLv3)
-email jsh726@uowmail.edu.au
-linkedin https://www.linkedin.com/in/joshua-sharp-heward-89b129131/
-
-Portions of this project originally used a template by **Aigars Silkalns & Colorlib**
+Portions of this project originally used the Gentelella template by **Giri Bhatnagar**
+(https://github.com/GiriB/django-gentelella)
 (licensed under the MIT License). Modifications have been made.
 
 **Original License:**
 The MIT License (MIT)
 
-Copyright (c) 2016 Aigars Silkalns & Colorlib
+Copyright (c) 2018 Giri Bhatnagar
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -185,6 +179,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
-## License
-This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
 
+## License
+
+This project is licensed under the **MIT License**.  
+
+You are free to use, modify, and distribute this software under the terms of the MIT License. See the [LICENSE](LICENSE) file for details. 
