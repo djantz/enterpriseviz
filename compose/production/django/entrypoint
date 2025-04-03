@@ -1,0 +1,17 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# Get env vars in the Dockerfile to show up in the SSH session
+>&2 echo 'Get env vars in the Dockerfile to show up in the SSH session'
+eval $(printenv | sed -n "s/^\([^=]\+\)=\(.*\)$/export \1=\2/p" | sed 's/"/\\\"/g' | sed '/=/s//="/' | sed 's/$/"/' >> /etc/profile)
+
+# Starting sshd process
+>&2 echo 'Starting SSH...'
+sudo /usr/sbin/sshd -f /etc/ssh/sshd_config
+
+>&2 echo 'entrypoint is executed'
+
+exec "$@"

@@ -1,0 +1,80 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+
+<form id="add-portal-form" autocomplete="off">
+
+  {% csrf_token %}
+
+  <calcite-label>
+    Alias
+    <calcite-input type="text" name="{{ form.alias.name }}" placeholder="Enter a descriptive title" required
+                   value="{{ form.alias.value|default:'' }}" autocomplete="off"></calcite-input>
+    <calcite-input-message {% if not form.alias.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+                           status="invalid">
+      {{ form.alias.errors|join:" " }}
+    </calcite-input-message>
+  </calcite-label>
+
+  <calcite-label>
+    URL
+    <calcite-input name="{{ form.url.name }}" placeholder="Enter a Portal URL" required type="url"
+                   value="{{ form.url.value|default:'' }}" autocomplete="off"></calcite-input>
+    <calcite-input-message {% if not form.url.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+                           status="invalid">
+      {{ form.url.errors|join:" " }}
+    </calcite-input-message>
+  </calcite-label>
+
+  <calcite-label>
+    Portal Type
+    <calcite-segmented-control id="portal-type" name="{{ form.portal_type.name }}">
+      <calcite-segmented-control-item value="portal" icon-start="portal"
+                                      {% if form.portal_type.value == 'portal' %}checked{% endif %}>Portal
+      </calcite-segmented-control-item>
+      <calcite-segmented-control-item value="agol" icon-start="arcgis-online"
+                                      {% if form.portal_type.value == 'agol' %}checked{% endif %}>AGOL
+      </calcite-segmented-control-item>
+    </calcite-segmented-control>
+  </calcite-label>
+
+  <calcite-label>
+    Store Credentials
+    <calcite-segmented-control id="store-password" name="{{ form.store_password.name }}">
+      <calcite-segmented-control-item value="False" {% if form.store_password.value == False %}checked{% endif %}>No
+      </calcite-segmented-control-item>
+      <calcite-segmented-control-item value="True" {% if form.store_password.value == True %}checked{% endif %}>Yes
+      </calcite-segmented-control-item>
+    </calcite-segmented-control>
+  </calcite-label>
+
+  <div id="store-password-container" hidden>
+    <calcite-label>
+      {{ form.username.label }}
+      <calcite-input icon="user" id="{{ form.username.name }}" name="{{ form.username.name }}" disabled
+                     placeholder="Enter Portal admin username"
+                     required input="text" value="{{ form.username.value|default:'' }}"
+                     autocomplete="off"></calcite-input>
+      <calcite-input-message {% if not form.username.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+                             status="invalid">
+        {{ form.username.errors|join:" " }}
+      </calcite-input-message>
+    </calcite-label>
+
+    <calcite-label>
+      {{ form.password.label }}
+      <calcite-input icon id="{{ form.password.name }}" name="{{ form.password.name }}" disabled
+                     placeholder="Enter Portal admin password" required
+                     type="password" value="{{ form.password.value|default:'' }}" autocomplete="off"></calcite-input>
+      <calcite-input-message {% if not form.password.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+                             status="invalid">
+        {{ form.password.errors|join:" " }}
+      </calcite-input-message>
+    </calcite-label>
+  </div>
+
+
+  <calcite-input-message {% if not form.non_field_errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+                         status="invalid">
+    {{ form.non_field_errors.as_text }}
+  </calcite-input-message>
+
+</form>

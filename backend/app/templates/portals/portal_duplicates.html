@@ -1,0 +1,270 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+{% block content %}
+  <div class="row">
+    <div class="col-md-12 col-sm-12 col-xs-12">
+      <div class="x_panel">
+        <div class="x_title">
+          <h2>
+            <calcite-icon icon="map" preload="true" scale="m"></calcite-icon>
+            <div>Duplicate Web Maps</div>
+          </h2>
+          <ul class="nav navbar-right panel_toolbox">
+            <li><a class="collapse-link">
+              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
+            </a>
+            </li>
+            <li><a class="close-link">
+              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
+            </a>
+            </li>
+          </ul>
+          <div class="clearfix"></div>
+        </div>
+        <div class="x_content">
+          <p class="text-muted font-13 m-b-30">
+            {% if instance and updated.webmap_updated %}This list was last updated
+              {{ updated.webmap_updated }}{% endif %}
+          </p>
+          <table id="duplicate-webmap" class="table table-striped wrap" width="100%">
+            <thead>
+            <tr>
+              <th>Match</th>
+              <th>Webmap Title</th>
+              <th>Description</th>
+              <th>Owner</th>
+              <th>Access</th>
+              <th>Modified</th>
+              <th>Views</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for item in duplicate_webmaps %}
+              {#              <tr>#}
+              {#                <td><a href="{{ item.0.webmap_url }}">{{ item.0.webmap_title }}</a></td>#}
+              {#                <td>{{ item.0.webmap_snippet | safe }}</td>#}
+              {#                <td><a href="{{ item.1.webmap_url }}">{{ item.1.webmap_title }}</a></td>#}
+              {#                <td>{{ item.1.webmap_snippet | safe }}</td>#}
+              {#                <td>{% if item.0.webmap_owner == item.1.webmap_owner %}#}
+              {#                  <span style="color: #82ad2b">{{ item.0.webmap_owner }}#}
+              {#                    <hr>#}
+              {#                    {{ item.1.webmap_owner }}</span>{% else %}{{ item.0.webmap_owner }}#}
+              {#                  <hr>{{ item.1.webmap_owner }}{% endif %} </td>#}
+              {#                <td>{% if item.0.webmap_access == item.1.webmap_access %}#}
+              {#                  <span style="color: #82ad2b">{{ item.0.webmap_access }}#}
+              {#                    <hr>#}
+              {#                    {{ item.1.webmap_access }}</span>{% else %}{{ item.0.webmap_access }}#}
+              {#                  <hr>{{ item.1.webmap_access }}{% endif %} </td>#}
+              {#                <td>{{ item.0.webmap_views }}#}
+              {#                  <hr>#}
+              {#                  {{ item.1.webmap_views }}</td>#}
+              {#                <td>{{ item.0.webmap_modified|date:'M j, Y h:i A' }}#}
+              {#                  <hr>#}
+              {#                  {{ item.1.webmap_modified|date:'M j, Y h:i A' }}</td>#}
+              {#                <td>{{ item.2 }}%</td>#}
+              {#              </tr>#}
+              <tr>
+                <td rowspan="2">{{ item.2 }}%</td>
+                <td><a href="{{ item.0.webmap_url }}">{{ item.0.webmap_title }}</a></td>
+                <td>{{ item.0.webmap_snippet | safe }}</td>
+                <td>{{ item.0.webmap_owner }}</td>
+                <td>{{ item.0.webmap_access }}</td>
+                <td>{{ item.0.webmap_modified }}</td>
+                <td>{{ item.0.webmap_views }}</td>
+              </tr>
+              <tr>
+                <td><a href="{{ item.1.webmap_url }}">{{ item.1.webmap_title }}</a></td>
+                <td>{{ item.1.webmap_snippet | safe }}</td>
+                <td>{{ item.1.webmap_owner }}</td>
+                <td>{{ item.1.webmap_access }}</td>
+                <td>{{ item.1.webmap_modified }}</td>
+                <td>{{ item.1.webmap_views }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="clearfix"></div>
+  <div class="row">
+    <div class="col-md-12 col-sm-12 col-xs-12">
+      <div class="x_panel">
+        <div class="x_title">
+          <h2>
+            <calcite-icon icon="layer-map-service" preload="true" scale="s"></calcite-icon>
+            <div class="icon_space">Duplicate Services</div>
+          </h2>
+          <ul class="nav navbar-right panel_toolbox">
+            <li><a class="collapse-link">
+              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
+            </a>
+            </li>
+            <li><a class="close-link">
+              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
+            </a>
+            </li>
+          </ul>
+          <div class="clearfix"></div>
+        </div>
+        <div class="x_content">
+          <p class="text-muted font-13 m-b-30">
+            {% if instance and updated.service_updated %}This list was last updated
+              {{ updated.service_updated }}{% endif %}
+          </p>
+          <table id="duplicate-services" class="table table-striped wrap" width="100%">
+            <thead>
+            <tr>
+              <th>Match</th>
+              <th>Name</th>
+              <th>URL</th>
+              <th>Layers</th>
+              <th>Owner</th>
+              <th>Access</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for item in duplicate_services %}
+              <tr>
+                <td rowspan="2">{{ item.2 }}</td>
+                <td>{{ item.0.service_name }}</td>
+                <td>{{ item.0.service_url }}</td>
+                <td>{{ item.0.service_layers }}</td>
+                <td>{{ item.0.service_owner }}</td>
+                <td>{{ item.0.service_access }}</td>
+              </tr>
+              <tr>
+                <td>{{ item.1.service_name }}</td>
+                <td>{{ item.1.service_url }}</td>
+                <td>{{ item.1.service_layers }}</td>
+                <td>{{ item.1.service_owner }}</td>
+                <td>{{ item.1.service_access }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="clearfix"></div>
+  <div class="row">
+    <div class="col-md-12 col-sm-12 col-xs-12">
+      <div class="x_panel">
+        <div class="x_title">
+          <h2>
+            <calcite-icon icon="layers" preload="true" scale="s"></calcite-icon>
+            <div class="icon_space">Duplicate Layers</div>
+          </h2>
+          <ul class="nav navbar-right panel_toolbox">
+            <li><a class="collapse-link">
+              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
+            </a>
+            </li>
+            <li><a class="close-link">
+              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
+            </a>
+            </li>
+          </ul>
+          <div class="clearfix"></div>
+        </div>
+        <div class="x_content">
+          <p class="text-muted font-13 m-b-30">
+            {% if instance and updated.layer_updated %}This list was last updated
+              {{ updated.layer_updated }}{% endif %}
+          </p>
+          <table id="duplicate-layer" class="table table-striped wrap" width="100%">
+            <thead>
+            <tr>
+              <th>Match</th>
+              <th>Layer Name</th>
+              <th>Service</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for item in duplicate_layers %}
+              <tr>
+                <td rowspan="2">{{ item.2 }}%</td>
+                <td>{{ item.0.layer_name }}</td>
+                <td>{{ item.0.services.service_name }}</td>
+              </tr>
+              <tr>
+                <td>{{ item.1.layer_name }}</td>
+                <td>{{ item.1.services.service_name }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="clearfix"></div>
+  <div class="row">
+    <div class="col-md-12 col-sm-12 col-xs-12">
+      <div class="x_panel">
+        <div class="x_title">
+          <h2>
+            <calcite-icon icon="browser-map" preload="true" scale="s"></calcite-icon>
+            <div class="icon_space">Duplicate Apps<small>
+              Dashboard, ExB, Form, StoryMap, WAB</small></div>
+          </h2>
+          <ul class="nav navbar-right panel_toolbox">
+            <li><a class="collapse-link">
+              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
+            </a>
+            </li>
+            <li><a class="close-link">
+              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
+            </a>
+            </li>
+          </ul>
+          <div class="clearfix"></div>
+        </div>
+        <div class="x_content">
+          <p class="text-muted font-13 m-b-30">
+            {% if instance and updated.app_updated %}This list was last updated
+              {{ updated.app_updated }}{% endif %}
+          </p>
+          <table id="duplicate-apps" class="table table-striped wrap" width="100%">
+            <thead>
+            <tr>
+              <th>Match</th>
+              <th>Webmap Title</th>
+              <th>Description</th>
+              <th>Owner</th>
+              <th>Access</th>
+              <th>Modified</th>
+              <th>Views</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for item in duplicate_apps %}
+              <tr>
+                <td rowspan="2">{{ item.2 }}%</td>
+                <td><a href="{{ item.0.app_url }}">{{ item.0.app_title }}</a></td>
+                <td>{{ item.0.app_snippet | safe }}</td>
+                <td>{{ item.0.app_owner }}</td>
+                <td>{{ item.0.app_access }}</td>
+                <td>{{ item.0.app_modified }}</td>
+                <td>{{ item.0.app_views }}</td>
+              </tr>
+              <tr>
+                <td><a href="{{ item.1.app_url }}">{{ item.1.app_title }}</a></td>
+                <td>{{ item.1.app_snippet | safe }}</td>
+                <td>{{ item.1.app_owner }}</td>
+                <td>{{ item.1.app_access }}</td>
+                <td>{{ item.1.app_modified }}</td>
+                <td>{{ item.1.app_views }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="clearfix"></div>
+
+{% endblock content %}
+

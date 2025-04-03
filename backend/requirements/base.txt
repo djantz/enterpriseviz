@@ -1,0 +1,36 @@
+
+whitenoise  # https://github.com/evansd/whitenoise
+redis  # https://github.com/redis/redis-py
+hiredis  # https://github.com/redis/hiredis-py
+celery  # pyup: < 6.0  # https://github.com/celery/celery
+django-celery-beat  # https://github.com/celery/django-celery-beat
+
+
+# Django
+# ------------------------------------------------------------------------------
+django
+django-environ
+django-redis  # https://github.com/jazzband/django-redis
+# Django REST Framework
+djangorestframework  # https://github.com/encode/django-rest-framework
+
+
+arcgis==2.3.1
+requests==2.31.0
+social-auth-app-django
+django-csp
+beautifulsoup4>=4.12.2
+django-celery-results
+django-htmx
+celery-progress
+social-auth-core
+django-cryptography-django5
+fuzzywuzzy
+django-tasks
+django-tables2
+django-filter
+django-tables2-reports
+django-tables2-simplefilter
+tablib
+cron-descriptor
+python-Levenshtein

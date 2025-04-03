@@ -1,0 +1,71 @@
+version: "3"
+
+volumes:
+  production_django_media: {}
+
+services:
+
+  django: &django
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: ./compose/production/django/Dockerfile
+    image: <imageName>
+    volumes:
+      - production_django_media:/app/media
+    depends_on:
+      - rabbit
+    environment:
+      # Django
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_SECURE_SSL_REDIRECT: ${DJANGO_SECURE_SSL_REDIRECT}
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE}
+      DJANGO_ADMIN_URL: ${DJANGO_ADMIN_URL}
+      # Redis - Celery
+      RABBIT_URL: ${RABBIT_URL}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      # Azure postgres sql
+      AZURE_POSTGRESQL_HOST: ${AZURE_POSTGRESQL_HOST}
+      AZURE_POSTGRESQL_DATABASE: ${AZURE_POSTGRESQL_DATABASE}
+      AZURE_POSTGRESQL_USERNAME: ${AZURE_POSTGRESQL_USERNAME}
+      AZURE_POSTGRESQL_PASSWORD: ${AZURE_POSTGRESQL_PASSWORD}
+      DJANGO_SUPERUSER_PASSWORD: ${DJANGO_SUPERUSER_PASSWORD}
+      DJANGO_SUPERUSER_USERNAME: ${DJANGO_SUPERUSER_USERNAME}
+      DJANGO_SUPERUSER_EMAIL: ${DJANGO_SUPERUSER_EMAIL}
+
+      SOCIAL_AUTH_ARCGIS_KEY: ${SOCIAL_AUTH_ARCGIS_KEY}
+      SOCIAL_AUTH_ARCGIS_SECRET: ${SOCIAL_AUTH_ARCGIS_SECRET}
+      SOCIAL_AUTH_ARCGIS_URL: ${SOCIAL_AUTH_ARCGIS_URL}
+      ARCGIS_USER_ROLE: ${ARCGIS_USER_ROLE}
+      USE_SERVICE_USAGE_REPORT: ${USE_SERVICE_USAGE_REPORT}
+    command: /start
+    ports:
+      - 8080:8080
+      - 2222:2222
+
+  rabbit:
+    image: rabbitmq:3-management
+    container_name: rabbit
+    hostname: rabbit
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=admin
+      - RABBITMQ_DEFAULT_VHOST=/
+    ports:
+      - "5682:5672"
+      - "15682:15672"
+
+
+  celeryworker:
+    <<: *django
+    platform: linux/amd64
+    image: <imageName>
+    command: /start-celeryworker
+    ports: []
+
+  celerybeat:
+    <<: *django
+    platform: linux/amd64
+    image: <imageName>
+    command: /start-celerybeat
+    ports: []

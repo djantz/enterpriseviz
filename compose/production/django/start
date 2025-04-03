@@ -1,0 +1,15 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+
+find . -path "*/migrations/*.py" -not -name "__init__.py" -delete
+find . -path "*/migrations/*.pyc"  -delete
+python /app/manage.py makemigrations
+python /app/manage.py migrate
+#python /app/manage.py createsuperuser --noinput --username admin --email <email>
+
+
+exec /usr/local/bin/gunicorn config.wsgi --bind 0.0.0.0:8080 --chdir=/app

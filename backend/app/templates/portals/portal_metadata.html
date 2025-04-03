@@ -1,0 +1,65 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+{% block content %}
+  <div class="row">
+    <div class="col-md-12 col-sm-12 col-xs-12">
+      <div class="x_panel">
+        <div class="x_title">
+          <h2>
+            <calcite-icon icon="article" preload="true" scale="s"></calcite-icon>
+            <div class="icon_space">Metadata Report</div>
+          </h2>
+          <ul class="nav navbar-right panel_toolbox">
+            <li><a class="collapse-link">
+              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
+            </a>
+            </li>
+            <li><a class="close-link">
+              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
+            </a>
+            </li>
+          </ul>
+          <div class="clearfix"></div>
+        </div>
+        <div class="x_content">
+          <table id="datatable-services" class="table table-striped wrap" width="100%">
+            <thead>
+            <tr>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Owner</th>
+              <th>ID</th>
+              <th>URL</th>
+              <th>Description</th>
+              <th>Snippet</th>
+              <th>Thumbnail</th>
+              <th>Access</th>
+              <th>License</th>
+              <th>Score</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for item in metadata %}
+              <tr>
+                <td>{{ item.title }}</td>
+                <td>{{ item.type }}</td>
+                <td>{{ item.owner }}</td>
+                <td>{{ item.id }}</td>
+                <td>{{ item.url }}</td>
+                <td>{{ item.description }}</td>
+                <td>{{ item.snippet }}</td>
+                <td>{{ item.thumbnail }}</td>
+                <td>{{ item.accessInformation }}</td>
+                <td>{{ item.licenseInfo }}</td>
+                <td>{{ item.scoreCompleteness }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="clearfix"></div>
+
+{% endblock content %}
+

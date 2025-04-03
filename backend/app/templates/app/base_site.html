@@ -1,0 +1,210 @@
+<!--
+    Enterpriseviz
+    Copyright (C) 2025 David C Jantz
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+<!DOCTYPE html>
+{% load static %}
+<html lang="en">
+<head>
+  {% block head %}
+    {% block meta %}
+      <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+      <meta name="htmx-config" content='{"refreshOnHistoryMiss":"true"}'/>
+
+      <!-- Meta, title, CSS, favicons, etc. -->
+      <meta charset="utf-8">
+      <meta http-equiv="X-UA-Compatible" content="IE=edge">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <link rel="shortcut icon" type="image/icon" href="{% static 'build/favicon.ico' %}">
+    {% endblock meta %}
+
+    <title>EnterpriseViz! | {% block title %}{% endblock %}</title>
+
+    {% block stylesheets %}
+
+      <link rel="stylesheet" type="text/css"
+            href="https://cdn.jsdelivr.net/npm/@esri/calcite-components@3.0.3/dist/calcite/calcite.css"/>
+      <link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.6.0/css/bootstrap.min.css"
+            rel="stylesheet">
+      <link href="https://cdn.datatables.net/2.1.8/css/dataTables.bootstrap4.min.css" rel="stylesheet">
+      <link href="https://cdn.datatables.net/datetime/1.5.4/css/dataTables.dateTime.min.css" rel="stylesheet">
+
+      <!-- Bootstrap Select-->
+      <link rel="stylesheet"
+            href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-select/1.13.18/css/bootstrap-select.min.css"
+            integrity="sha512-ARJR74swou2y0Q2V9k0GbzQ/5vJ2RBSoCWokg4zkfM29Fb3vZEQyv0iWBMW/yvKgyHSR/7D64pFMmU8nYmbRkg=="
+            crossorigin="anonymous" referrerpolicy="no-referrer"/>
+
+      <!-- Font Awesome -->
+      <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css"
+            integrity="sha512-z3gLpd7yknf1YoNbCzqRKc4qyor8gaKU1qmn+CShxbuBusANI9QpRohGBreCFkKxLhei6S9CQXFEbbKuqLg0DA=="
+            crossorigin="anonymous" referrerpolicy="no-referrer"/>
+      <!-- ArcGIS JavaScript API-->
+      {% if user.profile.mode == 'dark' %}
+        <link id="arcgis-maps-sdk-theme-dark" rel="stylesheet"
+              href="https://js.arcgis.com/4.28/esri/themes/dark/main.css"/>
+      {% else %}
+        <link disabled id="arcgis-maps-sdk-theme-dark" rel="stylesheet"
+              href="https://js.arcgis.com/4.28/esri/themes/dark/main.css"/>
+      {% endif %}
+      <link id="arcgis-maps-sdk-theme-light" rel="stylesheet"
+            href="https://js.arcgis.com/4.28/esri/themes/light/main.css"/>
+    {% endblock stylesheets %}
+    <!-- Custom Theme Style -->
+    <link href="{% static '/build/css/custom.css' %}" rel="stylesheet">
+  {% endblock head %}
+</head>
+<div id="mode" mode="{{ user.profile.mode }}"></div>
+{% if user.profile.mode == 'dark' %}
+  <body class="calcite-mode-dark"
+        hx-headers='{"X-CSRFToken":"{{ csrf_token }}"}' hx-ext="loading-states">
+{% else %}
+  <body class=""
+        hx-headers='{"X-CSRFToken":"{{ csrf_token }}"}' hx-ext="loading-states">
+{% endif %}
+{% block body %}
+
+  <div>
+    <calcite-shell>
+      <calcite-navigation slot="header">
+        <calcite-navigation-logo slot="logo" heading="EnterpriseViz"
+                                 icon="map-pin" preload="true">
+        </calcite-navigation-logo>
+        <calcite-navigation-user id="nav-user" slot="user" full-name="{{ user.get_full_name }}"
+                                 username="{{ user.get_username }}"></calcite-navigation-user>
+      </calcite-navigation>
+      <calcite-shell-panel slot="panel-start" position="start" id="shell-panel-start" display-mode="overlay"
+                           collapsed
+                           width="m">
+        <calcite-action-bar slot="action-bar">
+          <calcite-action id="home" icon="home" title="Home" text="Home"
+                          hx-get="{% url 'enterpriseviz:index' %}" hx-target="#mainbodycontent"
+                          hx-push-url="{% url 'enterpriseviz:index' %}"></calcite-action>
+          <calcite-action id="portals" data-action-id="portals" icon="all-servers" text="Portals"></calcite-action>
+
+          <calcite-action-group slot="actions-end">
+            <calcite-action id="manage" data-action-id="manage" text="Manage" icon="system-management"></calcite-action>
+            <calcite-action data-action-id="settings" id="settings" text="Settings" icon="gear"></calcite-action>
+          </calcite-action-group>
+        </calcite-action-bar>
+
+        <calcite-panel heading="Portals" height-scale="m" data-panel-id="portals" hidden>
+          {% include 'app/portal_panel.html' %}
+        </calcite-panel>
+        {% if user.is_superuser %}
+          <calcite-panel heading="Manage" data-panel-id="manage" hidden>
+            {% include 'app/manage_panel.html' %}
+            <calcite-fab scale="m" text-enabled text="Add Portal" icon="plus" slot="fab"
+                         id="add-portal" hx-get="{% url 'enterpriseviz:add_portal' %}" hx-trigger="click"
+                         hx-target="#add_portal_modal">
+            </calcite-fab>
+          </calcite-panel>
+        {% endif %}
+        <calcite-panel heading="Settings" data-panel-id="settings" hidden>
+          {% include 'app/settings_panel.html' %}
+        </calcite-panel>
+      </calcite-shell-panel>
+      <calcite-panel>
+        <calcite-scrim id="loading" data-loading loading data-loading-delay></calcite-scrim>
+        <div id="mainbodycontent" hx-history-elt hidden>
+          {% block content %}
+          {% endblock content %}
+        </div>
+      </calcite-panel>
+
+    </calcite-shell>
+  <calcite-tooltip reference-element="home">
+            <span>Home</span>
+        </calcite-tooltip>
+      <calcite-tooltip reference-element="portals">
+            <span>Change the selected portal</span>
+        </calcite-tooltip>
+      <calcite-tooltip reference-element="manage">
+            <span>Update and delete portals. Schedule automatic updates.</span>
+        </calcite-tooltip>
+      <calcite-tooltip reference-element="settings">
+            <span>Change user settings</span>
+        </calcite-tooltip>
+    <div id="add_portal_modal"></div>
+    <div id="update_portal_modal" hx-target="this"></div>
+    <div id="schedule_portal_modal" hx-target="this"></div>
+    <div id="alert-container" hx-target="this"></div>
+    <calcite-popover label="Log in credentials" reference-element="nav-user" placement="bottom" pointer-disabled
+                     scale="s" auto-close>
+      <p style="padding:1rem 6rem; margin:0;"></p>
+      <calcite-button kind="neutral" scale="s" icon-start="user" style="margin:0 12px 12px;">
+        Profile
+      </calcite-button>
+      {% if user.is_superuser %}
+        <calcite-button kind="neutral" scale="s" icon-start="dashboard" style="margin:0 12px 12px;"
+                        href="/enterpriseviz/admin/">
+          Admin
+        </calcite-button>
+      {% endif %}
+      {% if user.is_authenticated %}
+        <calcite-button kind="neutral" scale="s" icon-start="sign-out" style="margin:0 12px 12px;"
+                        href="/enterpriseviz/logout/">
+          Sign-Out
+        </calcite-button>
+      {% else %}
+        <calcite-button kind="neutral" scale="s" icon-start="sign-in" style="margin:0 12px 12px;"
+                        href="/enterpriseviz/login/">
+          Sign-In
+        </calcite-button>
+      {% endif %}
+    </calcite-popover>
+  </div>
+
+{% endblock body %}
+</body>
+{% block javascripts %}
+
+  <!-- HTMX-->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.4/htmx.min.js" integrity="sha512-2kIcAizYXhIn8TzUvqzEDZNuDZ+aW7yE/+f1HJHXFjQcGNfv1kqzJSTBRBSlOgp6B/KZsz1K0a3ZTqP9dnxioQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.4/ext/loading-states.min.js" integrity="sha512-IPQ/OHuOZJW1j+Fyeg3DfsRM6wviC14qqzUN0CmN1Juy2Q51SHC/TAj9MjUSK3CHIp1fvekHIdXRPJlkvsgZMQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+  <!-- jquery-->
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.6.0/js/bootstrap.min.js"></script>
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/pdfmake.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/vfs_fonts.js"></script>
+  <script src="https://cdn.datatables.net/2.2.2/js/dataTables.min.js"></script>
+  <script src="https://cdn.datatables.net/2.2.2/js/dataTables.bootstrap4.min.js"></script>
+  <script src="https://cdn.datatables.net/buttons/3.2.0/js/dataTables.buttons.min.js"></script>
+  <script src="https://cdn.datatables.net/buttons/3.2.0/js/buttons.html5.min.js"></script>
+  <script src="https://cdn.datatables.net/buttons/3.2.0/js/buttons.print.min.js"></script>
+  <script src="https://cdn.datatables.net/plug-ins/1.13.4/sorting/datetime-moment.js"></script>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery-sparklines/2.1.2/jquery.sparkline.min.js"></script>
+
+  <script
+    type="module"
+    src="https://cdn.jsdelivr.net/npm/@esri/calcite-components@3.0.3/dist/calcite/calcite.esm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@3.0.0/d3.min.js"
+          integrity="sha256-b69VTDu5tPmoLspoBD0rxTFiimxoTONDLrAgF68zU8c=" crossorigin="anonymous"></script>
+  <script type="text/javascript" src="{% static 'build/js/d3chart.js' %}"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-autocolors"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@^1"></script>
+  <script src="{% static 'build/js/custom.js' %}"></script>
+  <script src="{% static 'build/js/history-preserve-extension.js' %}"></script>
+{% endblock javascripts %}
+</html>
