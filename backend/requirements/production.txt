@@ -1,0 +1,11 @@
+# PRECAUTION: avoid production dependencies that aren't in development
+
+-r base.txt
+
+gunicorn==21.2.0  # https://github.com/benoitc/gunicorn
+#psycopg[c]==3.1.9  # https://github.com/psycopg/psycopg
+psycopg2==2.9.5
+psycopg2-binary
+mssql-django
+pyodbc
+django-cryptography

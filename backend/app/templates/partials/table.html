@@ -1,0 +1,120 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+{% extends 'django_tables2/bootstrap4-responsive.html' %}
+{% load i18n %}
+{% load django_tables2 %}
+{% load export_url from django_tables2 %}
+
+
+{% block table.thead %}
+  {% if table.show_header %}
+    <thead {{ table.attrs.thead.as_html }}>
+    <tr>
+      {% for column in table.columns %}
+        <th {{ column.attrs.th.as_html }} scope="col"
+          {% if column.orderable %}
+                                          {% if instance %}hx-get="
+
+                                            {% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_order_by_field=column.order_by_alias.next %}"
+                                          {% else %}
+                                          hx-get="
+
+                                            {% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_order_by_field=column.order_by_alias.next %}"
+                                          {% endif %}
+                                          hx-trigger="click"
+                                          hx-target="closest div.table-container"
+                                          hx-swap="outerHTML"
+                                          style="cursor: pointer;"
+          {% endif %}>
+          {{ column.header }}
+        </th>
+      {% endfor %}
+    </tr>
+    </thead>
+  {% endif %}
+{% endblock table.thead %}
+
+{% block table.tbody %}
+  <tbody>
+    {% if table.page and table.page.object_list %}
+      {% for row in table.page.object_list %}
+        <tr>
+          {% for column, cell in row.items %}
+            <td>{{ cell }}</td>
+          {% endfor %}
+        </tr>
+      {% endfor %}
+    {% else %}
+      <tr>
+        <td colspan="{{ table.columns|length }}" class="text-center">No data available in table</td>
+      </tr>
+    {% endif %}
+  </tbody>
+{% endblock table.tbody %}
+
+
+{% block pagination %}
+  <div class="row">
+    <div class="col-6 align-start">
+      Showing {{ table.page.start_index }} to {{ table.page.end_index }} of {{ table.page.paginator.count }} records
+
+    </div>
+    <div class="col-6 align-end">
+      <ul class="pagination justify-content-right flex-wrap">
+        {% if page_obj.has_previous %}
+          <li class="page-item"><a {% if instance %}hx-get="
+
+            {% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=table.page.previous_page_number %}"{% else %}
+                                   hx-get="
+
+                                     {% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=table.page.previous_page_number %}"{% endif %}
+                                   hx-trigger="click"
+                                   hx-target="closest div.table-container"
+                                   hx-swap="outerHTML"
+                                   hx-indicator="previous .progress"
+                                   class="page-link"><calcite-icon icon="chevron-left" scale="s"></calcite-icon></a></li>
+        {% else %}
+          <li class="disabled page-item"><span class="page-link"><calcite-icon icon="chevron-left" scale="s"></calcite-icon></span></li>
+        {% endif %}
+        {% for i in paginator_range|default_if_none:page_obj.paginator.get_elided_page_range %}
+          {% if page_obj.number == i %}
+            <li class="active page-item"><span class="page-link">{{ i }} <span class="sr-only">(current)</span></span>
+            </li>
+          {% else %}
+            {% if i == page_obj.paginator.ELLIPSIS %}
+              <li class="page-item"><span class="page-link disabled">...</span></li>
+            {% else %}
+              <li class="page-item"><a
+                {% if instance %}hx-get="
+
+                  {% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=i %}"{% else %}
+                hx-get="
+
+                  {% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=i %}"{% endif %}
+                hx-trigger="click"
+                hx-target="closest div.table-container"
+                hx-swap="outerHTML"
+                hx-indicator="previous .progress"
+                class="page-link">{{ i }}</a></li>
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {% if page_obj.has_next %}
+          <li class="page-item"><a {% if instance %}hx-get="
+
+            {% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=table.page.next_page_number %}"{% else %}
+                                   hx-get="
+
+                                     {% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=table.page.next_page_number %}"{% endif %}
+                                   hx-trigger="click"
+                                   hx-target="closest div.table-container"
+                                   hx-swap="outerHTML"
+                                   hx-indicator="previous .progress"
+                                   class="page-link"><calcite-icon icon="chevron-right" scale="s"></calcite-icon></a></li>
+        {% else %}
+          <li class="disabled page-item"><span class="page-link"><calcite-icon icon="chevron-right" scale="s"></calcite-icon></span></li>
+        {% endif %}
+      </ul>
+    </div>
+  </div>
+{% endblock pagination %}
+

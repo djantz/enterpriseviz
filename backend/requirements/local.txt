@@ -1,0 +1,23 @@
+-r base.txt
+
+Werkzeug[watchdog]==2.3.6 # https://github.com/pallets/werkzeug
+ipdb==0.13.13  # https://github.com/gotcha/ipdb
+psycopg[c]==3.1.9
+watchfiles==0.19.0  # https://github.com/samuelcolvin/watchfiles
+
+# Code quality
+# ------------------------------------------------------------------------------
+flake8==6.1.0  # https://github.com/PyCQA/flake8
+flake8-isort==6.0.0  # https://github.com/gforcada/flake8-isort
+coverage==7.2.7  # https://github.com/nedbat/coveragepy
+black==23.7.0  # https://github.com/psf/black
+djlint==1.32.1  # https://github.com/Riverside-Healthcare/djLint
+pylint-django==2.5.3  # https://github.com/PyCQA/pylint-django
+pylint-celery==0.3  # https://github.com/PyCQA/pylint-celery
+pre-commit==3.3.3  # https://github.com/pre-commit/pre-commit
+
+
+# Django
+# ------------------------------------------------------------------------------
+django-debug-toolbar  # https://github.com/jazzband/django-debug-toolbar
+django-extensions  # https://github.com/django-extensions/django-extensions
