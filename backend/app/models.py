@@ -365,11 +365,6 @@ class App_Service(models.Model):
         return f"{self.app_id.app_title} - {self.service_id.service_name}"
 
 
-class BatchJobs(models.Model):
-    app_id = models.CharField()
-    batch_name = models.CharField()
-
-
 class UserProfile(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
     types = (
@@ -380,7 +375,6 @@ class UserProfile(models.Model):
     service_usage = models.BooleanField(default=True)
 
 
-# class TaskResultManager(TaskResult.objects.__class__):
 def result_as_dict(self):
     """Convert the result field from a JSON string to a dictionary."""
     try:
@@ -390,3 +384,87 @@ def result_as_dict(self):
 
 
 TaskResult.result_as_dict = result_as_dict
+
+
+class SiteSettings(models.Model):
+    admin_email = models.EmailField(null=True, blank=True)
+    email_host = models.CharField(max_length=255, null=True, blank=True)
+    email_port = models.PositiveIntegerField(default=25, null=True)
+    types = (
+        ('plain_text', 'Plain Text'),
+        ('starttls', 'StartTLS'),
+        ('ssl', 'SSL')
+    )
+    email_encryption = models.CharField(max_length=255, choices=types, default="plain_text")
+    email_username = models.CharField(max_length=255, null=True, blank=True)
+    email_password = models.CharField(max_length=255, null=True, blank=True)
+    from_email = models.EmailField(null=True, blank=True)
+    reply_to = models.EmailField(null=True, blank=True)
+    LOG_LEVEL_CHOICES = [
+        ('INFO', 'Info'),
+        ('WARNING', 'Warning'),
+        ('ERROR', 'Error'),
+        ('DEBUG', 'Debug'),
+        ('CRITICAL', 'Critical'),
+    ]
+    logging_level = models.CharField(max_length=255, choices=LOG_LEVEL_CHOICES, default='warning', null=False, blank=False)
+
+    def has_module_permission(self, request):
+        return request.user.is_superuser
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+    def has_change_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+    def has_add_permission(self, request):
+        return request.user.is_superuser
+
+    def has_delete_permission(self, request, obj=None):
+        return request.user.is_superuser
+
+
+class LogEntry(models.Model):
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+    request_id = models.UUIDField(
+        null=True, blank=True, db_index=True,
+        help_text="Django request ID or ID passed from Celery task caller",
+        verbose_name="Request ID"
+    )
+    LOG_LEVEL_CHOICES = [
+        ('DEBUG', 'Debug'),
+        ('INFO', 'Info'),
+        ('WARNING', 'Warning'),
+        ('ERROR', 'Error'),
+        ('CRITICAL', 'Critical'),
+    ]
+    level = models.CharField(max_length=10, choices=LOG_LEVEL_CHOICES, db_index=True)
+    request_username = models.CharField(max_length=150, null=True, blank=True, help_text="Username", verbose_name="Username")
+    client_ip = models.GenericIPAddressField(null=True, blank=True, verbose_name="Client IP")
+    request_path = models.CharField(max_length=1024, null=True, blank=True)
+    request_method = models.CharField(max_length=10, null=True, blank=True)
+    request_duration = models.FloatField(
+        null=True, blank=True,
+        help_text="Time from request/task start to log in ms"
+    )
+    logger_name = models.CharField(max_length=255, db_index=True)
+    message = models.TextField()
+    pathname = models.CharField(max_length=512, blank=True, null=True)
+    funcName = models.CharField(max_length=100, blank=True, null=True, verbose_name="Function Name")
+    lineno = models.PositiveIntegerField(blank=True, null=True, verbose_name="Line Number")
+    traceback = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"[{self.timestamp.strftime('%Y-%m-%d %H:%M:%S')}] [{self.level}] {self.message[:50]}"
+
+    @property
+    def formatted_timestamp(self):
+        if self.timestamp:
+            return self.timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        return "-"
+
+    class Meta:
+        verbose_name = "Log Entry"
+        verbose_name_plural = "Log Entries"
+        ordering = ['-timestamp']
