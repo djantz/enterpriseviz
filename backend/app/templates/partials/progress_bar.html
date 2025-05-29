@@ -1,0 +1,28 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<div class="progress_bar" id="progress-bar"
+  {% if not progress.complete %}
+     hx-get="{% url "enterpriseviz:refresh_progress" instance task_id %}"
+     hx-trigger="every 5s"
+     hx-target="this"
+     hx-swap="outerHTML"
+  {% else %}
+     hx-trigger="none"
+  {% endif %}>
+{% if progress.state == "SUCCESS" %}
+<style>
+  calcite-progress {
+            --calcite-progress-fill-color: var(--calcite-color-status-success);
+        }
+</style>
+  {% elif progress.state == "FAILURE" %}
+  <style>
+  calcite-progress {
+            --calcite-progress-fill-color: var(--calcite-color-status-danger);
+        }
+</style>
+  {% endif %}
+  <div>
+    <calcite-progress value="{{ value }}"></calcite-progress>
+  </div>
+
+</div>

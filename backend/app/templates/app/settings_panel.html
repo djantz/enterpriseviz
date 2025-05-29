@@ -1,0 +1,34 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<div id="settings-container" slot="content-bottom" style="width: 100%">
+  <calcite-label layout="inline-space-between"
+                 hx-post="{% url 'enterpriseviz:mode_toggle' %}"
+                 hx-target="#mode-switch" hx-push-url="false">
+    Theme:
+    <calcite-icon icon="brightness" preload="true" scale="s"></calcite-icon>
+    <calcite-switch {% if user.profile.mode == 'dark' %}
+      checked {% endif %}id="mode-switch" label="Mode switch"></calcite-switch>
+    <calcite-icon icon="moon" preload="true" scale="s"></calcite-icon>
+  <calcite-tooltip reference-element="mode-switch">
+            <span>Change between light and dark mode</span>
+        </calcite-tooltip>
+
+
+  </calcite-label>
+  <calcite-label layout="inline-space-between"
+                 hx-post="{% url 'enterpriseviz:usage_toggle' %}"
+                 hx-target="#usage-switch" hx-push-url="false">
+    Service Usage:
+    <calcite-icon icon="content-none" preload="true" scale="s"></calcite-icon>
+    <calcite-switch {% if user.profile.service_usage is True %}
+      checked {% endif %}id="usage-switch" label="Service usage switch"></calcite-switch>
+    <calcite-icon icon="graph-time-series" preload="true" scale="s"></calcite-icon>
+  </calcite-label>
+<calcite-tooltip reference-element="usage-switch">
+            <span>Enable or disable service usage graphs</span>
+        </calcite-tooltip>
+
+</div>
+<calcite-button kind="neutral" scale="m" icon-start="sign-out" slot="footer" width="full"
+                href="/enterpriseviz/logout/">
+  Sign-Out
+</calcite-button>

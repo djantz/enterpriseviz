@@ -1,0 +1,74 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+
+{% extends "app/base_site.html" %}
+
+{% block title %} Login {% endblock title %}
+
+{% block stylesheets %}
+  {{ block.super }}
+  <style>
+
+    .content-container {
+      display: flex;
+      flex-direction: column;
+      padding: 1rem;
+      gap: 0.75rem;
+    }
+
+    img[slot="header-actions-end"] {
+      height: 1.25rem;
+      align-self: center;
+      margin-inline: 1rem;
+    }
+
+    calcite-block {
+      margin-block: 0;
+      --calcite-font-size--1: 1rem;
+      --calcite-block-padding: 1rem;
+      --calcite-block-toggle-icon-color: transparent;
+      --calcite-block-toggle-icon-color-hover: transparent;
+    }
+
+    calcite-block * {
+      --calcite-font-size--1: 0.875rem;
+    }
+
+  </style>
+{% endblock stylesheets %}
+
+{% block body_class %}login{% endblock body_class %}
+
+{% block body %}
+  <calcite-dialog open modal close-disabled escape-disabled outside-close-disabled id="login-modal" heading="Login"
+                  width="s">
+    <img src="https://raw.githubusercontent.com/Esri/calcite-ui-icons/master/icons/map-pin-32.svg"
+         slot="header-actions-end"
+         draggable="false">
+
+    <div class="content-container">
+
+      <calcite-block open collapsible heading="Use your organization URL">
+        <calcite-label>
+          <calcite-input placeholder="{{ login_url }}" read-only></calcite-input>
+        </calcite-label>
+        <calcite-button width="full" href="{% url 'social:begin' 'arcgis' %}">Continue</calcite-button>
+      </calcite-block>
+      <calcite-block collapsible heading="Use your credentials">
+        <form id="login_form" method="post" autocomplete="off">
+          {% csrf_token %}
+          <calcite-label>
+            <calcite-input type="username" icon="user" id="{{ form.username.name }}" name="{{ form.username.name }}"
+                           placeholder="{{ form.username.label }}" autocomplete="off"></calcite-input>
+          </calcite-label>
+          <calcite-label>
+            <calcite-input type="password" icon="lock" id="{{ form.password.name }}" name="{{ form.password.name }}"
+                           placeholder="{{ form.password.label }}"></calcite-input>
+          </calcite-label>
+          <calcite-button type="submit" form="login_form" width="full">Sign in</calcite-button>
+        </form>
+      </calcite-block>
+
+    </div>
+
+  </calcite-dialog>
+{% endblock body %}

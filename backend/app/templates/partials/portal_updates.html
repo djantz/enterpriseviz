@@ -1,0 +1,32 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<div id="manage-container" hx-swap-oob="true">
+  {% for item in portal %}
+    <calcite-block heading="{{ item.0 }}" description="{{ item.2 }}">
+      <calcite-icon scale="s" preload="true" slot="icon" {% if item.1 == 'portal' %}icon="portal"
+                    {% else %}icon="arcgis-online"{% endif %}></calcite-icon>
+      {% if user.is_superuser %}
+        <calcite-action id="manage-modal-delete" slot="header-menu-actions" text="Delete" text-enabled
+                        icon="trash" hx-post="{% url 'enterpriseviz:delete_portal' instance=item.0 %}"
+                        hx-target="#manage-container" hx-confirm="{{ item.0 }}"></calcite-action>
+        <calcite-action id="manage-modal-update" slot="header-menu-actions" text="Update" text-enabled
+                        icon="refresh" hx-get="{% url 'enterpriseviz:update_portal' instance=item.0 %}"
+                        hx-target="#update_portal_modal"></calcite-action>
+        <calcite-action id="manage-modal-schedule" slot="header-menu-actions" text="Schedule" text-enabled
+                        icon="date-time" hx-get="{% url 'enterpriseviz:schedule' instance=item.0 %}"
+                        hx-target="#schedule_portal_modal"></calcite-action>
+      {% endif %}
+    </calcite-block>
+  {% endfor %}
+</div>
+
+<div id="portals-container" hx-swap-oob="true">
+  {% for item in portal %}
+    <calcite-action text="{{ item.0 }}" {% if item.1 == 'portal' %}icon="portal"
+                    {% else %}icon="arcgis-online"{% endif %} text-enabled
+                    {% if instance == item.0 %}active {% endif %}
+                    hx-get="{% url 'enterpriseviz:viz' instance=item.0 %}" hx-target="#mainbodycontent"
+                    hx-push-url="{% url 'enterpriseviz:viz' instance=item.0 %}"
+                    hx-swap="innerHTML show:top" data-loading-target="#loading"></calcite-action>
+  {% endfor %}
+
+</div>

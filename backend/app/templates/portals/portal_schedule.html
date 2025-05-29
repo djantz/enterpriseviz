@@ -1,0 +1,71 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<calcite-dialog id="schedule-modal" modal heading="Schedule Portal Updates" scale="m"
+                {% if form.errors or not enable %}kind="danger"{% endif %}>
+
+  {% if description %}
+    <div slot="content-top">A schedule exists for this portal: {{ description }}</div>
+  {% endif %}
+
+  {% if not enable %}
+    <div slot="content-top">
+      <calcite-icon class="danger-icon" preload="true" icon="exclamation-mark-triangle-f"></calcite-icon>
+      The ability to schedule updates is dependent on storing a username and password for the portal.
+    </div>
+  {% endif %}
+
+  <div>
+    {% include "partials/portal_schedule_form.html" %}
+
+    <div id="form-errors">
+      {% if form.errors %}
+        <ul>
+          {% for field in form %}
+            {% for error in field.errors %}
+              <li>{{ field.label }}: {{ error }}</li>
+            {% endfor %}
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+    <calcite-label>Run History (last 24 hours)</calcite-label>
+    <calcite-table caption="Run History (last 24 hours)" bordered striped>
+      <calcite-table-row slot="table-header">
+{#        <calcite-table-header heading="Task ID"></calcite-table-header>#}
+        <calcite-table-header heading="Task Name"></calcite-table-header>
+        <calcite-table-header heading="Status"></calcite-table-header>
+        <calcite-table-header heading="Result"></calcite-table-header>
+        <calcite-table-header heading="Start Time"></calcite-table-header>
+        <calcite-table-header heading="End Time"></calcite-table-header>
+      </calcite-table-row>
+      {% for item in results %}
+        <calcite-table-row>
+{#          <calcite-table-cell>{{ item.task_id }}</calcite-table-cell>#}
+          <calcite-table-cell>{{ item.task_name }}</calcite-table-cell>
+          <calcite-table-cell>{{ item.status }}</calcite-table-cell>
+          <calcite-table-cell>{% for key, val in item.result_as_dict.items %}<strong>{{ key }}:</strong> {{ val }}, {% endfor %}</calcite-table-cell>
+          <calcite-table-cell>{{ item.date_created|date:'M j, Y h:i A' }}</calcite-table-cell>
+          <calcite-table-cell>{{ item.date_done|date:'M j, Y h:i A' }}</calcite-table-cell>
+        </calcite-table-row>
+      {% endfor %}
+    </calcite-table>
+  </div>
+
+  <calcite-button id="schedule-portal-delete" slot="footer-start" appearance="solid" kind="danger" icon-start="trash"
+                  {% if not description %}disabled{% endif %}
+                  hx-delete="{% url 'enterpriseviz:schedule' instance=form.instance.value %}"
+                  hx-target="#schedule-portal-form" hx-include="#schedule-portal-form">
+    Delete
+  </calcite-button>
+
+  <calcite-button id="schedule-portal-cancel" slot="footer-end" appearance="outline" icon-start="circle-disallowed">
+    Cancel
+  </calcite-button>
+
+  <calcite-button id="schedule-portal-save" slot="footer-end"
+                  hx-post="{% url 'enterpriseviz:schedule' instance=form.instance.value %}"
+                  hx-target="#schedule-portal-form" hx-include="#schedule-portal-form"
+                  icon-start="save" {% if not enable %}disabled{% endif %}>
+    Save
+  </calcite-button>
+
+</calcite-dialog>

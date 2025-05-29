@@ -1,0 +1,28 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<div id="manage-container">
+  {% for item in portal %}
+    <calcite-block heading="{{ item.0 }}" description="{{ item.2 }}">
+      <calcite-icon scale="s" preload="true" slot="icon" {% if item.1 == 'portal' %}icon="portal"
+                    {% else %}icon="arcgis-online"{% endif %}></calcite-icon>
+      <calcite-action id="manage-modal-delete" slot="header-menu-actions" text="Delete" text-enabled
+                      icon="trash" hx-post="{% url 'enterpriseviz:delete_portal' instance=item.0 %}"
+                      hx-target="#manage-container" hx-confirm="{{ item.0 }}"></calcite-action>
+      <calcite-action id="manage-modal-update" slot="header-menu-actions" text="Update" text-enabled
+                      icon="refresh" hx-get="{% url 'enterpriseviz:update_portal' instance=item.0 %}"
+                      hx-target="#update_portal_modal"></calcite-action>
+      <calcite-action id="manage-modal-schedule" slot="header-menu-actions" text="Schedule" text-enabled
+                      icon="date-time" hx-get="{% url 'enterpriseviz:schedule' instance=item.0 %}"
+                      hx-target="#schedule_portal_modal"></calcite-action>
+
+    </calcite-block>
+  {% endfor %}
+<calcite-tooltip reference-element="manage-modal-delete">
+            <span>Delete this portal from Enterpriseviz</span>
+        </calcite-tooltip>
+    <calcite-tooltip reference-element="manage-modal-update">
+            <span>Update credentials for this portal</span>
+        </calcite-tooltip>
+    <calcite-tooltip reference-element="manage-modal-schedule">
+            <span>Schedule automatic updates and view previous results</span>
+        </calcite-tooltip>
+</div>

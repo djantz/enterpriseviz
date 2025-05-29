@@ -1,0 +1,21 @@
+# General
+# ------------------------------------------------------------------------------
+USE_DOCKER=yes
+IPYTHONDIR=/app/.ipython
+DJANGO_SECRET_KEY=
+DJANGO_ADMIN_URL=admin/
+# Redis
+# ------------------------------------------------------------------------------
+REDIS_URL=redis://redis:6379/0
+
+# Celery
+# ------------------------------------------------------------------------------
+DJANGO_SUPERUSER_PASSWORD=
+DJANGO_SUPERUSER_USERNAME=
+DJANGO_SUPERUSER_EMAIL=
+
+SOCIAL_AUTH_ARCGIS_KEY = '' # App ID
+SOCIAL_AUTH_ARCGIS_SECRET = '' # App Secret
+SOCIAL_AUTH_ARCGIS_URL = '' # Enterprise Portal or AGOL URL
+ARCGIS_USER_ROLE = 'org_admin'
+USE_SERVICE_USAGE_REPORT=True
