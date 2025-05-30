@@ -192,6 +192,161 @@ class Table(ExportMixin, SingleTableMixin, FilterView):
         return context
 
 
+class LogTable(ExportMixin, SingleTableMixin, FilterView):
+    """
+    Displays a paginated and filterable table of LogEntry records.
+
+    Supports dynamic column visibility based on 'visible_cols' GET parameter.
+
+    :ivar model: The LogEntry Django model.
+    :type model: enterpriseviz.models.LogEntry
+    :ivar table_class: The LogEntryTable for rendering.
+    :type table_class: enterpriseviz.tables.LogEntryTable
+    :ivar filterset_class: The LogEntryFilter for querying.
+    :type filterset_class: enterpriseviz.filters.LogEntryFilter
+    :ivar template_name: Template for rendering the log table.
+    :type template_name: str
+    :ivar paginate_by: Number of log entries per page.
+    :type paginate_by: int
+    """
+    model = LogEntry
+    table_class = LogEntryTable
+    filterset_class = LogEntryFilter
+    template_name = "partials/log_table.html"
+    paginate_by = 15
+
+    def get_queryset(self):
+        """
+        Returns LogEntry queryset ordered by timestamp descending.
+
+        :return: Ordered queryset of log entries.
+        :rtype: django.db.models.QuerySet
+        """
+        return super().get_queryset().order_by("-timestamp")
+
+    def get_table_kwargs(self):
+        """
+        Dynamically sets 'exclude' kwarg for table based on 'visible_cols' GET params.
+
+        :return: Keyword arguments for table instantiation.
+        :rtype: dict
+        """
+        kwargs = super().get_table_kwargs()
+        all_column_field_names = [name for name, _ in self.table_class.base_columns.items()]
+        default_visible = list(self.table_class.DEFAULT_VISIBLE_COLUMNS)
+
+        if 'visible_cols' in self.request.GET:
+            visible_columns_param = self.request.GET.getlist('visible_cols')
+            # Handle `visible_cols=` (empty string from deselected all) vs `visible_cols` not present.
+            if len(visible_columns_param) == 1 and visible_columns_param[0] == '':
+                actual_visible_columns = []
+            else:
+                actual_visible_columns = [col for col in visible_columns_param if col]
+
+            # If 'visible_cols' was in GET and actual_visible_columns is empty, it means "show none"
+            if not actual_visible_columns and 'visible_cols' in self.request.GET:
+                kwargs['exclude'] = tuple(all_column_field_names)
+            else:  # Some columns specified or 'visible_cols' was not in GET (covered by else below)
+                excluded_columns = [
+                    col_name for col_name in all_column_field_names if col_name not in actual_visible_columns
+                ]
+                # If actual_visible_columns is empty because 'visible_cols' was NOT in GET,
+                # this branch shouldn't be hit due to outer 'if'.
+                # This path is for when actual_visible_columns is populated.
+                if actual_visible_columns:  # ensure it's not empty due to no param
+                    kwargs['exclude'] = tuple(excluded_columns)
+                else:  # 'visible_cols' in GET but empty list after filtering (e.g. ?visible_cols=&visible_cols=)
+                    # This case should be rare, treat as show none.
+                    kwargs['exclude'] = tuple(all_column_field_names)
+
+        else:
+            # 'visible_cols' not in request.GET, apply defaults
+            excluded_columns = [
+                col_name for col_name in all_column_field_names if col_name not in default_visible
+            ]
+            kwargs['exclude'] = tuple(excluded_columns)
+        return kwargs
+
+    def get_context_data(self, **kwargs):
+        """
+        Adds log-specific context data, including column visibility and pagination.
+
+        :param kwargs: Additional keyword arguments for context.
+        :return: The context dictionary for template rendering.
+        :rtype: dict
+        """
+        context = super().get_context_data(**kwargs)
+        query_params = self.request.GET.copy()
+        if 'page' in query_params:
+            del query_params['page']
+        context['query_params_urlencode'] = query_params.urlencode()
+
+        page_obj = context.get('page_obj')
+        if page_obj:
+            context['paginator_range'] = page_obj.paginator.get_elided_page_range(
+                page_obj.number, on_each_side=1, on_ends=1
+            )
+
+        all_columns = [(name, column.header) for name, column in self.table_class.base_columns.items()]
+        context['all_columns'] = all_columns
+
+        # Determine current_visible_columns based on what will be excluded/included
+        # This should reflect what the table is actually rendering.
+        # It's simpler to derive this from the request or defaults, similar to get_table_kwargs.
+        default_visible_list = list(self.table_class.DEFAULT_VISIBLE_COLUMNS)
+        if 'visible_cols' in self.request.GET:
+            visible_columns_param = self.request.GET.getlist('visible_cols')
+            if len(visible_columns_param) == 1 and visible_columns_param[0] == '':
+                context['current_visible_columns'] = []
+            else:
+                context['current_visible_columns'] = [col for col in visible_columns_param if col]
+        else:
+            context['current_visible_columns'] = default_visible_list
+
+        return context
+
+
+@login_required
+def logs_page(request):
+    """
+    Renders the main application logs page or a partial for HTMX requests.
+
+    Provides context for filtering logs and selecting visible columns.
+
+    :param request: The HTTP request object.
+    :type request: django.http.HttpRequest
+    :return: Rendered HTML response.
+    :rtype: django.http.HttpResponse
+    """
+    template = "app/logs.html" if request.htmx else "app/logs_full.html"
+    filterset = LogEntryFilter(request.GET, queryset=LogEntry.objects.all().order_by('-timestamp'))
+    portals = Portal.objects.values_list("alias", "portal_type", "url")
+
+    # Use LogEntryTable's definition for all columns
+    all_table_columns = [(name, column.header) for name, column in LogEntryTable.base_columns.items()]
+
+    default_cols = list(LogEntryTable.DEFAULT_VISIBLE_COLUMNS)
+
+    if 'visible_cols' in request.GET:
+        visible_columns_param = request.GET.getlist('visible_cols')
+        if len(visible_columns_param) == 1 and visible_columns_param[0] == '':  # User deselected all
+            initial_visible_columns = []
+        else:
+            initial_visible_columns = [col for col in visible_columns_param if col]
+    else:
+        initial_visible_columns = default_cols
+
+    context = {
+        'title': 'Application Logs',
+        'filter': filterset,
+        'all_columns': all_table_columns,
+        'current_visible_columns': initial_visible_columns,
+        'default_visible_columns_json': json.dumps(default_cols),  # For JS reset
+        "portal": portals,
+    }
+    return render(request, template, context)
+
+
 @login_required
 def portal_map_view(request, instance=None, id=None):
     """
@@ -1302,3 +1457,72 @@ def webhook_view(request):
 
     # Respond with success
     return JsonResponse({"message": "Webhook received successfully"}, status=200)
+
+VALID_LOG_LEVELS = {
+    "DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL,
+}
+LOG_LEVEL_NAMES = list(VALID_LOG_LEVELS.keys())
+
+
+@staff_member_required
+def log_settings_view(request):
+    """
+    Configures application-wide logging levels.
+
+    On GET, displays the current logging level and a form to change it.
+    On POST, updates the logging level in SiteSettings, applies it to the
+    current Django process, and signals active Celery workers to update their
+    log levels as well.
+
+    Expected POST parameter:
+        - 'level': The desired logging level string (e.g., 'INFO', 'DEBUG').
+
+    :param request: The HTTP request object.
+    :type request: django.http.HttpRequest
+    :return: Rendered HTML response (log settings form partial) or an error response.
+    :rtype: django.http.HttpResponse
+    """
+    logger.debug(f"Method={request.method}, user={request.user.username}")
+    site_settings, _ = SiteSettings.objects.get_or_create(pk=1)
+
+    if request.method == "POST":
+        new_level_str = request.POST.get("level", "").upper()
+        logger.debug(f"Requested log level: {new_level_str}")
+
+        if new_level_str in VALID_LOG_LEVELS:
+            try:
+                site_settings.logging_level = new_level_str
+                site_settings.save(update_fields=['logging_level'])
+                logger.info(f"SiteSettings database updated to logging level: {new_level_str}.")
+
+                utils.apply_global_log_level(level_name=new_level_str)
+                logger.info(f"Log level '{new_level_str}' applied to current Django process.")
+
+                active_workers = celery_app.control.inspect().active()
+                if active_workers:
+                    tasks_sent_count = 0
+                    for worker_name in active_workers.keys():
+                        # Task should fetch the level from SiteSettings when it runs in the worker
+                        apply_site_log_level_in_worker.delay()
+                        tasks_sent_count += 1
+                    logger.info(f"Task to update log levels sent to {tasks_sent_count} active Celery worker(s).")
+                else:
+                    logger.info("No active Celery workers found to send log level update task.")
+
+                return HttpResponse(headers={"HX-Trigger-After-Settle": json.dumps(
+                    {"showSuccessAlert": f"Log level updated to {new_level_str}.", "closeModal": True}
+                )})
+            except Exception as e:
+                logger.error(f"Error updating log levels: {e}", exc_info=True)
+                return HttpResponse(status=500, headers={
+                    "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Error: {str(e)}"})})
+        else:
+            logger.warning(f"Invalid log level '{new_level_str}' provided.")
+            return HttpResponse("Invalid log level.", status=400)
+
+    context = {
+        'current_log_level': site_settings.logging_level,
+        'log_levels': LOG_LEVEL_NAMES,
+    }
+    return render(request, 'partials/log_settings.html', context)

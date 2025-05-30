@@ -104,6 +104,7 @@ MIDDLEWARE = [
     'django_htmx.middleware.HtmxMiddleware',
     'config.customArcGIS.MySocialAuthExceptionMiddleware',
     'social_django.middleware.SocialAuthExceptionMiddleware',
+    "app.middleware.RequestContextLogMiddleware",
 ]
 
 AUTHENTICATION_BACKENDS = (
@@ -215,24 +216,89 @@ DJANGO_ADMIN_FORCE_ALLAUTH = env.bool("DJANGO_ADMIN_FORCE_ALLAUTH", default=Fals
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    'filters': {
+        'combined_context_filter': { # Renamed for clarity
+            '()': 'app.log_handlers.CombinedContextFilter',
+        }
+    },
     "formatters": {
         "verbose": {
-            "format": "%(levelname)s %(asctime)s %(module)s %(process)d %(thread)d %(message)s",
+            "format": "{levelname} {asctime} {module} {process:d} {thread:d} {message}",
+            "style": "{",
         },
+        "simple": {
+            "format": "{levelname} {asctime} {name}: {message}",
+            "style": "{",
+        },
+        "database": {
+            "format": "{message}",
+            "style": "{",
+        }
     },
     "handlers": {
         "console": {
             "level": "INFO",
             "class": "logging.StreamHandler",
-            "formatter": "verbose",
+            "formatter": "simple",
+            'filters': ['combined_context_filter'],  # Also filter console output for context
         },
-        "file": {
+        "database": {
+            "level": "DEBUG",
+            "class": "app.log_handlers.DatabaseLogHandler",
+            'filters': ['combined_context_filter'],  # Apply the context filter
+            "formatter": "database",
+        },
+    },
+    "loggers": {
+        "root": {
+            "level": "WARNING",
+            "handlers": ["console"],
+        },
+        "django": {
+            "handlers": ["console", "database"],
+            "level": "WARNING",
+            "propagate": True,
+        },
+        "django.server": {
+            "handlers": ["database"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "django.request": {
+            "handlers": ["console"],
             "level": "ERROR",
-            "class": "logging.FileHandler",
-            "filename": "/var/log/django_errors.log",
+            "propagate": True,
+        },
+        "celery": {
+            "handlers": ["console", "database"],
+            "level": "ERROR",
+            "propagate": True,
+        },
+        "celery.task": {  # Logs from @shared_task or app.task, if not caught by a more specific logger
+            "handlers": ["console", "database"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "enterpriseviz": {
+            "handlers": ["console", "database"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "enterpriseviz.utils": {
+            "handlers": ["console", "database"],
+            "level": "WARNING",
+            "propagate": False,
         },
     },
     "root": {"level": "INFO", "handlers": ["console", "file"]},
+        "enterpriseviz.tasks": {
+            "handlers": ["console", "database"],
+            "level": "INFO",
+            "propagate": False,
+        },
+
+    },
+
 }
 
 TASKS = {
