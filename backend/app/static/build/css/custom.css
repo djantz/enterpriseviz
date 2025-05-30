@@ -1553,8 +1553,12 @@ calcite-button[kind="inverse"] {
 calcite-dialog{
   --calcite-dialog-background-color: var(--calcite-color-background);
 }
+calcite-dialog {
+    --calcite-dialog-max-size-y: 80%;
+}
 .log_filter {
   /*width: 40%;*/
   float: right;
   padding-right: 16px;
   padding-bottom: 10px;
+}

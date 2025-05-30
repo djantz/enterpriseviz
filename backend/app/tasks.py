@@ -30,11 +30,18 @@ from celery_progress.backend import ProgressRecorder, Progress
 from config.settings.base import USE_SERVICE_USAGE_REPORT
 from django.core.exceptions import MultipleObjectsReturned
 
-from .models import Webmap, Service, Layer, App, User, Map_Service, Layer_Service, App_Map, App_Service, Portal
-from .webmaps import (connect, epoch_to_datetime, epoch_to_date, UpdateResult, extract_storymap,
-                      extract_dashboard, extract_experiencebuilder, extract_webappbuilder)
+from .models import Webmap, Service, Layer, App, User, Map_Service, Layer_Service, App_Map, App_Service, Portal, SiteSettings
+from .utils import (connect, epoch_to_datetime, epoch_to_date, UpdateResult, extract_storymap,
+                    extract_dashboard, extract_experiencebuilder, extract_webappbuilder, get_missing_item_attrs,
+                    apply_global_log_level)
+from .request_context import celery_logging_context
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('enterpriseviz.tasks')
+
+
+@shared_task(name="apply_site_log_level_in_worker")
+def apply_site_log_level_in_worker():
+    apply_global_log_level()
 
 
 @shared_task(bind=True)

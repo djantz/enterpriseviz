@@ -289,8 +289,6 @@ LOGGING = {
             "level": "WARNING",
             "propagate": False,
         },
-    },
-    "root": {"level": "INFO", "handlers": ["console", "file"]},
         "enterpriseviz.tasks": {
             "handlers": ["console", "database"],
             "level": "INFO",
