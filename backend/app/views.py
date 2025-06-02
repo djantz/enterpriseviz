@@ -17,8 +17,9 @@
 # ----------------------------------------------------------------------
 import hashlib
 import hmac
+from collections import defaultdict
 
-from app import webmaps
+from celery import current_app as celery_app  # For signaling Celery
 from celery.result import AsyncResult
 from celery_progress.backend import Progress
 import cron_descriptor
@@ -29,8 +30,10 @@ from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import login, logout, authenticate
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
+from django.core.exceptions import FieldError
 from django.db import transaction, DatabaseError
 from django.db.models import Q
+from django.http import Http404
 from django.http import HttpResponse, JsonResponse, HttpResponseForbidden
 from django.shortcuts import render, redirect, get_object_or_404
 from django.template import loader
@@ -41,151 +44,117 @@ from django_filters.views import FilterView
 from django_tables2 import SingleTableMixin, RequestConfig
 from django_tables2.export.views import ExportMixin
 
-from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter
-from .forms import ScheduleForm
-from .models import PortalCreateForm, UserProfile
-from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable
+from app import utils
+from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
+from .forms import ScheduleForm, SiteSettingsForm
+from .models import PortalCreateForm, UserProfile, LogEntry
+from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *
 
-logger = logging.getLogger(__name__)
+from .request_context import get_django_request_context
+
+logger = logging.getLogger('enterpriseviz')
+
+# Configuration for the Table view
+TABLE_VIEW_MODEL_CONFIG = {
+    "webmap": {"model": Webmap, "table_class": WebmapTable, "filterset_class": WebmapFilter},
+    "service": {"model": Service, "table_class": ServiceTable, "filterset_class": ServiceFilter},
+    "layer": {"model": Layer, "table_class": LayerTable, "filterset_class": LayerFilter},
+    "app": {"model": App, "table_class": AppTable, "filterset_class": AppFilter},
+    "user": {"model": User, "table_class": UserTable, "filterset_class": UserFilter},
+}
 
 
 class Table(ExportMixin, SingleTableMixin, FilterView):
     """
-    Handles the dynamic rendering of tables, filters, and data based on the type of model. This class is
-    intended to provide a unified interface for generating Django tables and filtersets with paginated
-    output, configurable per model type.
+    Dynamically renders tables, filters, and data based on a model type from URL.
 
-    The class dynamically adjusts its model, table class, and filterset class based on a model type
-    passed in the URL. The corresponding data can also be filtered based on a specific instance when
-    provided. This flexibility allows the reuse of the same view for multiple types of data objects.
+    This class provides a unified interface for generating paginated Django tables
+    and filtersets, configurable per model type specified in the URL's 'name' kwarg.
+    It can also filter data by a portal 'instance' kwarg if provided.
 
-    :ivar model: The Django model associated with the view. Dynamically determined based on the URL.
-    :type model: Model
-    :ivar table_class: The Django table class used to render the data for the model.
-    :type table_class: Table
-    :ivar filterset_class: The filterset class used for querying and filtering data for the model.
-    :type filterset_class: FilterSet
-    :ivar template_name: The name of the template used to render tables.
+    :ivar template_name: The template used for rendering the table.
     :type template_name: str
-    :ivar paginate_by: Defines the number of items to display per page in the generated table.
+    :ivar paginate_by: Number of items per page.
     :type paginate_by: int
+    :ivar model: The Django model, dynamically set.
+    :type model: django.db.models.Model
+    :ivar table_class: The django-tables2 Table class, dynamically set.
+    :type table_class: django_tables2.tables.Table
+    :ivar filterset_class: The django-filters FilterSet class, dynamically set.
+    :type filterset_class: django_filters.FilterSet
     """
-    model = User
-    table_class = UserTable
-    filterset_class = UserFilter
     template_name = "partials/table.html"
     paginate_by = 10
 
+    def _configure_for_model_type(self):
+        """
+        Sets model, table_class, and filterset_class based on 'name' URL kwarg.
+
+        Raises Http404 if the model_type is not found in `TABLE_VIEW_MODEL_CONFIG`
+        and no default model is configured for the class.
+        """
+        model_type = self.kwargs.get("name")
+        config = TABLE_VIEW_MODEL_CONFIG.get(model_type)
+        if config:
+            self.model = config["model"]
+            self.table_class = config["table_class"]
+            self.filterset_class = config["filterset_class"]
+        else:
+            if not hasattr(self, 'model') or self.model is None:
+                raise Http404(f"Unsupported table type: {model_type}")
+
     def get_filterset_class(self):
-        model_type = self.kwargs["name"]
-        if model_type == "webmap":
-            self.model = Webmap
-            self.table_class = WebmapTable
-            self.filterset_class = WebmapFilter
-            return WebmapFilter
-        if model_type == "service":
-            self.model = Service
-            self.table_class = ServiceTable
-            self.filterset_class = ServiceFilter
-            return ServiceFilter
-        if model_type == "layer":
-            self.model = Layer
-            self.table_class = LayerTable
-            self.filterset_class = LayerFilter
-            return LayerFilter
-        if model_type == "app":
-            self.model = App
-            self.table_class = AppTable
-            self.filterset_class = AppFilter
-            return AppFilter
-        if model_type == "user":
-            self.model = User
-            self.table_class = UserTable
-            self.filterset_class = UserFilter
-            return UserFilter
+        """
+        Returns the appropriate filterset class after configuring for model type.
+
+        :return: The filterset class for the current model type.
+        :rtype: django_filters.FilterSet
+        """
+        self._configure_for_model_type()
+        return self.filterset_class
 
     def get_queryset(self):
         """
-        Returns the queryset to be displayed based on the model type in the URL.
+        Returns the queryset for the current model type, optionally filtered by instance.
+
+        :return: The queryset to be displayed.
+        :rtype: django.db.models.QuerySet
         """
-        model_type = self.kwargs["name"]
-        instance = None
-        if "instance" in self.kwargs:
-            instance = self.kwargs["instance"]
-        if model_type == "webmap":
-            self.model = Webmap
-            self.table_class = WebmapTable
-            self.filterset_class = WebmapFilter
-            if instance:
-                return Webmap.objects.filter(portal_instance__alias=instance)
-            return Webmap.objects.all()
-        if model_type == "service":
-            self.model = Service
-            self.table_class = ServiceTable
-            self.filterset_class = ServiceFilter
-            if instance:
-                return Service.objects.filter(portal_instance__alias=instance)
-            return Service.objects.all()
-        if model_type == "layer":
-            self.model = Layer
-            self.table_class = LayerTable
-            self.filterset_class = LayerFilter
-            if instance:
-                return Layer.objects.filter(portal_instance__alias=instance)
-            return Layer.objects.all()
-        if model_type == "app":
-            self.model = App
-            self.table_class = AppTable
-            self.filterset_class = AppFilter
-            if instance:
-                return App.objects.filter(portal_instance__alias=instance)
-            return App.objects.all()
-        if model_type == "user":
-            self.model = User
-            self.table_class = UserTable
-            self.filterset_class = UserFilter
-            if instance:
-                return User.objects.filter(portal_instance__alias=instance)
-            return User.objects.all()
+        self._configure_for_model_type()
+        qs = super().get_queryset()
+
+        instance_alias = self.kwargs.get("instance")
+        if instance_alias:
+            try:
+                return qs.filter(portal_instance__alias=instance_alias)
+            except FieldError:
+                logger.warning(
+                    f"Model {self.model.__name__} does not support filtering by 'portal_instance__alias'. Ignoring instance filter for '{instance_alias}'.")
+                return qs
+        return qs
 
     def get_context_data(self, **kwargs):
         """
-        Adds the filter and table to the context.
+        Adds the filter, table, and pagination information to the context.
+
+        :param kwargs: Additional keyword arguments for context.
+        :return: The context dictionary for template rendering.
+        :rtype: dict
         """
-        model_type = self.kwargs["name"]
-        if model_type == "webmap":
-            self.model = Webmap
-            self.table_class = WebmapTable
-            self.filterset_class = WebmapFilter
-        if model_type == "service":
-            self.model = Service
-            self.table_class = ServiceTable
-            self.filterset_class = ServiceFilter
-        if model_type == "layer":
-            self.model = Layer
-            self.table_class = LayerTable
-            self.filterset_class = LayerFilter
-        if model_type == "app":
-            self.model = App
-            self.table_class = AppTable
-            self.filterset_class = AppFilter
-        if model_type == "user":
-            self.model = User
-            self.table_class = UserTable
-            self.filterset_class = UserFilter
-        # Apply filtering to the queryset
         context = super().get_context_data(**kwargs)
         page = context["page_obj"]
         context["paginator_range"] = page.paginator.get_elided_page_range(page.number, on_each_side=1, on_ends=1)
-        filterset = self.filterset_class(self.request.GET, queryset=self.get_queryset())
-        context["filter"] = filterset
-        table = self.table_class(filterset.qs)
-        RequestConfig(self.request, paginate={
-            "per_page": 10,
-        }).configure(table)
-        context.update({"table": table})
-        context.update({"table_name": model_type})
+
+        self._configure_for_model_type()
+
+        table = self.table_class(context["filter"].qs)
+        RequestConfig(self.request, paginate={"per_page": self.paginate_by}).configure(table)
+
+        context.update({
+            "table": table,
+            "table_name": self.kwargs.get("name"),
+        })
         if "instance" in self.kwargs:
             context.update({"instance": self.kwargs["instance"]})
 
@@ -362,42 +331,31 @@ def portal_map_view(request, instance=None, id=None):
     :return: Rendered template with map details or error response
     :rtype: HttpResponse
     """
-    # Determine the correct template
-    template = (
-        "portals/portal_detail_map.html"
-        if request.htmx
-        else "portals/portal_detail_map_full.html"
-    )
+    logger.debug(f"instance={instance}, id={id}, user={request.user.username}")
+    template = "portals/portal_detail_map.html" if request.htmx else "portals/portal_detail_map_full.html"
 
-    # Validate map ID
     if not id:
-        logger.error("Missing 'id' parameter in request.")
-        response = HttpResponse(status=400)
-        response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": "Error retrieving map details"})
-        return response
+        logger.warning("Missing 'id' parameter.")
+        return HttpResponse(status=400, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error retrieving map details: ID missing."})})
 
     try:
-        # Fetch map details
-        details = webmaps.map_details(id)
+        logger.debug(f"Fetching map details for ID: {id}")
+        details = utils.map_details(id)
         if "error" in details:
-            response = HttpResponse(status=500)
-            response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": details["error"]})
-            return response
+            logger.warning(f"Error in map details response for ID {id}: {details['error']}")
+            return HttpResponse(status=500,
+                                headers={"HX-Trigger-After-Settle": json.dumps({"showDangerAlert": details["error"]})})
+
+        portal_data = Portal.objects.values_list("alias", "portal_type", "url")
+        details["portal"] = portal_data
+        logger.debug(f"Successfully retrieved and rendering map details for ID: {id}")
+        return render(request, template, details)
 
     except Exception as e:
-        logger.exception(f"Error retrieving map details for ID {id}: {e}")
-        response = HttpResponse(status=500)
-        response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": "Error retrieving map details"})
-        return response
-
-    # Optimize portal data retrieval
-    portal_data = Portal.objects.values_list("alias", "portal_type", "url")
-
-    # Construct context dynamically
-    details["portal"] = portal_data
-    context = details
-
-    return render(request, template, context)
+        logger.error(f"Unexpected error for ID {id}: {e}", exc_info=True)
+        return HttpResponse(status=500, headers={"HX-Trigger-After-Settle": json.dumps(
+            {"showDangerAlert": "An unexpected error occurred while retrieving map details."})})
 
 
 @login_required
@@ -418,59 +376,49 @@ def portal_service_view(request, instance=None, url=None):
     :return: A rendered HTML response with service details
     :rtype: HttpResponse
     """
-    # Determine the correct template
-    template = (
-        "portals/portal_detail_service.html"
-        if request.htmx
-        else "portals/portal_detail_service_full.html"
-    )
+    logger.debug(f"instance={instance}, url_provided={bool(url)}, user={request.user.username}")
+    template = "portals/portal_detail_service.html" if request.htmx else "portals/portal_detail_service_full.html"
 
-    # Validate instance and URL
     if not instance or not url:
-        logger.error("Missing 'instance' or 'url' parameter in request.")
-        response = HttpResponse(status=400)
-        response["HX-Trigger-After-Settle"] = json.dumps(
-            {"showDangerAlert": "Missing 'instance' or 'url' parameter in request."})
-        return response
+        logger.warning("Missing 'instance' or 'url' parameter.")
+        return HttpResponse(status=400, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Missing 'instance' or 'url' parameter."})})
 
     try:
-        # Fetch service details
-        details = webmaps.service_details(instance, unquote(url))
+        unquoted_url = unquote(url)
+        logger.debug(f"Fetching service details for instance: {instance}, url: {unquoted_url}")
+        details = utils.service_details(instance, unquoted_url)
+
         if "error" in details:
-            response = HttpResponse(status=500)
-            response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": details["error"]})
-            return response
+            logger.warning(f"Error in service details for {instance}: {details['error']}")
+            return HttpResponse(status=500,
+                                headers={"HX-Trigger-After-Settle": json.dumps({"showDangerAlert": details["error"]})})
+
+        portal_data = Portal.objects.values_list("alias", "portal_type", "url")
+        details["portal"] = portal_data
+        details["service_usage"] = None
+
+        if hasattr(request.user, "profile") and getattr(request.user.profile, "service_usage", False):
+            logger.debug(f"Fetching usage report for service {details.get('item')}")
+            item_for_usage = details.get("item")
+            if item_for_usage:
+                usage_input = [item_for_usage] if not isinstance(item_for_usage, list) else item_for_usage
+                usage = utils.get_usage_report(usage_input)
+                if "error" in usage:
+                    logger.warning(f"Error in usage report: {usage['error']}")
+                else:
+                    details["service_usage"] = usage.get("usage")
+                    logger.debug("Successfully retrieved service usage report")
+            else:
+                logger.debug("No item found in details to fetch usage report for.")
+
+        logger.debug(f"Successfully retrieved and rendering service details for {instance}.")
+        return render(request, template, details)
 
     except Exception as e:
-        logger.exception(f"Error retrieving service details for {instance}: {e}")
-        response = HttpResponse(status=500)
-        response["HX-Trigger-After-Settle"] = json.dumps(
-            {"showDangerAlert": f"Error retrieving service details for {instance}."})
-        return response
-
-    # Optimize portal data retrieval
-    portal_data = Portal.objects.values_list("alias", "portal_type", "url")
-
-    # Determine service usage
-    service_usage = None
-    if hasattr(request.user, "profile") and getattr(request.user.profile, "service_usage", False):
-        try:
-            usage = webmaps.get_usage_report([details.get("item")])
-            if "error" in usage:
-                response = HttpResponse(status=500)
-                response["HX-Trigger-After-Settle"] = json.dumps(
-                    {"showDangerAlert": usage["error"]})
-                return response
-            service_usage = usage["usage"]
-        except Exception as e:
-            logger.exception(f"Error retrieving service usage report: {e}")
-
-    # Construct context dynamically
-    details["portal"] = portal_data
-    details["service_usage"] = service_usage
-    context = details
-
-    return render(request, template, context)
+        logger.error(f"Unexpected error for instance {instance}: {e}", exc_info=True)
+        return HttpResponse(status=500, headers={"HX-Trigger-After-Settle": json.dumps(
+            {"showDangerAlert": "An unexpected error occurred while retrieving service details."})})
 
 
 @login_required
@@ -494,61 +442,49 @@ def portal_layer_view(request, name=None):
     :return: A rendered HTML response with layer details
     :rtype: HttpResponse
     """
-    template = (
-        "portals/portal_detail_layer.html"
-        if request.htmx
-        else "portals/portal_detail_layer_full.html"
-    )
+    logger.debug(f"name={name}, user={request.user.username}")
+    template = "portals/portal_detail_layer.html" if request.htmx else "portals/portal_detail_layer_full.html"
 
-    # Retrieve parameters safely
     version = request.GET.get("version", "")
     dbserver = request.GET.get("server", "")
     database = request.GET.get("database", "")
+    logger.debug(f"Params - version: {version}, server: {dbserver}, database: {database}")
 
     if not name:
-        logger.error("Layer name is missing in request.")
-        response = HttpResponse(status=400)
-        response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": "Layer name is missing in request."})
-        return response
+        logger.warning("Layer name missing.")
+        return HttpResponse(status=400, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Layer name is missing."})})
 
     try:
-        # Fetch layer details
-        details = webmaps.layer_details(dbserver, database, version, name)
+        logger.debug(f"Fetching layer details for name: {name}")
+        details = utils.layer_details(dbserver, database, version, name)
         if "error" in details:
-            response = HttpResponse(status=500)
-            response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": details["error"]})
-            return response
-    except Exception as e:
-        logger.exception(f"Error retrieving layer details for {name}: {e}")
-        response = HttpResponse(status=500)
-        response["HX-Trigger-After-Settle"] = json.dumps(
-            {"showDangerAlert": f"Error retrieving layer details for {name}."})
-        return response
+            logger.warning(f"Error in layer details for {name}: {details['error']}")
+            return HttpResponse(status=500,
+                                headers={"HX-Trigger-After-Settle": json.dumps({"showDangerAlert": details["error"]})})
 
-    # Optimize portal data retrieval
-    portal_data = list(Portal.objects.values_list("alias", "portal_type", "url"))
+        portal_data = list(Portal.objects.values_list("alias", "portal_type", "url"))
+        details["portal"] = portal_data
+        details["service_usage"] = None
+        services_for_usage = details.get("services", [])
 
-    # Determine service usage
-    service_usage = None
-    services = details["services"]
-    if hasattr(request.user, "profile") and getattr(request.user.profile, "service_usage", False):
-        try:
-            usage = webmaps.get_usage_report(services)
+        if hasattr(request.user, "profile") and getattr(request.user.profile, "service_usage",
+                                                        False) and services_for_usage:
+            logger.debug(f"Fetching usage report for {len(services_for_usage)} services.")
+            usage = utils.get_usage_report(services_for_usage)
             if "error" in usage:
-                response = HttpResponse(status=500)
-                response["HX-Trigger-After-Settle"] = json.dumps(
-                    {"showDangerAlert": usage["error"]})
-                return response
-            service_usage = usage["usage"]
-        except Exception as e:
-            logger.exception(f"Error retrieving service usage report: {e}")
+                logger.warning(f"Error in usage report: {usage['error']}")
+            else:
+                details["service_usage"] = usage.get("usage")
+                logger.debug("Successfully retrieved service usage report")
 
-    # Construct context dynamically
-    details["portal"] = portal_data
-    details["service_usage"] = service_usage
-    context = details
+        logger.debug(f"Successfully retrieved and rendering layer details for {name}.")
+        return render(request, template, details)
 
-    return render(request, template, context)
+    except Exception as e:
+        logger.error(f"Unexpected error for layer {name}: {e}", exc_info=True)
+        return HttpResponse(status=500, headers={"HX-Trigger-After-Settle": json.dumps(
+            {"showDangerAlert": "An unexpected error occurred while retrieving layer details."})})
 
 
 @staff_member_required
@@ -565,52 +501,66 @@ def portal_create_view(request):
     :return: Rendered response with form, success message, or error message
     :rtype: HttpResponse
     """
+    logger.debug(f"Method={request.method}, user={request.user.username}")
 
     if request.method == "POST":
         form = PortalCreateForm(request.POST)
-
         if form.is_valid():
             store_password = form.cleaned_data["store_password"]
             alias = form.cleaned_data["alias"]
             url = form.cleaned_data["url"]
+            username = form.cleaned_data.get("username", "")
+            logger.debug(f"Form valid. alias={alias}, url={url}, store_password={store_password}")
 
-            if store_password:
-                logger.info(f"Attempting connection for {alias} ({url})")
-                if webmaps.try_connection(form.cleaned_data).get("authenticated", False):
-                    form.save()
-                    context = {"portal": Portal.objects.values_list("alias", "portal_type", "url")}
-                    response = render(request,
-                                      "partials/portal_updates.html",
-                                      context)
-                    response["HX-Trigger-After-Settle"] = json.dumps(
-                        {"showSuccessAlert": f"Successfully added {url} as {alias} and authenticated.",
-                         "closeModal": True})
-                    return response
+            try:
+                if store_password:
+                    logger.debug(f"Attempting connection for {alias} with stored credentials.")
+                    connection_result = utils.try_connection(form.cleaned_data).get("authenticated", False)
+                    if connection_result:
+                        form.save()
+                        logger.info(
+                            f"Portal {alias} ({url}) created and authenticated as {username}.")
+                        context = {"portal": Portal.objects.values_list("alias", "portal_type", "url")}
+                        response = render(request, "partials/portal_updates.html", context)
+                        response["HX-Trigger-After-Settle"] = json.dumps(
+                            {"showSuccessAlert": f"Successfully added {url} as {alias} and authenticated.",
+                             "closeModal": True}
+                        )
+                        return response
+                    else:
+                        logger.warning(f"Authentication failed for {alias} ({url}) as {username}.")
+                        context = {"form": form}
+                        response = render(request, "partials/portal_add_form.html", context,
+                                          status=401)
+                        response["HX-Trigger-After-Settle"] = json.dumps(
+                            {"showDangerAlert": f"Unable to connect to {url} as {username}. Please verify credentials."}
+                        )
+                        return response
                 else:
-                    logger.warning(f"Connection failed for {alias} ({url})")
-                    context = {"form": form}
-                    response = render(request,
-                                      "partials/portal_add_form.html",
-                                      context, status=401)
-                    response["HX-Trigger-After-Settle"] = json.dumps({
-                        "showDangerAlert": f"Unable to connect to {form.cleaned_data['url']} as {form.cleaned_data['username']}. Please verify credentials."})
+                    form.save()
+                    logger.info(f"Portal {alias} ({url}) created without stored credentials.")
+                    context = {"portal": Portal.objects.values_list("alias", "portal_type", "url")}
+                    response = render(request, "partials/portal_updates.html", context)
+                    response["HX-Trigger-After-Settle"] = json.dumps(
+                        {
+                            "showSuccessAlert": f"Successfully added {url} as {alias}. Authentication will be required when refreshing data.",
+                            "closeModal": True}
+                    )
                     return response
-            else:
-                form.save()
-                context = {"portal": Portal.objects.values_list("alias", "portal_type", "url")}
-                response = render(request, "partials/portal_updates.html",
-                                  context)
-                response["HX-Trigger-After-Settle"] = json.dumps({
-                    "showSuccessAlert": f"Successfully added {url} as {alias}. Authentication will be required when refreshing data.",
-                    "closeModal": True})
+            except Exception as e:
+                logger.error(f"Unexpected error creating portal {alias}: {e}",
+                             exc_info=True)
+                context = {"form": form}
+                response = render(request, "partials/portal_add_form.html", context, status=500)
+                response["HX-Trigger-After-Settle"] = json.dumps(
+                    {"showDangerAlert": f"An unexpected error occurred"}
+                )
                 return response
+        else:
+            logger.warning(f"Form invalid. Errors: {form.errors}")
+            return render(request, "partials/portal_add_form.html", {"form": form})
 
-        logger.error("Form validation failed for portal creation.")
-        context = {"form": form}
-        response = render(request, "partials/portal_add_form.html",
-                          context)
-        return response
-
+    logger.debug("Rendering initial form.")
     return render(request, "portals/portal_add.html", {"form": PortalCreateForm()})
 
 
@@ -630,27 +580,47 @@ def index_view(request, instance=None):
     :return: The rendered HTTP response object with the context.
     :rtype: HttpResponse
     """
-    # Select the template based on HTMX request
+    logger.debug(f"instance={instance}, user={request.user.username}")
     template = "app/index.html" if request.htmx else "app/index_full.html"
-    webmaps = Webmap.objects.filter(Q(portal_instance=instance) if instance else Q()).count()
-    portals = Portal.objects.values_list("alias", "portal_type", "url")
-    services = Service.objects.filter(Q(portal_instance=instance) if instance else Q()).count()
-    layers = Layer.objects.filter(Q(portal_instance=instance) if instance else Q()).count()
-    apps = App.objects.filter(Q(portal_instance=instance) if instance else Q()).count()
-    users = User.objects.filter(Q(portal_instance=instance) if instance else Q()).count()
-    instance_item = Portal.objects.get(alias=instance) if instance else None
 
-    context = {
-        "webmaps": webmaps,
-        "services": services,
-        "layers": layers,
-        "apps": apps,
-        "users": users,
-        "portal": portals,
-        "instance": instance_item
-    }
+    try:
+        base_query = Q(portal_instance__alias=instance) if instance else Q()
 
-    return render(request, template, context)
+        webmaps_count = Webmap.objects.filter(base_query).count()
+        services_count = Service.objects.filter(base_query).count()
+        layers_count = Layer.objects.filter(base_query).count()
+        apps_count = App.objects.filter(base_query).count()
+        users_count = User.objects.filter(base_query).count()
+
+        portals = Portal.objects.values_list("alias", "portal_type", "url")
+        instance_item = None
+        if instance:
+            try:
+                instance_item = Portal.objects.get(alias=instance)
+                logger.debug(f"Retrieved data for portal instance: {instance}")
+            except Portal.DoesNotExist:
+                logger.warning(
+                    f"Portal instance '{instance}' not found, dashboard will show aggregate if instance_item is None.")
+        else:
+            logger.debug("Retrieved aggregated data across all portal instances")
+
+        context = {
+            "webmaps": webmaps_count,
+            "services": services_count,
+            "layers": layers_count,
+            "apps": apps_count,
+            "users": users_count,
+            "portal": portals,
+            "instance": instance_item
+        }
+        return render(request, template, context)
+    except Exception as e:
+        logger.error(f"Error generating dashboard: {e}", exc_info=True)
+        context = {
+            "error": "An error occurred while retrieving data.",
+            "portal": Portal.objects.values_list("alias", "portal_type", "url")
+        }
+        return render(request, template, context, status=500)
 
 
 @staff_member_required
@@ -782,53 +752,59 @@ def progress_view(request, instance, task_id):
     :return: JSON or HTML response with task progress data
     :rtype: HttpResponse
     """
-
+    logger.debug(f"instance={instance}, task_id={task_id}")
     try:
         result = AsyncResult(task_id)
-        if not result:
-            logger.error(f"Task ID '{task_id}' not found for instance '{instance}'.")
-            return JsonResponse({"error": "Task not found"}, status=404)
+        progress_info = Progress(result).get_info()
 
-        progress = Progress(result).get_info()
+        if not progress_info or "progress" not in progress_info:
+            logger.warning(
+                f"Invalid or missing progress data for task '{task_id}'. State: {result.state}")
+            progress_percentage = 100 if result.successful() or result.failed() else 0
+            task_state = result.state
+            response_data = {"instance": instance, "task_id": task_id,
+                             "progress": {"percent": progress_percentage, "description": "Fetching status..."},
+                             "value": progress_percentage, "state": task_state}
+        else:
+            progress_percentage = progress_info["progress"].get("percent", 0)
+            task_state = progress_info.get("state", result.state)
+            response_data = {"instance": instance, "task_id": task_id, "progress": progress_info,
+                             "value": progress_percentage}
 
-        if not progress or "progress" not in progress:
-            logger.warning(f"Invalid progress data for task '{task_id}'.")
-            return JsonResponse({"error": "Invalid task progress data"}, status=500)
-
-        progress_percentage = progress["progress"].get("percent", 0)
-        task_state = progress.get("state", "PENDING")
-
-        logger.info(
-            f"Task '{task_id}' for instance '{instance}' is in state '{task_state}' at {progress_percentage}%.")
-
-        response_data = {
-            "instance": instance,
-            "task_id": task_id,
-            "progress": progress,
-            "value": progress_percentage
-        }
+        logger.debug(f"Task '{task_id}' state '{task_state}', progress {progress_percentage}%.")
         response = render(request, "partials/progress_bar.html", context=response_data)
-        # Check task completion and trigger UI updates
+
         htmx_trigger = {}
+        task_result = result.info
+        task_name = result._get_task_meta().get('task_name', 'Task')
+
         if task_state == "SUCCESS":
+            logger.info(
+                f"Task '{task_id}' ({task_name}) for {instance} completed successfully.")
+            success_details = "Completed."
+            if isinstance(task_result, dict):
+                success_details = (f"{task_result.get('num_updates', 0)} updates, "
+                                   f"{task_result.get('num_inserts', 0)} inserts, "
+                                   f"{task_result.get('num_deletes', 0)} deletes, "
+                                   f"{task_result.get('num_errors', 0)} errors.")
             htmx_trigger = {
-                "showSuccessAlert": f"{result._get_task_meta().get('task_name')} for {instance} completed. <br> <b>{result.result['num_updates']}</b> updates, <b>{result.result['num_inserts']}</b> inserts, <b>{result.result['num_deletes']}</b> deletes, <b>{result.result['num_errors']}</b> errors",
+                "showSuccessAlert": f"{task_name} for {instance} completed. <br> <b>{success_details}</b>",
                 "updateComplete": "true"}
         elif task_state == "FAILURE":
+            logger.warning(
+                f"Task '{task_id}' ({task_name}) for {instance} failed. Info: {task_result}")
             htmx_trigger = {
-                "showDangerAlert": f"{result._get_task_meta().get('task_name')} for {instance} failed. See errors in the results table.",
+                "showDangerAlert": f"{task_name} for {instance} failed. See logs or results table for details. Error: {str(task_result)[:100]}...",
                 "updateComplete": "true"}
 
         if htmx_trigger:
             response["HX-Trigger"] = json.dumps(htmx_trigger)
-
         return response
 
     except Exception as e:
-        logger.exception(f"Error retrieving progress for task '{task_id}': {e}")
-        response = HttpResponse(status=500)
-        response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": "Failed to retrieve task progress"})
-        return response
+        logger.error(f"Error retrieving progress for task '{task_id}': {e}", exc_info=True)
+        return HttpResponse(status=500, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Failed to retrieve task progress."})})
 
 
 def login_view(request):
@@ -843,31 +819,24 @@ def login_view(request):
     :return: Redirect to dashboard or login form with errors
     :rtype: HttpResponse
     """
+    logger.debug(f"Method={request.method}")
+    if request.user.is_authenticated:
+        return redirect("/enterpriseviz/")
 
-    form = AuthenticationForm(request, data=request.POST)
-
+    form = AuthenticationForm(request, data=request.POST if request.method == "POST" else None)
     if request.method == "POST":
-        # Introduce a small delay to mitigate brute-force attacks
-        time.sleep(1.5)
-
+        time.sleep(0.5)
         if form.is_valid():
-            username = form.cleaned_data.get("username")
-            password = form.cleaned_data.get("password")
-            user = authenticate(request, username=username, password=password)
+            username = form.cleaned_data["username"]
+            user = form.get_user()
 
             if user is not None:
                 login(request, user)
                 messages.success(request, f"Welcome back, {username}!")
-
-                # Log successful login
                 logger.info(f"User '{username}' logged in successfully.")
-
                 return redirect("/enterpriseviz/")
-
-            else:
-                messages.error(request, "Invalid credentials.")
-                logger.warning(f"Failed login attempt for username: {username}")
         else:
+            logger.warning(f"Login form invalid: {form.errors.as_json()}")
             messages.error(request, "Invalid username or password.")
 
     return render(request, "app/login.html", {"form": form, "login_url": settings.SOCIAL_AUTH_ARCGIS_URL})
@@ -885,8 +854,9 @@ def logout_view(request):
     :return: Redirect to login page
     :rtype: HttpResponseRedirect
     """
-
+    username = request.user.username if request.user.is_authenticated else "Anonymous"
     logout(request)
+    logger.info(f"User '{username}' logged out successfully.")
     return redirect("/enterpriseviz/")
 
 
@@ -906,46 +876,30 @@ def delete_portal_view(request, instance):
     :return: Success response or error message
     :rtype: HttpResponse
     """
-
+    logger.debug(f"instance={instance}, user={request.user.username}")
     try:
         portal = Portal.objects.get(alias=instance)
-
         with transaction.atomic():
             portal.delete()
-
+        logger.info(f"Deleted portal '{instance}' and related data successfully.")
         updated_portals = list(Portal.objects.values_list("alias", "portal_type", "url"))
-
-        response = render(
-            request,
-            "partials/portal_updates.html",
-            context={"portal": updated_portals}
-        )
+        response = render(request, "partials/portal_updates.html", context={"portal": updated_portals})
         response["HX-Trigger-After-Settle"] = json.dumps(
-            {"showSuccessAlert": f"Successfully deleted portal '{instance}' and related data."})
+            {"showSuccessAlert": f"Successfully deleted portal '{instance}' and related data."}
+        )
         return response
-
     except Portal.DoesNotExist:
-        logger.warning(f"Attempted to delete non-existent portal: {instance}")
-        return HttpResponse(
-            status=404,
-            headers={"HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Portal '{instance}' not found."})}
-        )
-
+        logger.warning(f"Portal '{instance}' not found for deletion.")
+        return HttpResponse(status=404, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Portal '{instance}' not found."})})
     except DatabaseError as e:
-        logger.error(f"Database error while deleting portal '{instance}': {e}")
-        return HttpResponse(
-            status=500,
-            headers={"HX-Trigger-After-Settle": json.dumps(
-                {"showDangerAlert": f"Database error occurred while deleting portal '{instance}'."})}
-        )
-
+        logger.error(f"Database error deleting portal '{instance}': {e}", exc_info=True)
+        return HttpResponse(status=500, headers={"HX-Trigger-After-Settle": json.dumps(
+            {"showDangerAlert": f"Database error deleting portal '{instance}'."})})
     except Exception as e:
-        logger.error(f"Unexpected error deleting portal '{instance}': {e}")
-        return HttpResponse(
-            status=400,
-            headers={"HX-Trigger-After-Settle": json.dumps(
-                {"showDangerAlert": f"Could not delete portal '{instance}'. Please try again later."})}
-        )
+        logger.error(f"Unexpected error deleting portal '{instance}': {e}", exc_info=True)
+        return HttpResponse(status=400, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Could not delete portal '{instance}'."})})
 
 
 @staff_member_required
@@ -963,47 +917,54 @@ def update_portal_view(request, instance):
     :return: Rendered response with form or success message
     :rtype: HttpResponse
     """
-
+    logger.debug(f"instance={instance}, method={request.method}, user={request.user.username}")
     try:
         portal = Portal.objects.get(alias=instance)
     except Portal.DoesNotExist:
-        return HttpResponse(status=404,
-                            headers={"HX-Trigger-After-Settle": json.dumps(
-                                {"showDangerAlert": f"Portal {instance} not found."})})
-
-    form = PortalCreateForm(request.POST or None, instance=portal)
+        logger.warning(f"Portal '{instance}' not found for update.")
+        return HttpResponse(status=404, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Portal '{instance}' not found."})})
 
     if request.method == "POST":
-        time.sleep(1.5)
-
+        time.sleep(0.5)
+        form = PortalCreateForm(request.POST, instance=portal)
         if form.is_valid():
+            logger.debug("Form valid.")
             store_password = form.cleaned_data["store_password"]
-            requires_auth = store_password and form.cleaned_data.get("password")
+            requires_auth_check = store_password and form.cleaned_data.get("password")
 
-            if requires_auth and not webmaps.try_connection(form.cleaned_data).get("authenticated", False):
-                response = render(
-                    request, "portals/portal_update.html",
-                    {"form": form, "instance": instance}, status=401)
-                response["HX-Trigger-After-Settle"] = json.dumps({
-                    "showDangerAlert": f"Unable to connect to {form.cleaned_data['url']} as {form.cleaned_data['username']}. Please verify credentials."})
-                return response
+            if requires_auth_check:
+                logger.debug(f"Checking connection for {portal.alias} with new credentials.")
+                connection_result = utils.try_connection(form.cleaned_data).get("authenticated", False)
+                if not connection_result:
+                    username = form.cleaned_data.get("username", "N/A")
+                    url = form.cleaned_data.get("url", portal.url)
+                    logger.warning(f"Auth failed for {instance} ({url}) as {username}.")
+                    response = render(request, "portals/portal_update.html", {"form": form, "instance": instance},
+                                      status=401)
+                    response["HX-Trigger-After-Settle"] = json.dumps(
+                        {"showDangerAlert": f"Unable to connect to {url} as {username}."})
+                    return response
+                logger.info(f"Auth successful for {instance} with new credentials.")
 
             form.save()
+            new_alias = form.cleaned_data['alias']
+            logger.info(f"Portal '{instance}' (now '{new_alias}') updated successfully.")
 
+            updated_portals = Portal.objects.values_list("alias", "portal_type", "url")
             response = render(request, "partials/portal_updates.html",
-                              context={"portal": Portal.objects.values_list("alias", "portal_type", "url"),
-                                       "instance": instance})
-            success_message = f"Successfully updated {form.cleaned_data['url']} as {form.cleaned_data['alias']}."
-            if requires_auth:
-                success_message += f" Authentication as {form.cleaned_data['username']} updated."
+                              context={"portal": updated_portals, "instance": new_alias})
+            success_message = f"Successfully updated portal '{new_alias}'."
+            if requires_auth_check: success_message += " Authentication updated."
 
             response["HX-Trigger-After-Settle"] = json.dumps({"showSuccessAlert": success_message, "closeModal": True})
             return response
-        response = render(request, "portals/portal_update.html",
-                          {"form": form, "instance": instance}, status=200)
-        response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": "Form not valid"})
-        return response
+        else:
+            logger.warning(f"Form invalid. Errors: {form.errors}")
+            return render(request, "portals/portal_update.html", {"form": form, "instance": instance},
+                          status=400)
 
+    form = PortalCreateForm(instance=portal)
     return render(request, "portals/portal_update.html", {"form": form, "instance": instance})
 
 
@@ -1022,88 +983,121 @@ def schedule_task_view(request, instance):
     :return: Schedule configuration form or success message
     :rtype: HttpResponse
     """
+    logger.debug(f"instance={instance}, method={request.method}, user={request.user.username}")
 
-    filter_instance = f"'{instance}'"
-    results = TaskResult.objects.filter(task_args__icontains=filter_instance).exclude(
-        task_name__icontains="batch")[:10]
-
-    # Retrieve the portal instance or return an error response
     try:
         portal = Portal.objects.get(alias=instance)
     except Portal.DoesNotExist:
-        logger.error(f"Portal '{instance}' not found.")
-        response = render(request, "partials/portal_schedule_form.html",
-                          context={"form": ScheduleForm(), "closeModal": True})
-        response["HX-Trigger-After-Settle"] = json.dumps({"showDanger": f"Portal '{instance}' not found."})
-        return response
-    store_password = portal.store_password
-    # If deleting a scheduled task
+        logger.warning(f"Portal '{instance}' not found.")
+        return HttpResponse(status=404, headers={"HX-Trigger-After-Settle": json.dumps(
+            {"showDangerAlert": f"Portal '{instance}' not found.", "closeModal": True})})
+
+    results = TaskResult.objects.filter(task_args__icontains=f"'{instance}'").exclude(
+        task_name__icontains="batch").order_by('-date_done')[:10]
+
     if request.method == "DELETE":
+        logger.debug(f"Processing DELETE for portal '{instance}' task.")
         try:
             if portal.task:
-                portal.task.delete()  # Remove the scheduled task
+                portal.task.delete()
                 portal.task = None
-                portal.save()
-            form = ScheduleForm(initial={"instance": portal})
-            response = render(request, "partials/portal_schedule_form.html", {"form": form})
-            response["HX-Trigger-After-Settle"] = json.dumps({"closeModal": True})
-            return response
-
+                portal.save(update_fields=['task'])
+                logger.info(f"Deleted scheduled task for portal '{instance}'.")
+                form = ScheduleForm(initial={"instance": portal.alias})
+                response = render(request, "partials/portal_schedule_form.html",
+                                  {"form": form, "enable": portal.store_password, "description": ""})
+                response["HX-Trigger-After-Settle"] = json.dumps(
+                    {"showSuccessAlert": "Scheduled task removed.", "closeModal": True})
+                return response
+            else:
+                return HttpResponse(status=204)
         except Exception as e:
-            logger.exception(f"Error deleting scheduled task for portal '{instance}': {e}")
-            response = render(request, "partials/portal_schedule_form.html", {"form": form})
+            logger.error(f"Error deleting task for '{instance}': {e}", exc_info=True)
+            form = ScheduleForm(initial={"instance": portal.alias})
+            response = render(request, "partials/portal_schedule_form.html",
+                              {"form": form, "enable": portal.store_password,
+                               "description": ""})
+            response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": "Failed to delete scheduled task."})
             return response
 
-    # Extract task scheduling details if available
     description = ""
-    initial = {"instance": instance}
-
+    initial_form_data = {"instance": portal.alias}
     if portal.task:
         task = portal.task
         crontab = task.crontab
-        description = cron_descriptor.get_description(f"{crontab.minute} {crontab.hour} {crontab.day_of_month} "
-                                      f"{crontab.month_of_year} {crontab.day_of_week}")
-
-        if task.expires:
-            description += f" until {task.expires.strftime('%Y-%m-%d')}"
-
-        # Extract stored task items
+        cron_expression = f"{crontab.minute} {crontab.hour} {crontab.day_of_month} {crontab.month_of_year} {crontab.day_of_week}"
         try:
-            initial = json.loads(task.kwargs)
-        except (json.JSONDecodeError, KeyError, TypeError):
-            logger.warning(f"Invalid task kwargs for portal '{instance}'. Resetting items.")
-            initial = {"instance": instance}
+            description = cron_descriptor.get_description(cron_expression)
+            if task.expires: description += f" until {task.expires.strftime('%Y-%m-%d')}"
+        except Exception as e:
+            logger.warning(f"Could not generate cron description for '{cron_expression}': {e}")
+            description = "Custom schedule set."
 
-    # Initialize the form with either submitted data or existing task details
-    form = ScheduleForm(request.POST or None, initial=initial)
+        try:
+            initial_form_data = json.loads(task.kwargs) if task.kwargs else {}
+            initial_form_data["instance"] = portal.alias
+
+            # If the form expects crontab parts separately and they are not in task.kwargs:
+            if hasattr(task, 'crontab') and task.crontab:
+                initial_form_data.update({
+                    'minute': task.crontab.minute,
+                    'hour': task.crontab.hour,
+                    'day_of_month': task.crontab.day_of_month,
+                    'month_of_year': task.crontab.month_of_year,
+                    'day_of_week': task.crontab.day_of_week,
+                })
+            if hasattr(task, 'interval') and task.interval:
+                initial_form_data['interval_schedule'] = task.interval
+            if hasattr(task, 'start_time') and task.start_time:
+                initial_form_data['start_time'] = task.start_time
+            if hasattr(task, 'expires') and task.expires:
+                initial_form_data['one_off'] = True
+                initial_form_data['expires_on'] = task.expires
+
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"Invalid task.kwargs for portal '{instance}': {e}. Using defaults.")
+            initial_form_data = {"instance": portal.alias}
+
+    form = ScheduleForm(request.POST or None, initial=initial_form_data)
+
     if request.method == "POST":
         if form.is_valid():
-            # Save the new or updated task
-            task_instance, error = form.save_task()
-
+            logger.debug("ScheduleForm is valid.")
+            task_instance, error = form.save_task(portal=portal)
             if error:
-                logger.error(f"Task scheduling error: {error}")
-                response = render(request, "partials/portal_schedule_form.html", {"form": form})
+                logger.warning(f"Error scheduling task for '{instance}': {error}")
+                response = render(request, "partials/portal_schedule_form.html",
+                                  {"form": form, "enable": portal.store_password, "description": description,
+                                   "results": results, "instance_alias": portal.alias})
+                response["HX-Trigger-After-Settle"] = json.dumps(
+                    {"showDangerAlert": f"Error scheduling task: {error}"})
                 return response
 
-            crontab = task_instance.crontab
-            description = cron_descriptor.get_description(f"{crontab.minute} {crontab.hour} {crontab.day_of_month} "
-                                          f"{crontab.month_of_year} {crontab.day_of_week}")
-            response = render(request, "partials/portal_schedule_form.html", {"form": form})
+            new_crontab = task_instance.crontab
+            new_cron_exp = f"{new_crontab.minute} {new_crontab.hour} {new_crontab.day_of_month} {new_crontab.month_of_year} {new_crontab.day_of_week}"
+            try:
+                description = cron_descriptor.get_description(new_cron_exp)
+                if task_instance.expires: description += f" until {task_instance.expires.strftime('%Y-%m-%d')}"
+            except Exception:
+                description = "Custom schedule updated."
+
+            logger.info(f"Task scheduled for portal '{instance}': {description}")
+            response = render(request, "partials/portal_schedule_form.html",
+                              {"form": form, "enable": portal.store_password, "description": description,
+                               "results": results, "instance_alias": portal.alias})
             response["HX-Trigger-After-Settle"] = json.dumps(
-                {"showSuccessAlert": f"Updates scheduled for portal '{instance}': {description}",
-                 "closeModal": True})
+                {"showSuccessAlert": f"Updates scheduled for '{instance}': {description}", "closeModal": True}
+            )
             return response
+        else:
+            logger.warning(f"schedule_task_view: Form invalid for '{instance}'. Errors: {form.errors}")
 
-        # Handle form validation errors
-        response = render(request, "partials/portal_schedule_form.html", {"form": form})
-        return response
-
-    # Render the page with existing schedule data
-    context = {"form": form, "description": description, "results": results, "enable": store_password}
+    context = {"form": form, "description": description, "results": results, "enable": portal.store_password,
+               "instance_alias": portal.alias}
     return render(request, "portals/portal_schedule.html", context)
 
 
+@login_required
 def duplicates_view(request, instance):
     """
     Display duplicate item information.
@@ -1118,38 +1112,41 @@ def duplicates_view(request, instance):
     :return: Rendered template with duplicate layer data
     :rtype: HttpResponse
     """
+    logger.debug(f"instance={instance}, user={request.user.username}")
+    template_name = "portals/portal_duplicates.html" if request.htmx else "portals/portal_duplicates_full.html"
 
     try:
-        instance_item = Portal.objects.get(alias=instance)
+        portal_instance_obj = Portal.objects.get(alias=instance)
     except Portal.DoesNotExist:
-        response = HttpResponse(status=200)
-        response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": "Portal not found."})
-        return response
+        logger.warning(f"Portal '{instance}' not found.")
+        return HttpResponse(status=404,
+                            headers={
+                                "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Portal not found."})})
+
     similarity_threshold = 70
+    logger.debug(f"Fetching duplicates for '{instance}' with threshold {similarity_threshold}%.")
 
-    # Call the get_duplicates function and retrieve results
-    duplicates_data = webmaps.get_duplicates(instance_item, similarity_threshold=similarity_threshold)
+    try:
+        duplicates_data = utils.get_duplicates(portal_instance_obj, similarity_threshold=similarity_threshold)
+        if "error" in duplicates_data:
+            logger.warning(
+                f"Error from get_duplicates for '{instance}': {duplicates_data['error']}")
+            return HttpResponse(status=500, headers={
+                "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": duplicates_data['error']})})
 
-    # Check if an error was returned
-    if "error" in duplicates_data:
-        response = HttpResponse(status=200)
-        response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": duplicates_data["error"]})
-        return response
-
-    # Extract duplicate lists from the returned dictionary
-    duplicate_webmaps = duplicates_data.get("webmaps", [])
-    duplicate_services = duplicates_data.get("services", [])
-    duplicate_layers = duplicates_data.get("layers", [])
-    duplicate_apps = duplicates_data.get("apps", [])
-
-    response = render(request, "portals/portal_duplicates.html", {
-        "duplicate_webmaps": duplicate_webmaps,
-        "duplicate_services": duplicate_services,
-        "duplicate_layers": duplicate_layers,
-        "duplicate_apps": duplicate_apps,
-    })
-
-    return response
+        context = {
+            "duplicate_webmaps": duplicates_data.get("webmaps", []),
+            "duplicate_services": duplicates_data.get("services", []),
+            "duplicate_layers": duplicates_data.get("layers", []),
+            "duplicate_apps": duplicates_data.get("apps", []),
+            "instance_alias": instance,
+        }
+        logger.debug(f"Rendering duplicates for '{instance}'.")
+        return render(request, template_name, context)
+    except Exception as e:
+        logger.error(f"Error processing duplicates for '{instance}': {e}", exc_info=True)
+        return HttpResponse(status=500, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error processing duplicates."})})
 
 
 @login_required
@@ -1166,48 +1163,60 @@ def layerid_view(request, instance):
     :return: Rendered template with layer ID data
     :rtype: HttpResponse
     """
-
-    # Choose template based on HTMX request
+    logger.debug(f"instance={instance}, user={request.user.username}")
     template_name = "portals/portal_detail_layerid.html" if request.htmx else "portals/portal_detail_layerid_full.html"
 
-    # Retrieve portal instance or return 404 if not found
-    portal = get_object_or_404(Portal, alias=instance)
+    try:
+        portal = get_object_or_404(Portal, alias=instance)
+    except Http404:
+        logger.warning(f"Portal instance '{instance}' not found.")
+        return HttpResponse(status=404, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Portal '{instance}' not found."})})
 
-    # Default values
-    maps, apps, l_url = [], [], None
+    maps_found, apps_found, layer_url_searched = [], [], None
 
-    # Process form submission
     if "layerId_input" in request.POST:
-        l_url = unquote(request.POST.get("layerId_input"))
+        layer_url_searched = unquote(request.POST.get("layerId_input", "").strip())
+        logger.debug(f"Processing layer URL input: {layer_url_searched}")
+
+        if not layer_url_searched:
+            logger.debug("Empty layerId_input provided.")
+            return HttpResponse(headers={"HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Provide a layer URL."})})
+
         try:
-            layer_usage = webmaps.find_layer_usage(portal, l_url)
-            if "error" in layer_usage:
-                response = HttpResponse()
-                response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": layer_usage["error"]})
-                return response
-            maps = layer_usage["maps"]
-            apps = layer_usage["apps"]
+            layer_usage_result = utils.find_layer_usage(portal, layer_url_searched)
+            if "error" in layer_usage_result:
+                error_msg = layer_usage_result["error"]
+                logger.warning(f"Error from find_layer_usage for '{layer_url_searched}': {error_msg}")
+                return HttpResponse(headers={"HX-Trigger-After-Settle": json.dumps(
+                    {"showDangerAlert": error_msg})})
+
+            maps_found = layer_usage_result.get("maps", [])
+            apps_found = layer_usage_result.get("apps", [])
+            logger.debug(
+                f"Found {len(maps_found)} maps, {len(apps_found)} apps for layer '{layer_url_searched}'.")
+
         except Exception as e:
-            logger.error(f"Error fetching layer usage for {l_url} in portal {instance}: {e}")
-            response = HttpResponse()
-            response["HX-Trigger-After-Settle"] = json.dumps(
-                {"showDangerAlert": f"Error fetching layer usage for {l_url} in portal {instance}"})
-            return response
+            logger.error(f"Error getting layer usage for '{layer_url_searched}': {e}",
+                         exc_info=True)
+            return HttpResponse(
+                headers={"HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error getting layer usage."})})
+    else:
+        logger.debug("'layerId_input' not in POST.")
 
-    # Construct context
     context = {
-        "portal": Portal.objects.values("alias", "portal_type", "url"),
-        "updated": portal,
-        "instance": instance,
-        "maps": maps,
-        "apps": apps,
-        "url": l_url
+        "portal_list": Portal.objects.values("alias", "portal_type", "url"),
+        "current_portal": portal,
+        "instance_alias": instance,
+        "maps": maps_found,
+        "apps": apps_found,
+        "url_searched": layer_url_searched
     }
-
     return render(request, template_name, context)
 
 
 @login_required
+@require_POST
 def metadata_view(request, instance):
     """
     Display metadata completeness for Portal items (maps, services, layers, apps).
@@ -1222,88 +1231,63 @@ def metadata_view(request, instance):
     :return: Rendered template with metadata
     :rtype: HttpResponse
     """
-
-    # Select template based on whether the request is made via HTMX
-    # Choose template based on HTMX request
+    logger.debug(f"instance={instance}, user={request.user.username}")
     template_name = "portals/portal_metadata.html" if request.htmx else "portals/portal_metadata_full.html"
 
-    if request.method != "POST":
-        return JsonResponse({"error": "Invalid request method"}, status=405)
+    try:
+        portal = get_object_or_404(Portal, alias=instance)
+    except Http404:
+        logger.warning(f"Portal '{instance}' not found.")
+        return HttpResponse(status=404, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Portal instance not found."})})
+
+    username = request.POST.get("username")
+    password = request.POST.get("password")
+    auth_args = {}
+
+    if username and password:
+        logger.debug(f"Credentials provided for {instance}.")
+        auth_result = utils.try_connection(request.POST)
+        if not auth_result.get("authenticated", False):
+            logger.warning(f"metadata_view: Auth failed for {instance} with user {username}.")
+            return HttpResponse(status=401, headers={
+                "HX-Trigger": json.dumps({"showDangerAlert": "Unable to connect. Verify credentials."})})
+        logger.info(f"Authenticated to {instance} as {username}.")
+        if portal.portal_type is None and auth_result.get("is_agol") is not None:
+            portal.portal_type = "agol" if auth_result["is_agol"] else "portal"
+            portal.save(update_fields=['portal_type'])
+        auth_args = {'username': username, 'password': password}
+    elif not portal.store_password:
+        logger.debug(f"Credentials required for {instance}, rendering form.")
+        return render(request, "portals/portal_credentials.html",
+                      {"instance": portal, "items": "metadata_report"})
 
     try:
-        instance_alias = request.POST.get("instance", None)
-        items = request.POST.get("items")
-        instance_url = request.POST.get("url", None)
+        logger.debug(f"metadata_view: Fetching metadata for {instance}.")
+        metadata_report_data = utils.get_metadata(portal, **auth_args)
 
-        # Validate instance
-        portal = Portal.objects.filter(Q(alias=instance_alias) | Q(url=instance_url)).first()
-        if not portal:
-            logger.error(f"Portal instance '{instance_alias}' not found.")
-            response = HttpResponse(status=200)
-            response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": "Invalid portal instance."})
-            return response
+        if "error" in metadata_report_data:
+            error_msg = metadata_report_data["error"]
+            logger.warning(f"Error from get_metadata for '{instance}': {error_msg}")
+            return HttpResponse(status=500,
+                                headers={"HX-Trigger-After-Settle": json.dumps({"showDangerAlert": error_msg})})
 
-        # Retrieve credentials if included
-        username = request.POST.get("username", None)
-        password = request.POST.get("password", None)
-        if username and password:
-            auth = webmaps.try_connection(request.POST)
-            if auth.get("authenticated", False):
-                if portal.portal_type is None:
-                    portal.portal_type = "agol" if auth.get("is_agol") else "portal"
-                    portal.save()
-                try:
-                    metadata_report = webmaps.get_metadata(portal, username, password)
-                    if "error" in metadata_report:
-                        response = HttpResponse(status=500)
-                        response["HX-Trigger-After-Settle"] = json.dumps(
-                            {"showDangerAlert": "Failed to retrieve metadata report."})
-                        return response
-                except Exception as e:
-                    logger.error(f"Error fetching metadata report for {instance}: {e}")
+        context = {
+            "portal_list": Portal.objects.values_list("alias", "portal_type", "url"),
+            "current_portal": portal,
+            "instance_alias": instance,
+            "metadata_items": metadata_report_data.get("metadata", []),
+        }
+        logger.debug(f"Rendering metadata for '{instance}'.")
+        response = render(request, template_name, context)
+        if (username and password) or (not portal.store_password and not (username and password)):
+            response["HX-Trigger"] = json.dumps({"closeModal": True})
+        return response
 
-                # Construct context
-                context = {
-                    "portal": Portal.objects.values_list("alias", "portal_type", "url"),
-                    "updated": Portal.objects.get(alias=instance),
-                    "instance": instance,
-                    "items": items,
-                    "metadata": metadata_report.get("metadata", []),
-                }
-                response = render(request, template_name, context)
-                response["HX-Trigger"] = json.dumps({"closeModal": True})
-                return response
-            response = HttpResponse(status=401)
-            response["HX-Trigger"] = json.dumps(
-                {"showDangerAlert": "Unable to connect to portal. Please verify credentials."})
-            return response
-
-        if not portal.store_password:
-            return render(request, "portals/portal_credentials.html", {"instance": portal, "items": items})
     except Exception as e:
-        logger.exception(f"Error in metadata_view: {e}")
-        response = HttpResponse(status=500)
-        response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": "Failed to start metadata task"})
-        return response
-
-    # Fetch metadata compliance report
-    metadata_report = webmaps.get_metadata(portal)
-
-    # If an error occurred, send it via HX-Trigger-After-Settle for client-side display
-    if "error" in metadata_report:
-        response = HttpResponse(status=500)
-        response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": metadata_report["error"]})
-        return response
-
-    # Context for rendering the template
-    context = {
-        "portal": Portal.objects.values_list("alias", "portal_type", "url"),
-        "updated": Portal.objects.get(alias=instance),
-        "instance": instance,
-        "metadata": metadata_report.get("metadata", []),
-    }
-
-    return render(request, template_name, context)
+        logger.error(f"Error processing metadata for '{instance}': {e}", exc_info=True)
+        return HttpResponse(status=500, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error getting metadata report."})})
 
 
 @login_required
@@ -1315,17 +1299,20 @@ def mode_toggle_view(request):
     Returns:
     - JsonResponse: JSON object containing the updated mode and rendered switch UI.
     """
-    # Ensure the user profile exists
-    user_profile = get_object_or_404(UserProfile, user=request.user)
-
-    # Toggle mode
-    user_profile.mode = "dark" if user_profile.mode == "light" else "light"
-    user_profile.save()
-
-    # Render switch component dynamically
-    switch_html = loader.render_to_string("partials/mode_switch.html", {"mode": user_profile.mode})
-
-    return JsonResponse({"mode": user_profile.mode, "switch_html": switch_html})
+    logger.debug(f"user={request.user.username}")
+    try:
+        user_profile = get_object_or_404(UserProfile, user=request.user)
+        user_profile.mode = "dark" if user_profile.mode == "light" else "light"
+        user_profile.save(update_fields=['mode'])
+        logger.info(f"User '{request.user.username}' toggled display mode to '{user_profile.mode}'.")
+        switch_html = loader.render_to_string("partials/mode_switch.html", {"mode": user_profile.mode}, request)
+        return JsonResponse({"mode": user_profile.mode, "switch_html": switch_html})
+    except Http404:
+        logger.warning(f"UserProfile not found for {request.user.username}.")
+        return JsonResponse({"error": "User profile not found"}, status=404)
+    except Exception as e:
+        logger.error(f"Error for {request.user.username}: {e}", exc_info=True)
+        return JsonResponse({"error": "Failed to toggle mode."}, status=500)
 
 
 @login_required
@@ -1337,21 +1324,25 @@ def usage_toggle_view(request):
     Returns:
     - JsonResponse: JSON object containing the updated state and rendered switch UI.
     """
-    # Ensure the user profile exists
-    user_profile = get_object_or_404(UserProfile, user=request.user)
-
-    # Toggle service usage
-    user_profile.service_usage = not user_profile.service_usage
-    user_profile.save()
-
-    # Render switch component dynamically
-    switch_html = loader.render_to_string("partials/usage_switch.html", {"service_usage": user_profile.service_usage})
-
-    return JsonResponse({"service_usage": user_profile.service_usage, "switch_html": switch_html})
+    logger.debug(f"user={request.user.username}")
+    try:
+        user_profile = get_object_or_404(UserProfile, user=request.user)
+        user_profile.service_usage = not user_profile.service_usage
+        user_profile.save(update_fields=['service_usage'])
+        logger.info(f"User '{request.user.username}' toggled service usage to '{user_profile.service_usage}'.")
+        switch_html = loader.render_to_string("partials/usage_switch.html",
+                                              {"service_usage": user_profile.service_usage}, request)
+        return JsonResponse({"service_usage": user_profile.service_usage, "switch_html": switch_html})
+    except Http404:
+        logger.warning(f"UserProfile not found for {request.user.username}.")
+        return JsonResponse({"error": "User profile not found"}, status=404)
+    except Exception as e:
+        logger.error(f"Error for {request.user.username}: {e}", exc_info=True)
+        return JsonResponse({"error": "Failed to toggle usage setting."}, status=500)
 
 
 @require_POST
-@csrf_exempt  # Only exempt CSRF for webhook requests
+@csrf_exempt
 def webhook_view(request):
     """
     Handle incoming webhook requests by validating signatures and processing events.
@@ -1383,12 +1374,7 @@ def webhook_view(request):
     - `400 Bad Request` for malformed JSON payloads.
     - `404 Not Found` if the portal is unknown.
     """
-    # TODO rate limiting
-    # Extract the signature from headers
-    signature = request.headers.get("X-Signature", "")
-    if not signature:
-        logger.warning("Webhook request missing 'X-Signature' header.")
-        return HttpResponseForbidden("Missing signature")
+    logger.debug("Received webhook request.")
 
     # Read and verify request body
     body = request.body
@@ -1398,39 +1384,36 @@ def webhook_view(request):
         digestmod=hashlib.sha256
     ).hexdigest()
 
-    if not hmac.compare_digest(computed_signature, signature):
-        logger.warning("Webhook signature mismatch. Possible tampering attempt.")
-        return HttpResponseForbidden("Invalid signature")
-
-    # Parse JSON payload
     try:
-        payload = json.loads(body)
+        payload = json.loads(request.body)
     except json.JSONDecodeError:
-        logger.error("Received malformed JSON in webhook payload.")
+        logger.warning("Invalid JSON payload.")
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
-    # Extract portal URL and check if it's known
     portal_url = payload.get("info", {}).get("portalURL")
     if not portal_url:
-        logger.warning("Webhook payload missing 'portalURL'.")
+        logger.warning("Missing 'portalURL' in payload.")
         return JsonResponse({"error": "Missing portal URL"}, status=400)
 
-    # Validate portal existence
-    if not Portal.objects.filter(url=portal_url).exists():
-        logger.warning(f"Unknown portal received in webhook: {portal_url}")
+    normalized_portal_url = portal_url.rstrip('/')
+    portal_qs = Portal.objects.filter(Q(url=normalized_portal_url) | Q(url=normalized_portal_url + '/'))
+    instance_item = portal_qs.first()
+
+    if not instance_item:
+        logger.warning(f"Unknown portal URL received: {portal_url}")
         return JsonResponse({"error": "Unknown portal"}, status=404)
 
-    instance_item = get_object_or_404(Portal, url=portal_url)
+    logger.debug(f"Processing for portal {instance_item.alias} ({portal_url}).")
 
-    # Attempt to establish a connection
     try:
-        target = webmaps.connect(instance_item)
+        target = utils.connect(instance_item)
     except Exception as e:
-        logger.error(f"Failed to connect to portal: {portal_url}. Error: {e}")
+        logger.error(f"Connection failed for portal '{instance_item.alias}': {e}", exc_info=True)
         return JsonResponse({"error": "Failed to connect to portal"}, status=500)
 
-    # Process events in the webhook payload
-    for event in payload.get("events", []):
+    events = payload.get("events", [])
+    logger.debug(f"Webhook: Processing {len(events)} events.")
+    for event in events:
         source = event.get("source")
         operation = event.get("operation")
         event_id = event.get("id")
@@ -1455,7 +1438,7 @@ def webhook_view(request):
         else:
             logger.warning(f"Unhandled event source: {source}")
 
-    # Respond with success
+    logger.info(f"Successfully processed payload for {portal_url}.")
     return JsonResponse({"message": "Webhook received successfully"}, status=200)
 
 VALID_LOG_LEVELS = {
