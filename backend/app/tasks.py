@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 # ----------------------------------------------------------------------
-import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import re
@@ -27,8 +27,9 @@ from bs4 import BeautifulSoup
 from celery import shared_task, group, chord, current_app
 from celery.exceptions import Ignore
 from celery_progress.backend import ProgressRecorder, Progress
-from config.settings.base import USE_SERVICE_USAGE_REPORT
+from django.conf import settings as django_settings
 from django.core.exceptions import MultipleObjectsReturned
+from celery.utils.log import get_task_logger
 
 from .models import Webmap, Service, Layer, App, User, Map_Service, Layer_Service, App_Map, App_Service, Portal, SiteSettings
 from .utils import (connect, epoch_to_datetime, epoch_to_date, UpdateResult, extract_storymap,
@@ -58,6 +59,7 @@ def update_all(self, instance, items):
 
 
 @shared_task(bind=True, name="Update webmaps", time_limit=6000, soft_time_limit=3000)
+@celery_logging_context
 def update_webmaps(self, instance_alias, overwrite=False, username=None, password=None):
     """
     Update web maps for a given portal instance.
@@ -67,8 +69,8 @@ def update_webmaps(self, instance_alias, overwrite=False, username=None, passwor
     and updates or creates corresponding database records. It also removes any records that were not updated,
     ensuring the database reflects the current state of the portal.
 
-    :param instance_item: Portal instance object with connection and configuration details.
-    :type instance_item: PortalInstance
+    :param instance_alias: Alias of the portal instance to update.
+    :type instance_alias: str
     :param overwrite: Flag indicating whether existing web maps should be overwritten ('true' for overwrite).
     :type overwrite: bool or str
     :param username: Username for portal authentication (optional).
@@ -78,132 +80,240 @@ def update_webmaps(self, instance_alias, overwrite=False, username=None, passwor
     :return: JSON-serialized update result containing counts of inserts, updates, deletions, and any error messages.
     :rtype: str
     """
-    # Initialize progress recorder and result container for tracking task progress and outcome.
+    logger.debug(f"Starting update_webmaps task for instance_alias={instance_alias}, overwrite={overwrite}")
+
+    # Initialize progress recorder and result container for tracking task progress and outcome
     progress_recorder = ProgressRecorder(self)
     result = UpdateResult()
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        # Connect to the target portal using provided credentials.
         target = connect(instance_item, username, password)
     except Exception as e:
-        logger.exception(f"Unable to connect to {instance_alias}...{e}")
-        # Record connection error and return error result.
+        logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
-        self.update_state(state="FAILURE", meta={result.to_json()})
-        raise Ignore()
+        return {"result": result.to_json()}
 
     try:
         if instance_item.portal_type == "agol":
             org_id = instance_item.org_id
-            # Retrieve web maps from the portal, filtering out those owned by 'esri'
-            total_webmaps = target.content.advanced_search(query=f'orgid:{org_id} AND NOT owner:esri*', max_items=-1,
-                                                           return_count=True, filter='type:"Web Map"')
+            # org_id required for AGOL search
+            query = f"orgid:{org_id} AND NOT owner:esri*"
+
         else:
-            org_id = None
-            total_webmaps = target.content.advanced_search(query='NOT owner:esri*', max_items=-1,
-                                                           return_count=True, filter='type:"Web Map"')
-        logger.info(f"Total: {total_webmaps}")
-        # Capture the current time to mark the update.
-        update_time = datetime.datetime.now()
+            query = "NOT owner:esri*"
+        total_webmaps = target.content.advanced_search(
+            query=query,
+            max_items=-1,
+            return_count=True,
+            filter='type:"Web Map"'
+        )
 
-        # If overwrite flag is set to true, delete all existing web maps for the portal instance.
+        logger.info(f"Found {total_webmaps} web maps to process in portal '{instance_alias}'")
+
+        update_time = datetime.now()
+        logger.debug(f"Update timestamp: {update_time}")
+
         if overwrite:
+            deleted_count = Webmap.objects.filter(portal_instance=instance_item).count()
             Webmap.objects.filter(portal_instance=instance_item).delete()
+            logger.info(f"Deleted {deleted_count} existing web maps for portal '{instance_alias}'")
 
+        # Set up batch processing
         batch_size = 100
         batch_tasks = []
-        # Iterate through each retrieved web map.
-        for batch in range(0, total_webmaps, batch_size):
-            batch_tasks.append(process_batch_maps.s(instance_alias, username, password, batch, batch_size, update_time))
+        logger.debug(f"Setting up batch processing with batch size: {batch_size}")
 
-        # Parallel processing by folder
+        for batch in range(0, total_webmaps, batch_size):
+            logger.debug(f"Creating batch task for items {batch} to {min(batch+batch_size, total_webmaps)}")
+            batch_tasks.append(
+                process_batch_maps.s(
+                    instance_alias,
+                    username,
+                    password,
+                    batch,
+                    batch_size,
+                    update_time
+                )
+            )
+
+        logger.info(f"Created {len(batch_tasks)} batch tasks for processing {total_webmaps} web maps")
+
+        # Execute parallel processing by batch
+        logger.debug("Starting parallel batch processing")
         task_group = group(batch_tasks)
         batch_results = task_group.apply_async()
-        # batch_results.save()
+        logger.debug(f"Batch processing started with group ID: {batch_results.id}")
+
+        # Monitor progress
+        logger.debug("Monitoring batch processing progress")
         while not batch_results.ready():
-            completed_tasks = sum(
-                task.result.get("current", 0) if "current" in task.result else batch_size
-                for task in batch_results.children
-                if task.result
-            )
-            logger.info(f"Completed {completed_tasks/total_webmaps}")
-            progress_recorder.set_progress(completed_tasks, total_webmaps)
-            time.sleep(1.5)
-        logger.info(f"Aggregating batch results: {batch_results}")
+            try:
+                completed_tasks = sum(
+                    task.result.get("current", 0) if "current" in task.result else batch_size
+                    for task in batch_results.children
+                    if task.result
+                )
+                progress_percentage = (completed_tasks / total_webmaps) * 100
+                logger.debug(f"Progress: {progress_percentage:.1f}% ({completed_tasks}/{total_webmaps} items)")
+                progress_recorder.set_progress(completed_tasks, total_webmaps)
+                time.sleep(1.5)
+            except Exception as e:
+                logger.warning(f"Error calculating progress: {e}")
+                time.sleep(1.5)
+                continue
+
+        # Aggregate results
+        logger.info(f"All batch tasks completed, aggregating results")
+        logger.debug(f"Batch results: {batch_results}")
+
+        success_count = 0
+        failure_count = 0
+
         for batch in batch_results.get(disable_sync_subtasks=False):
             batch_result = UpdateResult(**batch["result"])
+
             if batch_result.success is False:
+                failure_count += 1
                 result.success = False
+                logger.warning(f"Batch task reported failure: {batch_result.error_messages}")
+            else:
+                success_count += 1
+
+            # Aggregate counts
             result.num_updates += batch_result.num_updates
             result.num_inserts += batch_result.num_inserts
             result.num_deletes += batch_result.num_deletes
             result.num_errors += batch_result.num_errors
             result.error_messages.extend(batch_result.error_messages)
 
-        # Delete web maps not updated in this run, implying they have been removed.
-        delete_outdated_records(instance_item, update_time, [Webmap, Map_Service], result)
+        logger.info(f"Batch processing summary: {success_count} successful batches, {failure_count} failed batches")
 
-        # Update the portal instance's last updated timestamp.
-        instance_item.webmap_updated = datetime.datetime.now()
+        # Delete web maps not updated in this run, implying they have been removed
+        logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
+        delete_outdated_records(instance_item, update_time, [Webmap, Map_Service], result)
+        logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
+
+        instance_item.webmap_updated = datetime.now()
         instance_item.save()
 
-        # Mark the overall update result as successful.
-        result.set_success()
+        if not result.error_messages:
+            result.set_success()
+        logger.info(f"Web maps update for portal '{instance_alias}' completed.")
+        logger.debug(f"Final result: {result.to_json()}")
         return result.to_json()
 
     except Exception as e:
-        # Log any unexpected exceptions during the update process and record the error.
-        logger.exception(f"Unable to update webmaps for {instance_alias}...{e}")
-        result.add_error(f"Unable to update webmaps for {instance_alias}")
-        # Get child tasks
+        logger.critical(f"Webmaps update failed for portal '{instance_alias}': {e}", exc_info=True)
+        result.add_error(f"Webmaps update failed")
+
+        # Revoke child tasks if they exist
         if batch_results and batch_results.children:
+            logger.warning(f"Revoking {len(batch_results.children)} child tasks due to failure")
             for child in batch_results.children:
                 if child.id:
+                    logger.debug(f"Revoking child task: {child.id}")
                     current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
+            logger.info("All child tasks revoked")
 
-        # Also revoke the current task
-        # current_app.control.revoke(self.request.id, terminate=True, signal="SIGKILL")
-
+        # Update task state and exit
         self.update_state(state="FAILURE", meta=result.to_json())
         raise Ignore()
 
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
+@celery_logging_context
 def process_batch_maps(self, instance_alias, username, password, batch, batch_size, update_time):
     result = UpdateResult()
     progress_recorder = ProgressRecorder(self)
-    instance_item = Portal.objects.get(alias=instance_alias)
-    target = connect(instance_item, username, password)
-    if instance_item.portal_type == "agol":
-        org_id = instance_item.org_id
-        webmap_item_list = target.content.advanced_search(query=f'orgid:{org_id} AND NOT owner:esri*', max_items=batch_size,
-                                                      start=batch, sort_field="title", sort_order="asc",
-                                                      filter='type:"Web Map"')
-    else:
-        webmap_item_list = target.content.advanced_search(query='NOT owner:esri*', max_items=batch_size,
-                                                          start=batch, sort_field="title", sort_order="asc",
-                                                          filter='type:"Web Map"')
-    total_webmaps = len(webmap_item_list.get("results"))
-    for counter, webmap_item in enumerate(webmap_item_list.get("results")):
-        try:
-            # logger.info(webmap_item)
-            webmap_data = extract_webmap_data(webmap_item, instance_item, update_time)
-            obj, created = Webmap.objects.update_or_create(
-                portal_instance=instance_item, webmap_id=webmap_item.id, defaults=webmap_data
+
+    try:
+        instance_item = Portal.objects.get(alias=instance_alias)
+        target = connect(instance_item, username, password)
+
+    except Exception as e:
+            logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+            result.add_error(f"Unable to connect to {instance_alias}")
+            return {"result": result.to_json()}
+
+    try:
+        logger.debug(f"Retrieving web maps for batch {batch} to {batch + batch_size}")
+
+        if instance_item.portal_type == "agol":
+            org_id = instance_item.org_id
+            logger.debug(f"Using AGOL-specific query with org_id: {org_id}")
+            query = f'orgid:{org_id} AND NOT owner:esri*'
+
+            webmap_item_list = target.content.advanced_search(
+                query=query,
+                max_items=batch_size,
+                start=batch,
+                sort_field="title",
+                sort_order="asc",
+                filter='type:"Web Map"'
             )
-            result.add_insert() if created else result.add_update()
+        else:
+            logger.debug("Using standard Portal for ArcGIS query")
+            webmap_item_list = target.content.advanced_search(
+                query='NOT owner:esri*',
+                max_items=batch_size,
+                start=batch,
+                sort_field="title",
+                sort_order="asc",
+                filter='type:"Web Map"'
+            )
 
-            link_services_to_webmap(instance_item, obj, webmap_data["webmap_services"])
+        results = webmap_item_list.get("results", [])
+        total_webmaps = len(results)
+        logger.debug(f"Retrieved {total_webmaps} web maps for batch {batch} to {batch + batch_size}")
 
-            # Update task progress after processing each web map.
-            progress_recorder.set_progress(counter, total_webmaps)
-        except Exception as e:
-            # Log and record any errors encountered during processing of this web map.
-            logger.exception(f"Unable to update webmap {webmap_item.id}...{e}")
-            result.add_error(f"Unable to update {webmap_item.id}")
-    result.set_success()
-    return {"result": result.to_json()}
+        logger.debug(f"Starting to process {total_webmaps} web maps")
+
+        for counter, webmap_item in enumerate(results):
+            try:
+                webmap_id = webmap_item.id
+                webmap_title = webmap_item.title
+                logger.debug(f"Processing web map {counter+1}/{total_webmaps}: {webmap_id} - '{webmap_title}'")
+
+                logger.debug(f"Extracting data for web map: {webmap_id}")
+                webmap_data = extract_webmap_data(webmap_item, instance_item, update_time)
+
+                logger.debug(f"Updating or creating database record for web map: {webmap_id}")
+                obj, created = Webmap.objects.update_or_create(
+                    portal_instance=instance_item,
+                    webmap_id=webmap_id,
+                    defaults=webmap_data
+                )
+
+                if created:
+                    logger.info(f"Created new record for web map: {webmap_id} - '{webmap_title}'")
+                    result.add_insert()
+                else:
+                    logger.info(f"Updated existing record for web map: {webmap_id} - '{webmap_title}'")
+                    result.add_update()
+
+                # Link services to the web map
+                service_count = len(webmap_data["webmap_services"])
+                logger.debug(f"Linking {service_count} services to web map: {webmap_id}")
+                link_services_to_webmap(instance_item, obj, webmap_data["webmap_services"])
+
+                progress_recorder.set_progress(counter + 1, total_webmaps)
+
+            except Exception as e:
+                logger.error(f"Unable to process web map {webmap_item.id}: {e}", exc_info=True)
+                result.add_error(f"Unable to process {webmap_item.id}")
+                continue
+
+        logger.info(f"Completed processing batch {batch} to {batch + batch_size}")
+        logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
+
+        result.set_success()
+        return {"result": result.to_json()}
+
+    except Exception as e:
+        logger.error(f"Webmaps in batch {batch} to {batch + batch_size}: {e}", exc_info=True)
+        result.add_error(f"Error processing webmaps in batch {batch} to {batch + batch_size}")
+        return {"result": result.to_json()}
 
 
 def extract_webmap_data(item, instance_item, update_time):
@@ -284,14 +394,15 @@ def get_owner(instance_item, owner_username):
 
 def link_services_to_webmap(instance_item, webmap_obj, services):
     """Links web maps to services if they exist in the database."""
-    update_time = datetime.datetime.now()
+    update_time = datetime.now()
     for service_url in services:
         try:
-            s_obj = Service.objects.get(service_url__iregex=rf"^{service_url}$")
+            s_obj = Service.objects.get(service_url__overlap=[service_url])
         except Service.DoesNotExist:
+            logger.warning(f"Service not found matching URL '{service_url}' from {webmap_obj}.")
             continue
         except MultipleObjectsReturned:
-            s_obj = Service.objects.filter(service_url__iregex=rf"{service_url}").first()
+            s_obj = Service.objects.filter(service_url__overlap=[service_url]).first()
         Map_Service.objects.update_or_create(
             portal_instance=instance_item, webmap_id=webmap_obj, service_id=s_obj,
             defaults={"updated_date": update_time}
@@ -333,26 +444,30 @@ def get_description(item):
     return "None"
 
 
-def delete_outdated_records(instance_item, update_time, models, result):
+def delete_outdated_records(instance_item, update_time, models, result=None):
     """
     Deletes outdated records from the specified models where `updated_date` is older than `update_time`.
 
     :param instance_item: The portal instance associated with the records.
     :type instance_item: model
     :param update_time: The timestamp of the current update cycle.
-    :type update_time: datetime.datetime.datetime
+    :type update_time: datetime.datetime
     :param models: A list of Django model classes to delete outdated records from.
     :type models: list
-    :param result:
+    :param result: Optional
     :type result:
     """
-    for model in models:
+    for i ,model in enumerate(models):
         deleted_records = model.objects.filter(portal_instance=instance_item, updated_date__lt=update_time)
-        result.add_delete(deleted_records.count())
         deleted_records.delete()
 
+        if i == 0:
+            logger.info(f"Deleted {deleted_records.count()} records from {model}.")
+            result.add_delete(deleted_records.count())
+        else:
+            logger.info(f"Deleted {deleted_records.count()} records from {model}")
 
-# Utility functions
+
 def compile_regex_patterns():
     """Compile and return regex patterns for connection string extraction."""
     patterns = {
@@ -377,7 +492,6 @@ def fetch_portal_item_details(target, item_id, instance_item):
     if portal_item:
         owner = get_owner(instance_item, portal_item.owner)
 
-        # Validate portal_item.access and shared_with exist.
         if hasattr(portal_item, "access"):
             access = get_access(portal_item)
         description = get_description(portal_item)
@@ -404,17 +518,14 @@ def process_databases(manifest, regex_patterns, instance_item, s_obj, update_tim
             match_db = regex_patterns["database"].search(connection_string)
             if match_db:
                 db_database = match_db.group(0).upper()
-            db = f"{db_server}@{db_database}@{db_version}"
         elif "FileGDB" in db_obj.get("onServerWorkspaceFactoryProgID", ""):
             parts = connection_string.split("DATABASE=")
             if len(parts) > 1:
                 db_database = parts[1].replace(r"\\", "\\")
-            db = db_database
         else:
             continue
 
         for dataset in db_obj.get("datasets", []):
-            # Only process if expected names exist.
             dataset_name = dataset.get("onServerName")
             if not dataset_name:
                 continue
@@ -462,11 +573,12 @@ def get_map_name(service_url, token):
             data = response.json()
             return data.get("mapName", None)
     except Exception as e:
-        pass
+        logger.warning(f"Unable to get publish map name for '{service_url}'", exc_info=True)
     return None
 
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000, name="Update services")
+@celery_logging_context
 def update_services(self, instance_alias, overwrite=False, username=None, password=None):
     """
     Update service and layer records for a given portal instance.
@@ -487,10 +599,11 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
     :return: JSON serialized result of the update process including counts of inserts, updates, deletions, and errors.
     :rtype: str
     """
-    # Initialize result container and progress tracker.
+    logger.debug(f"Starting update_services task for instance_alias={instance_alias}, overwrite={overwrite}")
+
     result = UpdateResult()
     progress_recorder = ProgressRecorder(self)
-    update_time = datetime.datetime.now()  # Timestamp for the current update cycle
+    update_time = datetime.now()  # Timestamp for the current update cycle
 
     def fetch_usage_report(server, service_list):
         query_list = ",".join(service_list)
@@ -529,91 +642,129 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
                     logger.debug(f"{view_item.url} related to {parent.url}")
                     try:
                         view_obj = Service.objects.get(portal_instance=instance_item,
-                                                       service_url__iregex=rf'^{view_item.url}$')
+                                                       service_url__overlap=[view_item.url])
                     except Service.DoesNotExist:
+                        logger.warning(f"Service not found matching URL {view_item.url} related to {parent.url}")
                         continue
                     except MultipleObjectsReturned:
                         view_obj = Service.objects.filter(portal_instance=instance_item,
-                                                          service_url__iregex=rf'{view_item.url}').first()
+                                                          service_url__overlap=[view_item.url]).first()
                     try:
                         service_obj = Service.objects.get(portal_instance=instance_item,
-                                                          service_url__iregex=rf'^{parent.url}$')
+                                                          service_url__overlap=[parent.url])
                     except Service.DoesNotExist:
+                        logger.warning(f"Service not found matching URL {parent.url} related to {view_item.url}")
                         continue
                     except MultipleObjectsReturned:
                         service_obj = Service.objects.filter(portal_instance=instance_item,
-                                                             service_url__iregex=rf'{parent.url}').first()
-                    logger.debug(f"{service_obj} related to {view_obj}")
-
+                                                             service_url__overlap=[parent.url]).first()
                     view_obj.service_view = service_obj
                     service_obj.service_view = view_obj
                     view_obj.save()
                     service_obj.save()
             except Exception as e:
-                logger.exception(f"Error with view: {e}")
+                logger.error(f"Error processing view for {view_item}", exc_info=True)
 
-    instance_item = Portal.objects.get(alias=instance_alias)
-    if instance_item.portal_type == "agol":
-        # Connect to the AGOL portal.
+    try:
+        instance_item = Portal.objects.get(alias=instance_alias)
         target = connect(instance_item, username, password)
-        response = requests.get(f"{target.url}/sharing/rest/portals/self?culture=en&f=pjson")
-        if response.status_code == 200:
-            data = response.json()
-            org_id = data.get("id")
-        else:
-            org_id = None
+
+    except Exception as e:
+        logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+        result.add_error(f"Unable to connect to {instance_alias}")
+        return {"result": result.to_json()}
+
+    if instance_item.portal_type == "agol":
+        logger.debug(f"Processing AGOL portal type for '{instance_alias}'")
+        try:
+            # Get organization ID
+            logger.debug("Retrieving organization ID from portal")
+            response = requests.get(f"{target.url}/sharing/rest/portals/self?culture=en&f=pjson")
+            if response.status_code == 200:
+                data = response.json()
+                org_id = data.get("id")
+                logger.debug(f"Retrieved organization ID: {org_id}")
+            else:
+                logger.warning(f"Failed to retrieve organization ID, status code: {response.status_code}")
+                org_id = None
+        except Exception as e:
+            logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+            result.add_error(f"Unable to connect to {instance_alias}")
+            self.update_state(state="FAILURE", meta=result.to_json())
+            raise Ignore()
+
         try:
             if overwrite:
-                # Remove existing Service and Layer records if overwrite is enabled.
+                service_count = Service.objects.filter(portal_instance=instance_item).count()
+                layer_count = Layer.objects.filter(portal_instance=instance_item).count()
                 Service.objects.filter(portal_instance=instance_item).delete()
                 Layer.objects.filter(portal_instance=instance_item).delete()
+                logger.info(f"Deleted {service_count} services and {layer_count} layers for portal '{instance_alias}'")
+            else:
+                logger.debug("Proceeding with incremental update")
 
-            # Retrieve layers by combining searches for "Map Image Layer" and "Feature Layer",
-            # excluding items owned by 'esri'.
+            logger.debug("Searching for Map Image Layer and Feature Layer services")
             services = (target.content.search("NOT owner:esri*", "Map Image Layer", max_items=10000) +
                         target.content.search("NOT owner:esri*", "Feature Layer", max_items=10000))
-            total_services = len(services)  # Total number of layers to process
-            logger.info(f"Total number of services to process: {total_services}")
-            # services = target.content.advanced_search(query=f"orgid:{org_id} AND NOT owner:esri*", max_items=-1, return_count=True,
+            total_services = len(services)
+            logger.info(f"Found {total_services} services to process in portal '{instance_alias}'")
+            # total_services = target.content.advanced_search(query=f"orgid:{org_id} AND NOT owner:esri*", max_items=-1, return_count=True,
             #                                filter='type:"Map Service" OR type:"Feature Service"')
-            # logger.info(f"Total number of services to process: {services}")
+            # logger.info(f"Found {total_services} services to process in portal '{instance_alias}'")
+            # Process each service
+            logger.debug(f"Starting to process {total_services} services")
             for counter, service in enumerate(services):
-                logger.debug(service)  # Log the current service for debugging
+                service_id = getattr(service, 'id', 'unknown')
+                service_title = getattr(service, 'title', 'unknown')
+                logger.debug(f"Processing service {counter+1}/{total_services}: {service_id} - '{service_title}'")
+
                 try:
+                    logger.debug(f"Extracting access information for service: {service_id}")
                     access = get_access(service)
 
                     url = []  # List to hold unique service URLs
                     service_layers = {}  # Dictionary to map layer names to service designations
 
-                    # Attempt to retrieve the owner for the current service.
+                    # Attempt to retrieve the owner for the current service
+                    logger.debug(f"Retrieving owner for service: {service_id}")
                     owner = get_owner(instance_item, service.owner)
+                    logger.debug(f"Owner for service {service_id}: {owner}")
 
                     usage = []  # Placeholder for usage statistics
                     trend = 0  # Initialize usage trend percentage
+
+                    # Get service description
+                    logger.debug(f"Extracting description for service: {service_id}")
                     description = get_description(service)
 
-                    # If service usage reporting is enabled, process the usage data.
-                    if USE_SERVICE_USAGE_REPORT and org_id in service.url:
+                    # If service usage reporting is enabled, process the usage data
+                    if django_settings.USE_SERVICE_USAGE_REPORT and org_id in service.url:
+                        logger.debug(f"Processing usage data for service: {service_id}")
                         try:
                             trend = 0
                             report = service.usage(date_range="30D", as_df=False)
-                            # Convert usage data entries to integers, defaulting to 0 when necessary.
+                            # Convert usage data entries to integers, defaulting to 0 when necessary
                             usage = [0 if d is None else int(d[1]) for d in report["data"][0]["num"]]
                             baseline = sum(usage[0:15])
                             compare = sum(usage[15:])
+
                             try:
                                 trend = ((compare - baseline) / baseline) * 100
+                                logger.debug(f"Usage trend for service {service_id}: {trend:.2f}%")
                             except ZeroDivisionError:
                                 trend = 0 if (baseline == 0 and compare == 0) else 999
-                        except:
-                            # Skip usage processing if data is not available.
-                            pass
+                                logger.debug(f"Zero division in trend calculation for service {service_id}, using default: {trend}")
+                        except Exception as usage_error:
+                            logger.warning(f"Unable to process usage data for service {service_id}: {usage_error}")
+                    else:
+                        logger.debug(f"Skipping usage data processing for service {service_id} (not enabled or not AGOL)")
 
-                    # Create a new Service record with the aggregated data.
+                    # Create a new Service record with the aggregated data
+                    logger.debug(f"Creating or updating service record for: {service_id}")
                     s_obj, created = Service.objects.update_or_create(
                         portal_instance=instance_item,
                         service_name=service.title,
-                        defaults={"service_url": service.url,
+                        defaults={"service_url": [service.url],
                                   "service_layers": service_layers,
                                   "service_mxd_server": service.get("sourceUrl", None),
                                   "service_mxd": None,
@@ -626,21 +777,39 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
                                   "service_usage_trend": trend,
                                   "service_last_viewed": epoch_to_datetime(service.lastViewed)}
                     )
-                    result.add_insert() if created else result.add_update()
 
-                    # Process associated layers if available.
+                    if created:
+                        logger.info(f"Created new record for service: {service_id} - '{service_title}'")
+                        result.add_insert()
+                    else:
+                        logger.info(f"Updated existing record for service: {service_id} - '{service_title}'")
+                        result.add_update()
+
+                    # Process associated layers if available
                     if service.layers:
-                        for layer in service.layers:
-                            # Normalize URL by removing a trailing numeric segment if present.
+                        layer_count = len(service.layers)
+                        logger.debug(f"Processing {layer_count} layers for service: {service_id}")
+
+                        for layer_index, layer in enumerate(service.layers):
+                            layer_name = getattr(layer.properties, 'name', 'unknown')
+                            logger.debug(f"Processing layer {layer_index+1}/{layer_count}: {layer_name}")
+
+                            # Normalize URL by removing a trailing numeric segment if present
                             s_url = layer.url if not layer.url.split("/")[-1].isdigit() else "/".join(
                                 layer.url.split("/")[:-1])
+
                             if s_url not in url:
                                 url.append(s_url)  # Append unique service URL
-                            # Check for a specific hosted layer identifier and update service_layers accordingly.
+                                logger.debug(f"Added unique service URL: {s_url}")
+
+                            # Check for a specific hosted layer identifier and update service_layers accordingly
                             if org_id in s_url:
+                                logger.debug(f"Layer {layer_name} identified as hosted layer")
                                 service_layers[layer.properties.name] = "Hosted"
-                                # Create a new Layer record if one does not exist.
-                                obj, created = Layer.objects.update_or_create(
+
+                                # Create a new Layer record if one does not exist
+                                logger.debug(f"Creating or updating layer record for: {layer_name}")
+                                obj, layer_created = Layer.objects.update_or_create(
                                     portal_instance=instance_item,
                                     layer_server="Hosted",
                                     layer_version=None,
@@ -648,188 +817,419 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
                                     layer_name=layer.properties.name,
                                     defaults={"updated_date": update_time}
                                 )
-                                # Create or update the relationship between the layer and service.
-                                obj, created = Layer_Service.objects.update_or_create(
+
+                                if layer_created:
+                                    logger.debug(f"Created new layer record: {layer_name}")
+                                else:
+                                    logger.debug(f"Updated existing layer record: {layer_name}")
+
+                                # Create or update the relationship between the layer and service
+                                logger.debug(f"Creating or updating layer-service relationship for: {layer_name}")
+                                rel_obj, rel_created = Layer_Service.objects.update_or_create(
                                     portal_instance=instance_item,
                                     layer_id=obj,
                                     service_id=s_obj,
                                     defaults={"updated_date": update_time}
                                 )
 
-                    progress_recorder.set_progress(counter, total_services)  # Update progress.
+                                if rel_created:
+                                    logger.debug(f"Created new layer-service relationship for: {layer_name}")
+                                else:
+                                    logger.debug(f"Updated existing layer-service relationship for: {layer_name}")
+                    else:
+                        logger.debug(f"No layers found for service: {service_id}")
+
+                    # Update progress
+                    progress_percentage = ((counter + 1) / total_services) * 100
+                    logger.debug(f"Progress: {progress_percentage:.1f}% ({counter+1}/{total_services})")
+                    progress_recorder.set_progress(counter + 1, total_services)
+
                 except Exception as e:
-                    logger.exception(f"Unable to update {service.title}: {e}")
-                    result.add_error(f"Unable to update {service.title}")  # Log error for the current layer.
+                    logger.error(f"Unable to process service {service_id} - '{service_title}': {e}", exc_info=True)
+                    result.add_error(f"Unable to update {service_title}")  # Log error for the current service
 
-            # Remove outdated Service, Layer, and Layer_Service records.
+            # Remove outdated Service, Layer, and Layer_Service records
+            logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
             delete_outdated_records(instance_item, update_time, [Service, Layer, Layer_Service], result)
+            logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
-            # Search for view services and associate them with their parent services.
+            # Search for view services and associate them with their parent services
+            logger.debug("Searching for view services to associate with parent services")
             view_items = target.content.search("NOT owner:esri* AND typekeywords:View Service", "Feature Layer",
                                                max_items=2000)
-            process_views(view_items)
+            view_count = len(view_items)
+            logger.info(f"Found {view_count} view services to process")
 
-            # Update the portal instance's timestamp for service updates.
-            instance_item.service_updated = datetime.datetime.now()
+            if view_count > 0:
+                logger.debug("Processing view services and their relationships")
+                process_views(view_items)
+                logger.info("View service processing completed")
+            else:
+                logger.debug("No view services found to process")
+
+            # Update the portal instance's timestamp for service updates
+            logger.debug(f"Updating last updated timestamp for portal '{instance_alias}'")
+            instance_item.service_updated = datetime.now()
             instance_item.save()
-            result.set_success()  # Mark the update process as successful.
+            logger.debug(f"Portal '{instance_alias}' last updated timestamp set to {instance_item.service_updated}")
+
+            # Mark the update process as successful
+            result.set_success()
+            logger.info(f"Services update for portal '{instance_alias}' completed successfully")
+            logger.debug(f"Final result: {result.to_json()}")
             return result.to_json()
+
         except Exception as e:
-            logger.exception(f"Unable to update services for {instance_alias}: {e}")
-            result.add_error(f"Unable to update Services for {instance_alias}")
-            self.update_state(state="FAILURE", meta={result.to_json()})
+            logger.critical(f"Services update failed for portal '{instance_alias}': {e}", exc_info=True)
+            result.add_error(f"Services update failed")
+            self.update_state(state="FAILURE", meta=result.to_json())
             raise Ignore()
+
     else:
+        logger.debug(f"Processing Enterprise portal type for '{instance_alias}'")
+        batch_results = None
+
         try:
             import re
-            # Connect to an Enterprise portal.
-            target = connect(instance_item, username, password)
+            logger.debug("Retrieving GIS servers list")
             gis_servers = target.admin.servers.list()
+            server_count = len(gis_servers)
+            logger.info(f"Found {server_count} GIS servers in portal '{instance_alias}'")
+
         except Exception as e:
-            logger.exception(f"Unable to connect to {instance_alias}: {e}")
-            result.add_error(f"Unable to connect to {instance_item}")
-            self.update_state(state="FAILURE", meta={result.to_json()})
+            logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+            result.add_error(f"Unable to connect to {instance_alias}")
+            self.update_state(state="FAILURE", meta=result.to_json())
             raise Ignore()
 
         try:
-            # If overwrite is enabled, delete existing Service and Layer records.
             if overwrite:
+                service_count = Service.objects.filter(portal_instance=instance_item).count()
+                layer_count = Layer.objects.filter(portal_instance=instance_item).count()
                 Service.objects.filter(portal_instance=instance_item).delete()
                 Layer.objects.filter(portal_instance=instance_item).delete()
+                logger.info(f"Deleted {service_count} services and {layer_count} layers for portal '{instance_alias}'")
+            else:
+                logger.debug("Proceeding with incremental update")
 
-            service_list = []  # Track processed services for usage reporting.
+            service_list = []
             batch_tasks = []
-            for gis_server in gis_servers:
+            total_folders = 0
+
+            # Process each GIS server
+            for server_index, gis_server in enumerate(gis_servers):
+                logger.debug(f"Processing GIS server {server_index+1}/{server_count}")
+
+                # Get folders for this server
+                logger.debug(f"Retrieving service folders for server {server_index+1}")
                 folders = gis_server.services.folders
-                folders.remove("System")
-                for folder in folders:
-                    # Synchronous processing
-                    # services = gis_server.services.list(folder=folder)
-                    # for service in services:
-                    #     logger.debug(service)
-                    #     process_single_service(target, instance_item, service, folder, update_time, regex_patterns, result)
-                    #     counter += 1
-                    #     progress_recorder.set_progress(counter, total_services)
+
+                # Remove system folder
+                if "System" in folders:
+                    logger.debug("Removing 'System' folder from processing list")
+                    folders.remove("System")
+
+                folder_count = len(folders)
+                total_folders += folder_count
+                logger.info(f"Found {folder_count} service folders to process in server {server_index+1}")
+
+                # Create batch tasks for each folder
+                logger.debug(f"Creating batch tasks for {folder_count} folders")
+                for folder_index, folder in enumerate(folders):
+                    logger.debug(f"Creating batch task for folder {folder_index+1}/{folder_count}: {folder}")
                     batch_tasks.append(
-                        process_batch_services.s(instance_alias, username, password, folder, update_time))
+                        process_batch_services.s(instance_alias,
+                                                 username,
+                                                 password,
+                                                 folder,
+                                                 update_time
+                                                 )
+                    )
+
+            logger.info(f"Created {len(batch_tasks)} batch tasks for processing {total_folders} folders")
 
             # Parallel processing by folder
-            task_group = group(batch_tasks)
-            batch_results = task_group.apply_async()
-            while not batch_results.ready():
-                completed_tasks = sum(1 for task in batch_results.children if task.ready())
-                progress_recorder.set_progress(completed_tasks, len(folders))
-                time.sleep(1.5)
-            logger.info(f"Aggregating batch results: {batch_results}")
-            for batch in batch_results.get(disable_sync_subtasks=False):
-                batch_result = UpdateResult(**batch["result"])
-                if batch_result.success is False:
-                    result.success = False
-                result.num_updates += batch_result.num_updates
-                result.num_inserts += batch_result.num_inserts
-                result.num_deletes += batch_result.num_deletes
-                result.num_errors += batch_result.num_errors
-                result.error_messages.extend(batch_result.error_messages)
-                service_list.extend(batch["service_usage"])
+            if batch_tasks:
+                logger.debug("Starting parallel batch processing")
+                task_group = group(batch_tasks)
+                batch_results = task_group.apply_async()
+                logger.debug(f"Batch processing started with group ID: {batch_results.id}")
 
-            # Process service usage reports if enabled.
-            if USE_SERVICE_USAGE_REPORT:
+                # Monitor group progress
+                logger.debug("Monitoring batch processing progress")
+                while not batch_results.ready():
+                    try:
+                        completed_tasks = sum(1 for task in batch_results.children if task.ready())
+                        progress_percentage = (completed_tasks / total_folders) * 100
+                        logger.debug(f"Progress: {progress_percentage:.1f}% ({completed_tasks}/{total_folders} folders)")
+                        progress_recorder.set_progress(completed_tasks, total_folders)
+                        time.sleep(1.5)
+                    except Exception as e:
+                        logger.warning(f"Error calculating progress: {e}")
+                        time.sleep(1.5)
+                        continue
+
+                # Aggregate results
+                logger.info(f"All batch tasks completed, aggregating results")
+                logger.debug(f"Batch results: {batch_results}")
+
+                success_count = 0
+                failure_count = 0
+
+                for batch in batch_results.get(disable_sync_subtasks=False):
+                    batch_result = UpdateResult(**batch["result"])
+
+                    if batch_result.success is False:
+                        failure_count += 1
+                        result.success = False
+                        logger.warning(f"Batch task reported failure: {batch_result.error_messages}")
+                    else:
+                        success_count += 1
+
+                    # Aggregate counts
+                    result.num_updates += batch_result.num_updates
+                    result.num_inserts += batch_result.num_inserts
+                    result.num_deletes += batch_result.num_deletes
+                    result.num_errors += batch_result.num_errors
+                    result.error_messages.extend(batch_result.error_messages)
+                    service_list.extend(batch["service_usage"])
+
+                logger.info(f"Batch processing summary: {success_count} successful batches, {failure_count} failed batches")
+
+            else:
+                logger.warning("No batch tasks created, no folders to process")
+
+            if django_settings.USE_SERVICE_USAGE_REPORT:
+                logger.debug(f"Processing usage reports for {len(service_list)} services")
                 fetch_usage_report(gis_server, service_list)
+                logger.info("Usage report processing completed")
+            else:
+                logger.debug("Service usage reporting is disabled, skipping")
 
-            # Remove outdated Service, Layer, and Layer_Service records.
+            logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
             delete_outdated_records(instance_item, update_time, [Service, Layer, Layer_Service], result)
+            logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
-            # Search for view services and associate them with their parent services.
+            logger.debug("Searching for view services to associate with parent services")
             view_items = target.content.search("NOT owner:esri* AND typekeywords:View Service", "Feature Layer",
                                                max_items=2000)
-            process_views(view_items)
+            view_count = len(view_items)
+            logger.info(f"Found {view_count} view services to process")
 
-            # Update the portal instance with the latest service update timestamp.
+            if view_count > 0:
+                logger.debug("Processing view services and their relationships")
+                process_views(view_items)
+                logger.info("View service processing completed")
+            else:
+                logger.debug("No view services found to process")
+
             instance_item.service_updated = update_time
             instance_item.save()
+
             result.set_success()
+            logger.info(f"Services update for portal '{instance_alias}' completed successfully")
+            logger.debug(f"Final result: {result.to_json()}")
             return result.to_json()
 
         except Exception as e:
-            logger.exception(f"Unable to update services for {instance_alias}: {e}")
-            result.add_error(f"Unable to update Services for {instance_alias}")
-            # Get child tasks
+            logger.critical(f"Services update failed for portal '{instance_alias}': {e}", exc_info=True)
+            result.add_error(f"Services update failed")
+
+            # Revoke child tasks if they exist
             if batch_results and batch_results.children:
+                logger.warning(f"Revoking {len(batch_results.children)} child tasks due to failure")
                 for child in batch_results.children:
                     if child.id:
+                        logger.debug(f"Revoking child task: {child.id}")
                         current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
-
-            # Also revoke the current task
-            # current_app.control.revoke(self.request.id, terminate=True, signal="SIGKILL")
+                logger.info("All child tasks revoked")
 
             self.update_state(state="FAILURE", meta=result.to_json())
             raise Ignore()
 
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
+@celery_logging_context
 def process_batch_services(self, instance_alias, username, password, folder, update_time):
     result = UpdateResult()
-    regex_patterns = compile_regex_patterns()
     service_usage_list = []
-    instance_item = Portal.objects.get(alias=instance_alias)
-    target = connect(instance_item, username, password)
-    gis_servers = target.admin.servers.list()
 
-    for server in gis_servers:
-        for service in server.services.list(folder=folder):
-            service_result = process_single_service(target, instance_item, service, folder, update_time, regex_patterns,
-                                                    result)
-            if service_result is not None:
-                service_usage_list.append(service_result)
-    result.set_success()
-    return {"result": result.to_json(), "service_usage": service_usage_list}
+    try:
+        logger.debug("Compiling regex patterns for service processing")
+        regex_patterns = compile_regex_patterns()
+
+        try:
+            instance_item = Portal.objects.get(alias=instance_alias)
+            target = connect(instance_item, username, password)
+
+            logger.debug("Retrieving GIS servers list")
+            gis_servers = target.admin.servers.list()
+            server_count = len(gis_servers)
+            logger.debug(f"Found {server_count} GIS servers")
+
+        except Exception as e:
+            logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+            result.add_error(f"Unable to connect to {instance_alias}")
+            return {"result": result.to_json(), "service_usage": service_usage_list}
+
+        total_services_processed = 0
+        logger.info(f"Processing services in folder '{folder}' across {server_count} servers")
+
+        for server_index, server in enumerate(gis_servers):
+            logger.debug(f"Processing server {server_index+1}/{server_count}")
+
+            try:
+                logger.debug(f"Retrieving services in folder '{folder}' for server {server_index+1}")
+                services = server.services.list(folder=folder)
+                service_count = len(services)
+                logger.info(f"Found {service_count} services in folder '{folder}' for server {server_index+1}")
+
+                for service_index, service in enumerate(services):
+                    service_name = getattr(service.properties, 'serviceName', 'unknown')
+                    logger.debug(f"Processing service {service_index+1}/{service_count}: {service_name}")
+
+                    try:
+                        service_result = process_single_service(target, instance_item, service, folder, update_time, regex_patterns, result)
+
+                        if service_result is not None:
+                            logger.debug(f"Adding service '{service_name}' to usage list")
+                            service_usage_list.append(service_result)
+
+                        total_services_processed += 1
+
+                    except Exception as e:
+                        logger.error(f"Error processing service '{service_name}' in folder '{folder}': {e}", exc_info=True)
+                        result.add_error(f"Error processing service '{service_name}' in folder '{folder}'")
+
+            except Exception as e:
+                logger.error(f"Error retrieving services for server {server_index+1} in folder '{folder}': {e}", exc_info=True)
+                result.add_error(f"Error retrieving services for server {server_index+1} in folder '{folder}'")
+
+        logger.info(f"Completed processing {total_services_processed} services in folder '{folder}'")
+        logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
+
+        result.set_success()
+        return {"result": result.to_json(), "service_usage": service_usage_list}
+
+    except Exception as e:
+        logger.error(f"Error processing services in folder {folder}: {e}", exc_info=True)
+        result.add_error(f"Error processing services in folder {folder}")
+        return {"result": result.to_json()}
 
 
 def process_single_service(target, instance_item, service, folder, update_time, regex_patterns, result):
+    """
+    Process a single service from a portal instance.
+
+    This function extracts service details, processes related portal items, parses the service manifest,
+    and creates or updates corresponding database records.
+
+    :param target: Portal connection object
+    :type target: arcgis.gis.GIS
+    :param instance_item: Portal instance database object
+    :type instance_item: Portal
+    :param service: Service object to process
+    :type service: Service
+    :param folder: Folder containing the service
+    :type folder: str
+    :param update_time: Timestamp for this update operation
+    :type update_time: datetime
+    :param regex_patterns: Compiled regex patterns for service processing
+    :type regex_patterns: dict
+    :param result: UpdateResult object to track processing results
+    :type result: UpdateResult
+    :return: Service usage string for usage reporting or None if not applicable
+    :rtype: str or None
+    """
+    service_name = getattr(service.properties, 'serviceName', 'unknown')
+    logger.debug(f"Starting process_single_service for service: {service_name}, folder: {folder}")
+
     try:
-        logger.debug(service)
-        portal_ids = {}  # Map portal item types to their IDs.
+        logger.debug(f"Service details: {service}")
+        portal_ids = {}  # Map portal item types to their IDs
         service_usage_str = None
         access, owner, description = None, None, None
 
-        # Construct the service name and corresponding URL based on folder structure.
+        # Construct the service name and corresponding URL based on folder structure
+        logger.debug("Constructing service URL")
         base_url = target.hosting_servers[0].url
+        logger.debug(f"Base URL: {base_url}")
+
+        # Validate service has required attributes
         if not hasattr(service, "type"):
-            result.add_error(f"Unable to determine service type for {service}")
+            logger.warning(f"Unable to determine service type for {service_name}")
+            result.add_error(f"Unable to determine service type for {service_name}")
             return service_usage_str
+
         service_type = service.properties.type
+        logger.debug(f"Service type: {service_type}")
+
         if not hasattr(service, "serviceName"):
-            result.add_error(f"Unable to determine service name for {service}")
+            logger.warning(f"Unable to determine service name for {service_name}")
+            result.add_error(f"Unable to determine service name for {service_name}")
             return service_usage_str
+
         service_name = service.properties.serviceName
         name = service_name if folder == "/" else f"{folder}/{service_name}"
         service_url = f"{base_url}/{name}/{service_type}"
         urls = [service_url]
         service_usage_str = f"services/{name}.{service_type}"
 
-        # Attempt to fetch additional service details via an HTTP GET request.
-        map_name = get_map_name(service_url, target._con.token)
+        logger.debug(f"Constructed service URL: {service_url}")
+        logger.debug(f"Service usage string: {service_usage_str}")
 
-        # Process portal items related to the service.
+        logger.debug(f"Fetching map name for service: {service_name}")
+        map_name = get_map_name(service_url, target._con.token)
+        if map_name:
+            logger.debug(f"Retrieved map name: {map_name}")
+        else:
+            logger.debug("No map name found for service")
+
+        logger.debug(f"Processing portal items for service: {service_name}")
         try:
-            portal_items = service.properties.portalProperties.portalItems
-            # portal_items = service._json_dict.get("portalProperties", {}).get("portalItems", [])
-            for item in portal_items:
-                portal_ids[item.get("type")] = item.get("itemID")
-                feature_url = f"{base_url}/{name}/FeatureServer"
-                if item.get("type") == "FeatureServer" and feature_url not in urls:
-                    urls.append(feature_url)
-                owner, access, description = fetch_portal_item_details(target,
-                                                                       item.get("itemID"),
-                                                                       instance_item)
+            if hasattr(service.properties, 'portalProperties') and hasattr(service.properties.portalProperties, 'portalItems'):
+                portal_items = service.properties.portalProperties.portalItems
+                portal_item_count = len(portal_items)
+                logger.debug(f"Found {portal_item_count} portal items for service: {service_name}")
+
+                for item_index, item in enumerate(portal_items):
+                    item_type = item.get("type", "unknown")
+                    item_id = item.get("itemID", "unknown")
+                    logger.debug(f"Processing portal item {item_index+1}/{portal_item_count}: {item_type} - {item_id}")
+
+                    portal_ids[item_type] = item_id
+                    logger.debug(f"Added portal ID mapping: {item_type} -> {item_id}")
+
+                    if item_type == "FeatureServer":
+                        feature_url = f"{base_url}/{name}/FeatureServer"
+                        if feature_url not in urls:
+                            logger.debug(f"Adding feature server URL: {feature_url}")
+                            urls.append(feature_url)
+
+                    logger.debug(f"Fetching details for portal item: {item_id}")
+                    owner, access, description = fetch_portal_item_details(target, item_id, instance_item)
+                    logger.debug(f"Retrieved details - Owner: {owner}, Access: {access}, Description length: {len(description) if description else 0}")
+            else:
+                logger.debug(f"No portal properties or portal items found for service: {service_name}")
         except Exception as e:
-            logger.exception(f"Unable to retrieve portal items for {name}: {e}")
+            error_msg = f"Unable to retrieve portal items for {name}"
+            logger.error(f"{error_msg}: {e}", exc_info=True)
             result.add_error(f"Error processing portal items for {name}")
 
-        # Parse the service manifest to extract additional configuration.
-        service_manifest = json.loads(service.service_manifest())
+        # Parse the service manifest to extract additional configuration
+        logger.debug(f"Retrieving service manifest for: {service_name}")
+        try:
+            service_manifest_json = service.service_manifest()
+            service_manifest = json.loads(service_manifest_json)
+            logger.debug(f"Successfully retrieved service manifest for: {service_name}")
+        except Exception as e:
+            logger.error(f"Error retrieving service manifest for {service_name}: {e}", exc_info=True)
+            service_manifest = {"error": str(e)}
+            result.add_error(f"Error retrieving service manifest for {service_name}")
+
+        logger.debug(f"Preparing service data for database update: {service_name}")
         service_data = {
-            "service_url": ','.join(urls),
+            "service_url": urls,
             "service_mxd_server": None,
             "service_mxd": map_name,
             "portal_id": portal_ids,
@@ -839,66 +1239,124 @@ def process_single_service(target, instance_item, service, folder, update_time, 
             "service_access": access,
             "updated_date": update_time
         }
+        logger.debug(f"Service data prepared for: {service_name}")
         # Service manifest not available for all hosted feature layers
         if service_manifest.get("code") == 500 and service_manifest.get(
             "status") == "error" and "FeatureServer" in portal_ids:
+            logger.warning(f"No service manifest available for hosted feature layer: {name}")
             result.add_error(f"{name}: No Service Manifest")
+
+            logger.debug(f"Creating or updating service record for hosted feature layer: {name}")
             s_obj, created = Service.objects.update_or_create(
                 portal_instance=instance_item,
                 service_name=name,
                 defaults=service_data
             )
-            result.add_insert() if created else result.add_update()
 
-            # Process FeatureServer layers if available.
+            if created:
+                logger.info(f"Created new record for service: {name}")
+                result.add_insert()
+            else:
+                logger.info(f"Updated existing record for service: {name}")
+                result.add_update()
+
+            # Attempt to get layers from Feature Layer instead
             feature_service_id = portal_ids["FeatureServer"]
-            service_item = target.content.get(feature_service_id)
-            if service_item.layers:
-                for layer in service_item.layers:
-                    obj, created = Layer.objects.update_or_create(
-                        portal_instance=instance_item,
-                        layer_server="Hosted",
-                        layer_version=None,
-                        layer_database=None,
-                        layer_name=layer.properties.name,
-                        defaults={"updated_date": update_time}
-                    )
-                    # Create or update the relationship between the layer and service.
-                    obj, created = Layer_Service.objects.update_or_create(
-                        portal_instance=instance_item,
-                        layer_id=obj,
-                        service_id=s_obj,
-                        defaults={"updated_date": update_time}
-                    )
+            logger.debug(f"Retrieving feature service item: {feature_service_id}")
+
+            try:
+                service_item = target.content.get(feature_service_id)
+
+                if service_item and hasattr(service_item, 'layers') and service_item.layers:
+                    layer_count = len(service_item.layers)
+                    logger.debug(f"Processing {layer_count} layers for feature service: {feature_service_id}")
+
+                    for layer_index, layer in enumerate(service_item.layers):
+                        layer_name = getattr(layer.properties, 'name', f"unknown_layer_{layer_index}")
+                        logger.debug(f"Processing layer {layer_index+1}/{layer_count}: {layer_name}")
+
+                        logger.debug(f"Creating or updating layer record for: {layer_name}")
+                        obj, layer_created = Layer.objects.update_or_create(
+                            portal_instance=instance_item,
+                            layer_server="Hosted",
+                            layer_version=None,
+                            layer_database=None,
+                            layer_name=layer.properties.name,
+                            defaults={"updated_date": update_time}
+                        )
+
+                        if layer_created:
+                            logger.debug(f"Created new layer record: {layer_name}")
+                        else:
+                            logger.debug(f"Updated existing layer record: {layer_name}")
+
+                        logger.debug(f"Creating or updating layer-service relationship for: {layer_name}")
+                        rel_obj, rel_created = Layer_Service.objects.update_or_create(
+                            portal_instance=instance_item,
+                            layer_id=obj,
+                            service_id=s_obj,
+                            defaults={"updated_date": update_time}
+                        )
+
+                        if rel_created:
+                            logger.debug(f"Created new layer-service relationship for: {layer_name}")
+                        else:
+                            logger.debug(f"Updated existing layer-service relationship for: {layer_name}")
+                else:
+                    logger.debug(f"No layers found for feature service: {feature_service_id}")
+            except Exception as e:
+                logger.error(f"Error processing layers for feature service {name}: {e}", exc_info=True)
+                result.add_error(f"Error processing layers for feature service {name}")
         else:
-            # Process service resources from the manifest if available.
             if "resources" in service_manifest.keys():
+                logger.debug(f"Processing resources from service manifest for: {name}")
                 res_obj = service_manifest["resources"]
-                for obj in res_obj:
+                resource_count = len(res_obj)
+                logger.debug(f"Found {resource_count} resources in service manifest")
+
+                for resource_index, obj in enumerate(res_obj):
+                    logger.debug(f"Processing resource {resource_index+1}/{resource_count}")
                     mxd = f"{obj['onPremisePath']}\\{map_name}" if map_name else f"{obj['onPremisePath']}"
                     mxd_server = obj["clientName"]
+                    logger.debug(f"Resource details - MXD: {mxd}, Server: {mxd_server}")
             else:
+                logger.debug("No resources found in service manifest")
                 mxd = None
                 mxd_server = None
+
+            logger.debug("Updating service data with MXD information")
             service_data["service_mxd"] = mxd
             service_data["service_mxd_server"] = mxd_server
+
+            logger.debug(f"Creating or updating service record for: {name}")
             s_obj, created = Service.objects.update_or_create(
                 portal_instance=instance_item,
                 service_name=name,
                 defaults=service_data
             )
-            result.add_insert() if created else result.add_update()
 
-            # Process database details from the service manifest if available.
+            if created:
+                logger.info(f"Created new record for service: {name}")
+                result.add_insert()
+            else:
+                logger.info(f"Updated existing record for service: {name}")
+                result.add_update()
+
+            logger.debug("Processing database details from service manifest")
             process_databases(service_manifest, regex_patterns, instance_item, s_obj, update_time)
+            logger.debug("Database details processing completed")
 
     except Exception as e:
-        logger.exception(f"Unable to update {service.properties.serviceName}: {e}")
+        logger.error(f"Unable to process service '{service_name}': {e}", exc_info=True)
         result.add_error(f"Unable to update {service_name}")
+        return None
+
+    logger.info(f"Successfully processed service '{service_name}'")
     return service_usage_str
 
 
 @shared_task(bind=True, name="Update apps", time_limit=6000, soft_time_limit=3000)
+@celery_logging_context
 def update_webapps(self, instance_alias, overwrite=False, username=None, password=None):
     """
     Update web applications for the given portal instance.
@@ -921,141 +1379,262 @@ def update_webapps(self, instance_alias, overwrite=False, username=None, passwor
     :return: JSON string summarizing the update results (inserts, updates, deletions, errors).
     :rtype: str
     """
-    # Initialize the update result container and progress recorder.
+    logger.debug(f"Starting update_webapps task for instance_alias={instance_alias}, overwrite={overwrite}")
+
     result = UpdateResult()
     progress_recorder = ProgressRecorder(self)
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        # Attempt to connect to the portal instance using provided credentials.
         target = connect(instance_item, username, password)
+
     except Exception as e:
-        # Log and return connection error.
-        logger.exception(f"Unable to connect to {instance_alias}: {e}")
+        logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
-        self.update_state(state="FAILURE", meta={result.to_json()})
-        raise Ignore()
+        return {"result": result.to_json()}
 
     try:
-        update_time = datetime.datetime.now()  # Timestamp for this update cycle
+        update_time = datetime.now()
+        logger.debug(f"Update timestamp: {update_time}")
 
-        # Retrieve web application items by combining multiple searches for various app types.
-        # items = [
-        #     [target.content.search("NOT owner:esri*", "Web Mapping Application", max_items=2000)] +
-        #     [target.content.search("NOT owner:esri*", "Dashboard", max_items=2000)] +
-        #     [target.content.search("NOT owner:esri*", "Web AppBuilder Apps", max_items=2000)] +
-        #     [target.content.search("NOT owner:esri*", "Experience Builder", max_items=2000)] +
-        #     [target.content.search("NOT owner:esri*", "Form", max_items=2000)] +
-        #     [target.content.search("NOT owner:esri*", "Story Map", max_items=2000)]
-        # ]
+        # Retrieve web application items by combining multiple searches for various app types
+        logger.debug("Retrieving web applications from portal")
+
+        # Determine search query based on portal type
         if instance_item.portal_type == "agol":
             org_id = instance_item.org_id
-            total_apps = target.content.advanced_search(query=f"orgid:{org_id} AND NOT owner:esri*", max_items=-1, return_count=True,
-                                                        filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"Web AppBuilder Apps" OR type:"Experience Builder" OR type:"Form" OR type:"Story Map"')
-        else:
-            total_apps = target.content.advanced_search(query="NOT owner:esri*", max_items=-1, return_count=True,
-                                                    filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"Web AppBuilder Apps" OR type:"Experience Builder" OR type:"Form" OR type:"Story Map"')
-        logger.info(f"Total apps: {total_apps}")
-        # If overwrite flag is set to true, delete all existing web maps for the portal instance.
-        if overwrite:
-            App.objects.filter(portal_instance=instance_item).delete()
+            logger.debug(f"Using AGOL-specific query with org_id: {org_id}")
+            query = f'orgid:{org_id} AND NOT owner:esri*'
+            logger.debug(f"Search query: {query}")
 
+            total_apps = target.content.advanced_search(
+                query=query,
+                max_items=-1,
+                return_count=True,
+                filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"Web AppBuilder Apps" OR type:"Experience Builder" OR type:"Form" OR type:"Story Map"'
+            )
+        else:
+            logger.debug("Using standard Portal for ArcGIS query")
+            total_apps = target.content.advanced_search(
+                query="NOT owner:esri*",
+                max_items=-1,
+                return_count=True,
+                filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"Web AppBuilder Apps" OR type:"Experience Builder" OR type:"Form" OR type:"Story Map"'
+            )
+
+        logger.info(f"Found {total_apps} web applications to process in portal '{instance_alias}'")
+
+        if overwrite:
+            app_count = App.objects.filter(portal_instance=instance_item).count()
+            App.objects.filter(portal_instance=instance_item).delete()
+            logger.info(f"Deleted {app_count} existing web applications for portal '{instance_alias}'")
+        else:
+            logger.debug("Proceeding with incremental update")
+
+        # Set up batch processing
         batch_size = 20
         batch_tasks = []
-        # Iterate through each retrieved app. Split into batches for parallel processing
-        for batch in range(0, total_apps, batch_size):
-            batch_tasks.append(process_batch_apps.s(instance_alias, username, password, batch, batch_size, update_time))
+        logger.debug(f"Setting up batch processing with batch size: {batch_size}")
 
+        # Create batch tasks
+        for batch in range(0, total_apps, batch_size):
+            logger.debug(f"Creating batch task for items {batch} to {min(batch+batch_size, total_apps)}")
+            batch_tasks.append(
+                process_batch_apps.s(
+                    instance_alias,
+                    username,
+                    password,
+                    batch,
+                    batch_size,
+                    update_time
+                )
+            )
+
+        logger.info(f"Created {len(batch_tasks)} batch tasks for processing {total_apps} web applications")
+
+        # Execute parallel processing by batch TODO comment about https://docs.celeryq.dev/en/stable/userguide/tasks.html#task-synchronous-subtasks
+        logger.debug("Starting parallel batch processing")
         task_group = group(batch_tasks)
         batch_results = task_group.apply_async()
-        # batch_results.save()
+        logger.debug(f"Batch processing started with group ID: {batch_results.id}")
+
+        # Monitor group progress
+        logger.debug("Monitoring batch processing progress")
         while not batch_results.ready():
-            completed_tasks = sum(
-                task.result.get("current", 0) if "current" in task.result else batch_size
-                for task in batch_results.children
-                if task.result
-            )
-            progress_recorder.set_progress(completed_tasks, total_apps)
-            time.sleep(1.5)
-        logger.info(f"Aggregating batch results: {batch_results}")
+            try:
+                completed_tasks = sum(
+                    task.result.get("current", 0) if "current" in task.result else batch_size
+                    for task in batch_results.children
+                    if task.result
+                )
+                progress_percentage = (completed_tasks / total_apps) * 100
+                logger.debug(f"Progress: {progress_percentage:.1f}% ({completed_tasks}/{total_apps} items)")
+                progress_recorder.set_progress(completed_tasks, total_apps)
+                time.sleep(1.5)
+            except Exception as e:
+                logger.warning(f"Error calculating progress: {e}")
+                time.sleep(1.5)
+                continue
+
+        # Aggregate results
+        logger.info(f"All batch tasks completed, aggregating results")
+        logger.debug(f"Batch results: {batch_results}")
+
+        success_count = 0
+        failure_count = 0
+
         for batch in batch_results.get(disable_sync_subtasks=False):
             batch_result = UpdateResult(**batch["result"])
+
             if batch_result.success is False:
+                failure_count += 1
                 result.success = False
+                logger.warning(f"Batch task reported failure: {batch_result.error_messages}")
+            else:
+                success_count += 1
+
+            # Aggregate counts
             result.num_updates += batch_result.num_updates
             result.num_inserts += batch_result.num_inserts
             result.num_deletes += batch_result.num_deletes
             result.num_errors += batch_result.num_errors
             result.error_messages.extend(batch_result.error_messages)
 
-        # Remove outdated application records that were not updated in this run.
-        delete_outdated_records(instance_item, update_time, [App, App_Map, App_Service], result)
+        logger.info(f"Batch processing summary: {success_count} successful batches, {failure_count} failed batches")
 
-        # Update the portal instance with the current webapp update timestamp.
-        instance_item.webapp_updated = datetime.datetime.now()
+
+        logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
+        delete_outdated_records(instance_item, update_time, [App, App_Map, App_Service], result)
+        logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
+
+        instance_item.webapp_updated = datetime.now()
         instance_item.save()
 
         result.set_success()
+        logger.info(f"Web applications update for portal '{instance_alias}' completed successfully")
+        logger.debug(f"Final result: {result.to_json()}")
         return result.to_json()
 
     except Exception as e:
-        logger.exception(f"Unable to update webapps for {instance_alias}: {e}")
-        result.add_error(f"Unable to update Apps for {instance_alias}")
-        # Get child tasks
+        logger.critical(f"Web applications update failed for portal '{instance_alias}': {e}", exc_info=True)
+        result.add_error(f"Web applications update failed")
+
+        # Revoke child tasks if they exist
         if batch_results and batch_results.children:
+            logger.warning(f"Revoking {len(batch_results.children)} child tasks due to failure")
             for child in batch_results.children:
                 if child.id:
+                    logger.debug(f"Revoking child task: {child.id}")
                     current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
+            logger.info("All child tasks revoked")
 
-        # Also revoke the current task
-        # current_app.control.revoke(self.request.id, terminate=True, signal="SIGKILL")
-
+        # Update task state and exit
         self.update_state(state="FAILURE", meta=result.to_json())
         raise Ignore()
 
 
 @shared_task(bind=True)
+@celery_logging_context
 def process_batch_apps(self, instance_alias, username, password, batch, batch_size, update_time):
     result = UpdateResult()
     progress_recorder = ProgressRecorder(self)
-    instance_item = Portal.objects.get(alias=instance_alias)
-    target = connect(instance_item, username, password)
-    if instance_item.portal_type == "agol":
-        org_id = instance_item.org_id
-        app_list = target.content.advanced_search(query=f"orgid:{org_id} AND NOT owner:esri*", max_items=batch_size, start=batch,
-                                              sort_field="title", sort_order="asc",
-                                              filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"Web AppBuilder Apps" OR type:"Experience Builder" OR type:"Form" OR type:"Story Map"')
-    else:
-        app_list = target.content.advanced_search(query="NOT owner:esri*", max_items=batch_size, start=batch,
-                                                  sort_field="title", sort_order="asc",
-                                                  filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"Web AppBuilder Apps" OR type:"Experience Builder" OR type:"Form" OR type:"Story Map"')
-    total_apps = len(app_list.get("results"))
-    for counter, app in enumerate(app_list.get("results")):
-        try:
-            process_single_app(app, target, instance_item, update_time, result)
 
-            progress_recorder.set_progress(counter, total_apps)
+    try:
+        try:
+            instance_item = Portal.objects.get(alias=instance_alias)
+            target = connect(instance_item, username, password)
+
         except Exception as e:
-            # Log and record any errors encountered during processing of this web map.
-            logger.exception(f"Unable to update {app.id}: {e}")
-            result.add_error(f"Unable to update {app.id}")
-    result.set_success()
-    return {"result": result.to_json()}
+            logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+            result.add_error(f"Unable to connect to {instance_alias}")
+            return {"result": result.to_json()}
+
+        # Retrieve web applications for this batch
+        logger.debug(f"Retrieving web applications for batch {batch} to {batch + batch_size}")
+
+        if instance_item.portal_type == "agol":
+            org_id = instance_item.org_id
+            logger.debug(f"Using AGOL-specific query with org_id: {org_id}")
+            query = f'orgid:{org_id} AND NOT owner:esri*'
+
+            app_list = target.content.advanced_search(
+                query=query,
+                max_items=batch_size,
+                start=batch,
+                sort_field="title",
+                sort_order="asc",
+                filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"Web AppBuilder Apps" OR type:"Experience Builder" OR type:"Form" OR type:"Story Map"'
+            )
+        else:
+            logger.debug("Using standard Portal for ArcGIS query")
+            app_list = target.content.advanced_search(
+                query="NOT owner:esri*",
+                max_items=batch_size,
+                start=batch,
+                sort_field="title",
+                sort_order="asc",
+                filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"Web AppBuilder Apps" OR type:"Experience Builder" OR type:"Form" OR type:"Story Map"'
+            )
+
+        results = app_list.get("results", [])
+        total_apps = len(results)
+        logger.info(f"Retrieved {total_apps} web applications for batch {batch} to {batch + batch_size}")
+
+        # Process each web application in the batch
+        logger.debug(f"Starting to process {total_apps} web applications")
+
+        for counter, app in enumerate(results):
+            app_id = getattr(app, 'id', 'unknown')
+            app_title = getattr(app, 'title', 'unknown')
+            logger.debug(f"Processing web application {counter+1}/{total_apps}: {app_id} - '{app_title}'")
+
+            try:
+                process_single_app(app, target, instance_item, update_time, result)
+                logger.debug(f"Successfully processed web application: {app_id}")
+
+                progress_percentage = ((counter + 1) / total_apps) * 100
+                logger.debug(f"Progress: {progress_percentage:.1f}% ({counter+1}/{total_apps})")
+                progress_recorder.set_progress(counter + 1, total_apps)
+
+            except Exception as e:
+                error_msg = f"Unable to process web application {app_id} - '{app_title}'"
+                logger.error(f"{error_msg}: {e}", exc_info=True)
+                result.add_error(f"Unable to update {app_id}")
+
+        logger.info(f"Completed processing {total_apps} web applications in batch {batch} to {batch + batch_size}")
+        logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
+
+        result.set_success()
+        return {"result": result.to_json()}
+
+    except Exception as e:
+        logger.error(f"Error processing web apps in batch {batch} to {batch + batch_size}: {e}", exc_info=True)
+        result.add_error(f"Error processing web apps in batch {batch} to {batch + batch_size}")
+        return {"result": result.to_json()}
 
 
 def process_single_app(item, target, instance_item, update_time, result):
+    if result is None:
+        result = UpdateResult()
+
+    app_id = getattr(item, 'id', 'unknown')
+    app_title = getattr(item, 'title', 'unknown')
+    logger.debug(f"Starting process_single_app for application: {app_id} - '{app_title}'")
     try:
-        logger.debug(item)  # Log the current item for debugging
+        logger.debug(f"Application details: {item}")
 
-        # Determine access level: if shared, format group names; otherwise use title case.
+        logger.debug(f"Extracting access information for application: {app_id}")
         access = get_access(item)
+        logger.debug(f"Access for application {app_id}: {access}")
 
-        # Process usage statistics based on portal type.
+        logger.debug(f"Calculating usage statistics for application: {app_id}")
         usage = calculate_usage(item, instance_item)
 
-        # Attempt to retrieve the owner of the item.
+        logger.debug(f"Retrieving owner for application: {app_id}")
         owner = get_owner(instance_item, item.owner)
+        logger.debug(f"Owner for application {app_id}: {owner}")
 
+        logger.debug(f"Preparing application data for database update: {app_id}")
         app_data = {
             "app_title": item.title,
             "app_url": item.homepage,
@@ -1071,196 +1650,486 @@ def process_single_app(item, target, instance_item, update_time, result):
             "updated_date": update_time,
             "app_last_viewed": epoch_to_datetime(item.lastViewed) if instance_item.portal_type == "agol" else None
         }
-        # Update or create the application record with the latest information.
+        logger.debug(f"Application data prepared for: {app_id}")
+
+        logger.debug(f"Creating or updating application record for: {app_id}")
         app_obj, created = App.objects.update_or_create(
             portal_instance=instance_item,
             app_id=item.id,
             defaults=app_data
         )
-        # Record insert or update operation.
-        result.add_insert() if created else result.add_update()
 
-        # Retrieve detailed data from the item for further processing.
-        data = item.get_data()
-        logger.debug(item.type)
+        if created:
+            logger.info(f"Created new application record for: {app_id} - '{app_title}'")
+            result.add_insert()
+        else:
+            logger.info(f"Updated existing application record for: {app_id} - '{app_title}'")
+            result.add_update()
 
-        # Process different app types and extract related resources.
+        logger.debug(f"Retrieving detailed data for application: {app_id}")
+        try:
+            data = item.get_data()
+            logger.debug(f"Successfully retrieved detailed data for application: {app_id}")
+        except Exception as e:
+            logger.warning(f"Error retrieving detailed data for application {app_id}: {e}")
+            result.add_error(f"Error retrieving detailed data for application {app_id}")
+            data = {}
+
+        logger.debug(f"Application type: {item.type}")
+
         if item.type == "Web Mapping Application":
-            logger.debug(data)
-            # If the application has an associated map.
+            logger.debug(f"Processing Web Mapping Application: {app_id}")
+
             if "map" in data:
-                logger.debug("WAB has map")
+                logger.debug(f"Application {app_id} has an associated map")
                 try:
                     map_id = data["map"]["itemId"]
-                    map_obj = Webmap.objects.get(portal_instance=instance_item, webmap_id=map_id)
-                    logger.debug(map_obj)
-                    # Create or update the relationship between the app and its web map.
-                    am_obj, created = App_Map.objects.update_or_create(
-                        portal_instance=instance_item,
-                        app_id=app_obj,
-                        webmap_id=map_obj,
-                        rel_type="map",
-                        defaults={"updated_date": update_time}
-                    )
-                except Webmap.DoesNotExist:
-                    result.add_error(f"{item.title}: map does not exist")
-            # Process additional resources extracted from URLs.
-            for resource in extract_webappbuilder(data):
+                    logger.debug(f"Retrieving web map with ID: {map_id}")
+
+                    try:
+                        map_obj = Webmap.objects.get(portal_instance=instance_item, webmap_id=map_id)
+                        logger.debug(f"Found web map: {map_obj}")
+
+                        logger.debug(f"Creating or updating app-map relationship for map: {map_id}")
+                        am_obj, rel_created = App_Map.objects.update_or_create(
+                            portal_instance=instance_item,
+                            app_id=app_obj,
+                            webmap_id=map_obj,
+                            rel_type="map",
+                            defaults={"updated_date": update_time}
+                        )
+
+                        if rel_created:
+                            logger.debug(f"Created new app-map relationship for map: {map_id}")
+                        else:
+                            logger.debug(f"Updated existing app-map relationship for map: {map_id}")
+
+                    except Webmap.DoesNotExist:
+                        logger.warning(f"Map {map_id} referenced by application {app_id} does not exist")
+                        result.add_error(f"{item.title}: map does not exist")
+                except Exception as e:
+                    logger.error(f"Error processing map reference in application {app_id}: {e}", exc_info=True)
+                    result.add_error(f"Error processing map reference in application {app_id}")
+            logger.debug(f"Extracting web app builder resources for application: {app_id}")
+            resources = extract_webappbuilder(data)
+            resource_count = len(resources)
+            logger.debug(f"Found {resource_count} resources in web app builder")
+
+            for resource_index, resource in enumerate(resources):
+                logger.debug(f"Processing resource {resource_index+1}/{resource_count}: {resource}")
+
                 try:
                     if resource[2] == "url":
-                        logger.debug(f"WAB has url {resource[0]}")
-                        # Normalize URL by removing trailing numeric segments if present.
+                        logger.debug(f"Resource is a URL: {resource[0]}")
+
                         url = resource[0] if not resource[0].split("/")[-1].isdigit() else "/".join(
                             resource[0].split("/")[:-1])
+                        logger.debug(f"Normalized URL: {url}")
+
+                        # Find the service with this URL
                         try:
-                            service_obj = Service.objects.get(service_url__iregex=rf'^{url}$')
+                            service_obj = Service.objects.get(service_url__overlap=[url])
+                            logger.debug(f"Found service: {service_obj}")
+
+                            # Determine relationship type based on resource context.
+                            rel_type = lambda t: "search" if "searchLayers" in resource[
+                                1] else "filter" if "filters" in resource[1] else "widget" if "widgets" in resource[
+                                1] else "other"
+                            t = rel_type(resource[1])
+                            logger.debug(f"Relationship type: {t}")
+
+                            logger.debug(f"Creating or updating app-service relationship")
+                            as_obj, rel_created = App_Service.objects.update_or_create(
+                                portal_instance=instance_item,
+                                app_id=app_obj,
+                                service_id=service_obj,
+                                rel_type=t,
+                                defaults={"updated_date": update_time}
+                            )
+
+                            if rel_created:
+                                logger.debug(f"Created new app-service relationship")
+                            else:
+                                logger.debug(f"Updated existing app-service relationship")
+
                         except Service.DoesNotExist:
+                            logger.warning(f"Service with URL {url} not found, skipping resource")
                             continue
                         except MultipleObjectsReturned:
-                            service_obj = Service.objects.filter(service_url__iregex=rf'^{url}').first()
-                        logger.debug(service_obj)
-                        # Determine relationship type based on resource context.
-                        rel_type = lambda t: "search" if "searchLayers" in resource[
-                            1] else "filter" if "filters" in resource[1] else "widget" if "widgets" in resource[
-                            1] else "other"
-                        t = rel_type(resource[1])
-                        # Update or create the relationship between the app and the service.
-                        as_obj, created = App_Service.objects.update_or_create(
-                            portal_instance=instance_item,
-                            app_id=app_obj,
-                            service_id=service_obj,
-                            rel_type=t,
-                            defaults={"updated_date": update_time}
-                        )
-                except Exception:
-                    pass
+                            logger.warning(f"Multiple services found with URL {url}, using first match")
+                            service_obj = Service.objects.filter(service_url__overlap=[url]).first()
+                            logger.debug(f"Selected service: {service_obj}")
 
+                            # Determine relationship type based on resource context.
+                            rel_type = lambda t: "search" if "searchLayers" in resource[
+                                1] else "filter" if "filters" in resource[1] else "widget" if "widgets" in resource[
+                                1] else "other"
+                            t = rel_type(resource[1])
+                            logger.debug(f"Relationship type: {t}")
+
+                            logger.debug(f"Creating or updating app-service relationship")
+                            as_obj, rel_created = App_Service.objects.update_or_create(
+                                portal_instance=instance_item,
+                                app_id=app_obj,
+                                service_id=service_obj,
+                                rel_type=t,
+                                defaults={"updated_date": update_time}
+                            )
+
+                            if rel_created:
+                                logger.debug(f"Created new app-service relationship")
+                            else:
+                                logger.debug(f"Updated existing app-service relationship")
+                    else:
+                        logger.debug(f"Resource is not a URL, skipping: {resource}")
+
+                except Exception as e:
+                    logger.error(f"Error processing resource {resource} for application {app_id}: {e}", exc_info=True)
+                    result.add_error(f"Error processing resource {resource} for application {app_id}")
         if item.type == "StoryMap":
-            # Process StoryMap resources to link with web maps.
-            for resource in extract_storymap(data["resources"]):
-                try:
-                    if resource[2] == "Web Map":
-                        logger.debug(f"StoryMap has map {resource[4]}")
-                        map_obj = Webmap.objects.get(webmap_id=resource[4])
-                        logger.debug(map_obj)
-                        am_obj, created = App_Map.objects.update_or_create(
-                            app_id=app_obj,
-                            webmap_id=map_obj,
-                            rel_type="map",
-                            defaults={"item_updated": update_time}
-                        )
-                except Webmap.DoesNotExist:
-                    result.add_error(f"{item.title}: map does not exist")
+            logger.debug(f"Processing StoryMap application: {app_id}")
+
+            if data.get("resources", None):
+                logger.debug(f"Extracting StoryMap resources for application: {app_id}")
+                resources = extract_storymap(data["resources"])
+                resource_count = len(resources)
+                logger.debug(f"Found {resource_count} resources in StoryMap")
+
+                for resource_index, resource in enumerate(resources):
+                    logger.debug(f"Processing StoryMap resource {resource_index+1}/{resource_count}: {resource}")
+
+                    try:
+                        if resource[2] == "Web Map":
+                            map_id = resource[4]
+                            logger.debug(f"StoryMap has map {map_id}")
+
+                            try:
+                                map_obj = Webmap.objects.get(webmap_id=map_id)
+                                logger.debug(f"Found web map: {map_obj}")
+
+                                logger.debug(f"Creating or updating app-map relationship for map: {map_id}")
+                                am_obj, rel_created = App_Map.objects.update_or_create(
+                                    portal_instance=instance_item,
+                                    app_id=app_obj,
+                                    webmap_id=map_obj,
+                                    rel_type="map",
+                                    defaults={"updated_date": update_time}
+                                )
+
+                                if rel_created:
+                                    logger.debug(f"Created new app-map relationship for map: {map_id}")
+                                else:
+                                    logger.debug(f"Updated existing app-map relationship for map: {map_id}")
+
+                            except Webmap.DoesNotExist:
+                                logger.warning(f"Map {map_id} referenced by StoryMap {app_id} does not exist")
+                                result.add_error(f"Map {map_id} referenced by StoryMap {app_id} does not exist")
+                        else:
+                            logger.debug(f"Resource is not a Web Map, skipping: {resource}")
+
+                    except Exception as e:
+                        logger.error(f"Error processing StoryMap resource {resource} for application {app_id}: {e}", exc_info=True)
+                        result.add_error(f"Error processing StoryMap resource {resource} for application {app_id}")
+            else:
+                logger.debug(f"No resources found in StoryMap application: {app_id}")
 
         if item.type == "Dashboard":
-            # Process Dashboard resources to link with services or web maps.
-            for resource in extract_dashboard(data):
+            logger.debug(f"Processing Dashboard application: {app_id}")
+
+            logger.debug(f"Extracting Dashboard resources for application: {app_id}")
+            resources = extract_dashboard(data)
+            resource_count = len(resources)
+            logger.debug(f"Found {resource_count} resources in Dashboard")
+
+            for resource_index, resource in enumerate(resources):
+                logger.debug(f"Processing Dashboard resource {resource_index+1}/{resource_count}: {resource}")
+
                 try:
-                    dashboard_id = target.content.get(resource[2])
-                    logger.debug(f"Dashboard has resource {resource}")
-                    if dashboard_id.type in ["Map Image Layer", "Feature Layer"]:
-                        try:
-                            service_obj = Service.objects.get(service_url__iregex=rf"^{dashboard_id.url}$")
-                        except Service.DoesNotExist:
-                            continue
-                        except MultipleObjectsReturned:
-                            service_obj = Service.objects.filter(service_url__iregex=rf"^{dashboard_id.url}").first()
-                        logger.debug(service_obj)
-                        sa_obj, created = App_Service.objects.update_or_create(
-                            portal_instance=instance_item,
-                            app_id=app_obj,
-                            service_id=service_obj,
-                            rel_type="other",
-                            defaults={"updated_date": update_time}
-                        )
-                    if dashboard_id.type == "Web Map":
-                        map_obj = Webmap.objects.get(webmap_id=dashboard_id.id)
-                        logger.debug(map_obj)
-                        am_obj, created = App_Map.objects.update_or_create(
-                            portal_instance=instance_item,
-                            app_id=app_obj,
-                            webmap_id=map_obj,
-                            rel_type="map",
-                            defaults={"updated_date": update_time}
-                        )
-                except:
-                    pass
+                    resource_id = resource[2]
+                    logger.debug(f"Retrieving resource item with ID: {resource_id}")
+
+                    try:
+                        dashboard_id = target.content.get(resource_id)
+                        logger.debug(f"Found resource item: {dashboard_id.title} (Type: {dashboard_id.type})")
+
+                        if dashboard_id.type in ["Map Image Layer", "Feature Layer"]:
+                            logger.debug(f"Processing service resource: {dashboard_id.url}")
+
+                            try:
+                                service_obj = Service.objects.get(service_url__overlap=[dashboard_id.url])
+                                logger.debug(f"Found service: {service_obj}")
+
+                                logger.debug(f"Creating or updating app-service relationship")
+                                sa_obj, rel_created = App_Service.objects.update_or_create(
+                                    portal_instance=instance_item,
+                                    app_id=app_obj,
+                                    service_id=service_obj,
+                                    rel_type="other",
+                                    defaults={"updated_date": update_time}
+                                )
+
+                                if rel_created:
+                                    logger.debug(f"Created new app-service relationship")
+                                else:
+                                    logger.debug(f"Updated existing app-service relationship")
+
+                            except Service.DoesNotExist:
+                                logger.warning(f"Service with URL {dashboard_id.url} not found, skipping resource")
+                                continue
+                            except MultipleObjectsReturned:
+                                logger.warning(f"Multiple services found with URL {dashboard_id.url}, using first match")
+                                service_obj = Service.objects.filter(service_url__overlap=[dashboard_id.url]).first()
+                                logger.debug(f"Selected service: {service_obj}")
+
+                                logger.debug(f"Creating or updating app-service relationship")
+                                sa_obj, rel_created = App_Service.objects.update_or_create(
+                                    portal_instance=instance_item,
+                                    app_id=app_obj,
+                                    service_id=service_obj,
+                                    rel_type="other",
+                                    defaults={"updated_date": update_time}
+                                )
+
+                                if rel_created:
+                                    logger.debug(f"Created new app-service relationship")
+                                else:
+                                    logger.debug(f"Updated existing app-service relationship")
+
+                        elif dashboard_id.type == "Web Map":
+                            map_id = dashboard_id.id
+                            logger.debug(f"Processing web map resource: {map_id}")
+
+                            try:
+                                map_obj = Webmap.objects.get(webmap_id=map_id)
+                                logger.debug(f"Found web map: {map_obj}")
+
+                                logger.debug(f"Creating or updating app-map relationship for map: {map_id}")
+                                am_obj, rel_created = App_Map.objects.update_or_create(
+                                    portal_instance=instance_item,
+                                    app_id=app_obj,
+                                    webmap_id=map_obj,
+                                    rel_type="map",
+                                    defaults={"updated_date": update_time}
+                                )
+
+                                if rel_created:
+                                    logger.debug(f"Created new app-map relationship for map: {map_id}")
+                                else:
+                                    logger.debug(f"Updated existing app-map relationship for map: {map_id}")
+
+                            except Webmap.DoesNotExist:
+                                logger.warning(f"Map {map_id} referenced by Dashboard {app_id} does not exist")
+                                result.add_error(f"Map {map_id} referenced by Dashboard {app_id} does not exist")
+                        else:
+                            logger.debug(f"Resource type {dashboard_id.type} not supported, skipping")
+
+                    except Exception as e:
+                        logger.error(f"Error retrieving resource {resource_id} for Dashboard {app_id}: {e}", exc_info=True)
+                        result.add_error(f"Error retrieving resource {resource_id} for Dashboard {app_id}")
+
+                except Exception as e:
+                    logger.error(f"Error processing Dashboard resource {resource} for application {app_id}: {e}", exc_info=True)
+                    result.add_error(f"Error processing Dashboard resource {resource} for application {app_id}")
 
         if item.type == "Form":
-            # For Form items, process related Survey2Service items.
-            for resource in item.related_items("Survey2Service", "forward"):
-                try:
-                    logger.debug(f"Form has service {resource}")
+            logger.debug(f"Processing Form application: {app_id}")
+
+            logger.debug(f"Retrieving related Survey2Service items for Form: {app_id}")
+            try:
+                related_items = item.related_items("Survey2Service", "forward")
+                resource_count = len(related_items)
+                logger.debug(f"Found {resource_count} related Survey2Service items")
+
+                for resource_index, resource in enumerate(related_items):
+                    resource_url = getattr(resource, 'url', 'unknown')
+                    logger.debug(f"Processing Survey2Service resource {resource_index+1}/{resource_count}: {resource_url}")
+
                     try:
-                        service_obj = Service.objects.get(service_url__iregex=rf"^{resource.url}$")
-                    except Service.DoesNotExist:
-                        continue
-                    except MultipleObjectsReturned:
-                        service_obj = Service.objects.filter(service_url__iregex=rf"^{resource.url}").first()
-                    logger.debug(service_obj)
-                    sa_obj, created = App_Service.objects.update_or_create(
-                        portal_instance=instance_item,
-                        app_id=app_obj,
-                        service_id=service_obj,
-                        defaults={"updated_date": update_time}
-                    )
-                except:
-                    pass
+                        logger.debug(f"Form has service {resource_url}")
+
+                        try:
+                            service_obj = Service.objects.get(service_url__overlap=[resource_url])
+                            logger.debug(f"Found service: {service_obj}")
+
+                            logger.debug(f"Creating or updating app-service relationship")
+                            sa_obj, rel_created = App_Service.objects.update_or_create(
+                                portal_instance=instance_item,
+                                app_id=app_obj,
+                                service_id=service_obj,
+                                defaults={"updated_date": update_time}
+                            )
+
+                            if rel_created:
+                                logger.debug(f"Created new app-service relationship")
+                            else:
+                                logger.debug(f"Updated existing app-service relationship")
+
+                        except Service.DoesNotExist:
+                            logger.warning(f"Service with URL {resource_url} not found, skipping resource")
+                            continue
+                        except MultipleObjectsReturned:
+                            logger.warning(f"Multiple services found with URL {resource_url}, using first match")
+                            service_obj = Service.objects.filter(service_url__overlap=[resource_url]).first()
+                            logger.debug(f"Selected service: {service_obj}")
+
+                            logger.debug(f"Creating or updating app-service relationship")
+                            sa_obj, rel_created = App_Service.objects.update_or_create(
+                                portal_instance=instance_item,
+                                app_id=app_obj,
+                                service_id=service_obj,
+                                defaults={"updated_date": update_time}
+                            )
+
+                            if rel_created:
+                                logger.debug(f"Created new app-service relationship")
+                            else:
+                                logger.debug(f"Updated existing app-service relationship")
+
+                    except Exception as e:
+                        logger.error(f"Error processing Survey2Service resource {resource_url} for Form {app_id}: {e}", exc_info=True)
+                        result.add_error(f"Error processing Survey2Service resource {resource_url} for Form {app_id}")
+
+            except Exception as e:
+                logger.error(f"Error retrieving related Survey2Service items for Form {app_id}: {e}", exc_info=True)
+                result.add_error(f"Error retrieving related Survey2Service items for Form {app_id}")
 
         if item.type == "Web Experience":
-            # Process Experience Builder resources based on type.
-            for resource in extract_experiencebuilder(data):
+            logger.debug(f"Processing Web Experience (Experience Builder) application: {app_id}")
+
+            logger.debug(f"Extracting Experience Builder resources for application: {app_id}")
+            resources = extract_experiencebuilder(data)
+            resource_count = len(resources)
+            logger.debug(f"Found {resource_count} resources in Experience Builder")
+
+            for resource_index, resource in enumerate(resources):
+                resource_type = resource[3] if len(resource) > 3 else "unknown"
+                resource_id = resource[2] if len(resource) > 2 else "unknown"
+                logger.debug(f"Processing Experience Builder resource {resource_index+1}/{resource_count}: Type={resource_type}, ID={resource_id}")
+
                 try:
-                    logger.debug(f"ExB has resource {resource[3]}")
-                    if resource[3] == "WEB_MAP":
-                        map_obj = Webmap.objects.get(webmap_id=resource[2])
-                        logger.debug(map_obj)
-                        am_obj, created = App_Map.objects.update_or_create(
-                            portal_instance=instance_item,
-                            webmap_id=map_obj,
-                            app_id=app_obj,
-                            rel_type="map",
-                            defaults={"updated_date": update_time}
-                        )
-                    if resource[3] == "FEATURE_LAYER":
+                    if resource_type == "WEB_MAP":
+                        logger.debug(f"Processing web map resource: {resource_id}")
+
                         try:
-                            service_obj = Service.objects.get(service_url__iregex=rf"^{resource[2]}$")
+                            map_obj = Webmap.objects.get(webmap_id=resource_id)
+                            logger.debug(f"Found web map: {map_obj}")
+
+                            logger.debug(f"Creating or updating app-map relationship for map: {resource_id}")
+                            am_obj, rel_created = App_Map.objects.update_or_create(
+                                portal_instance=instance_item,
+                                webmap_id=map_obj,
+                                app_id=app_obj,
+                                rel_type="map",
+                                defaults={"updated_date": update_time}
+                            )
+
+                            if rel_created:
+                                logger.debug(f"Created new app-map relationship for map: {resource_id}")
+                            else:
+                                logger.debug(f"Updated existing app-map relationship for map: {resource_id}")
+
+                        except Webmap.DoesNotExist:
+                            logger.warning(f"Map {resource_id} referenced by Experience Builder {app_id} does not exist")
+                            result.add_error(f"Map {resource_id} referenced by Experience Builder {app_id} does not exist")
+
+                    elif resource_type == "FEATURE_LAYER":
+                        logger.debug(f"Processing feature layer resource: {resource_id}")
+
+                        try:
+                            service_obj = Service.objects.get(service_url__overlap=[resource_id])
+                            logger.debug(f"Found service: {service_obj}")
+
+                            logger.debug(f"Creating or updating app-service relationship")
+                            as_obj, rel_created = App_Service.objects.update_or_create(
+                                portal_instance=instance_item,
+                                service_id=service_obj,
+                                app_id=app_obj,
+                                defaults={"updated_date": update_time}
+                            )
+
+                            if rel_created:
+                                logger.debug(f"Created new app-service relationship")
+                            else:
+                                logger.debug(f"Updated existing app-service relationship")
+
                         except Service.DoesNotExist:
+                            logger.warning(f"Service with URL {resource_id} not found, skipping resource")
                             continue
                         except MultipleObjectsReturned:
-                            service_obj = Service.objects.filter(service_url__iregex=rf"^{resource[2]}").first()
-                        logger.debug(service_obj)
-                        as_obj, created = App_Service.objects.update_or_create(
-                            portal_instance=instance_item,
-                            service_id=service_obj,
-                            app_id=app_obj,
-                            defaults={"updated_date": update_time}
-                        )
-                    if resource[3] == "GEOCODING":
+                            logger.warning(f"Multiple services found with URL {resource_id}, using first match")
+                            service_obj = Service.objects.filter(service_url__overlap=[resource_id]).first()
+                            logger.debug(f"Selected service: {service_obj}")
+
+                            logger.debug(f"Creating or updating app-service relationship")
+                            as_obj, rel_created = App_Service.objects.update_or_create(
+                                portal_instance=instance_item,
+                                service_id=service_obj,
+                                app_id=app_obj,
+                                defaults={"updated_date": update_time}
+                            )
+
+                            if rel_created:
+                                logger.debug(f"Created new app-service relationship")
+                            else:
+                                logger.debug(f"Updated existing app-service relationship")
+
+                    elif resource_type == "GEOCODING":
+                        logger.debug(f"Processing geocoding resource: {resource_id}")
+
                         try:
-                            service_obj = Service.objects.get(service_url__iregex=rf"^{resource[2]}$")
+                            service_obj = Service.objects.get(service_url__overlap=[resource_id])
+                            logger.debug(f"Found service: {service_obj}")
+
+                            logger.debug(f"Creating or updating app-service relationship")
+                            as_obj, rel_created = App_Service.objects.update_or_create(
+                                portal_instance=instance_item,
+                                service_id=service_obj,
+                                app_id=app_obj,
+                                defaults={"updated_date": update_time}
+                            )
+
+                            if rel_created:
+                                logger.debug(f"Created new app-service relationship")
+                            else:
+                                logger.debug(f"Updated existing app-service relationship")
+
                         except Service.DoesNotExist:
+                            logger.warning(f"Service with URL {resource_id} not found, skipping resource")
                             continue
                         except MultipleObjectsReturned:
-                            service_obj = Service.objects.filter(service_url__iregex=rf"^{resource[2]}").first()
-                        logger.debug(service_obj)
-                        as_obj, created = App_Service.objects.update_or_create(
-                            portal_instance=instance_item,
-                            service_id=service_obj,
-                            app_id=app_obj,
-                            defaults={"updated_date": update_time}
-                        )
-                except:
-                    pass
-        # Update the progress recorder after processing each item.
-        # progress_recorder.set_progress(counter, total_apps)
+                            logger.warning(f"Multiple services found with URL {resource_id}, using first match")
+                            service_obj = Service.objects.filter(service_url__overlap=[resource_id]).first()
+                            logger.debug(f"Selected service: {service_obj}")
+
+                            logger.debug(f"Creating or updating app-service relationship")
+                            as_obj, rel_created = App_Service.objects.update_or_create(
+                                portal_instance=instance_item,
+                                service_id=service_obj,
+                                app_id=app_obj,
+                                defaults={"updated_date": update_time}
+                            )
+
+                            if rel_created:
+                                logger.debug(f"Created new app-service relationship")
+                            else:
+                                logger.debug(f"Updated existing app-service relationship")
+                    else:
+                        logger.debug(f"Resource type {resource_type} not supported, skipping")
+
+                except Exception as e:
+                    logger.error(f"Error processing Experience Builder resource {resource} for application {app_id}: {e}", exc_info=True)
+                    result.add_error(f"Error processing Experience Builder resource {resource} for application {app_id}")
 
     except Exception as e:
-        logger.exception(f"Unable to update {item.id}: {e}")
-        result.add_error(f"Unable to update {item.title}")
+        logger.error(f"Unable to process application '{app_id}' - '{app_title}': {e}", exc_info=True)
+        result.add_error(f"Unable to process application '{app_id}' - '{app_title}'")
+        return
+
+    logger.info(f"Successfully processed application '{app_id}' - '{app_title}'")
 
 
 @shared_task(bind=True, name="Update users", time_limit=6000, soft_time_limit=3000)
+@celery_logging_context
 def update_users(self, instance_alias, overwrite=False, username=None, password=None):
     """
     Update user records for the specified portal instance.
@@ -1286,811 +2155,850 @@ def update_users(self, instance_alias, overwrite=False, username=None, password=
              deletions, and any error messages.
     :rtype: str
     """
-    # Initialize the result container and progress tracker for the task.
     result = UpdateResult()
     progress_recorder = ProgressRecorder(self)
-    update_time = datetime.datetime.now()  # Mark the update timestamp for the current run
+    update_time = datetime.now()  # Mark the update timestamp for the current run
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        # Attempt to establish a connection to the portal instance.
         target = connect(instance_item, username, password)
+
     except Exception as e:
-        # If connection fails, record the error and return the result.
-        logger.exception(f"Unable to connect to {instance_alias}: {e}")
+        logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
-        self.update_state(state="FAILURE", meta={result.to_json()})
-        raise Ignore()
+        return {"result": result.to_json()}
 
     try:
-        # If overwrite flag is set, delete existing user records for this portal instance.
         if overwrite:
+            user_count = User.objects.filter(portal_instance=instance_item).count()
             User.objects.filter(portal_instance=instance_item).delete()
+            logger.info(f"Deleted {user_count} existing users for portal '{instance_alias}'")
+        else:
+            logger.debug("Proceeding with incremental update")
 
-        roles = dict([(role.role_id, role.name) for role in target.users.roles.all()])
-        # Search and retrieve a list of users from the portal. Query is required and no good query exists for all
-        total_users = target.users.advanced_search(query="!_esri", max_users=-1, return_count=True)
-        logger.info(f"Total: {total_users}")
+        logger.debug("Retrieving user roles from portal")
+        try:
+            roles = dict([(role.role_id, role.name) for role in target.users.roles.all()])
+            role_count = len(roles)
+            logger.debug(f"Retrieved {role_count} roles from portal")
+        except Exception as e:
+            logger.warning(f"Error retrieving roles from portal: {e}")
+            roles = {}
+
+        logger.debug("Retrieving users from portal")
+
+        # orgId needed for AGOL
+        if instance_item.portal_type == "agol":
+            org_id = instance_item.org_id
+            query = f"orgid:{org_id}"
+        else:
+            query = "!_esri"
+
+        total_users = target.users.advanced_search(query=query, max_users=-1, return_count=True)
+
+        logger.info(f"Found {total_users} users to process in portal '{instance_alias}'")
 
         batch_size = 100
         batch_tasks = []
-        # Iterate through each retrieved web map.
-        for batch in range(0, total_users, batch_size):
-            batch_tasks.append(
-                process_batch_users.s(instance_alias, username, password, batch, batch_size, roles, update_time))
+        logger.debug(f"Setting up batch processing with batch size: {batch_size}")
 
-        # Parallel processing by folder
+        # Create batch tasks
+        for batch in range(0, total_users, batch_size):
+            logger.debug(f"Creating batch task for users {batch} to {min(batch+batch_size, total_users)}")
+            batch_tasks.append(
+                process_batch_users.s(
+                    instance_alias,
+                    username,
+                    password,
+                    batch,
+                    batch_size,
+                    roles,
+                    update_time
+                )
+            )
+
+        logger.info(f"Created {len(batch_tasks)} batch tasks for processing {total_users} users")
+
+        logger.debug("Starting parallel batch processing")
         task_group = group(batch_tasks)
         batch_results = task_group.apply_async()
-        # batch_results.save()
+        logger.debug(f"Batch processing started with group ID: {batch_results.id}")
+
+        # Monitor group progress
+        logger.debug("Monitoring batch processing progress")
         while not batch_results.ready():
-            completed_tasks = sum(
-                task.result.get("current", 0) for task in batch_results.children if task.result is not None)
-            progress_recorder.set_progress(completed_tasks, total_users)
-            time.sleep(1.5)
-        logger.info(f"Aggregating batch results: {batch_results}")
+            try:
+                completed_tasks = sum(
+                    task.result.get("current", 0) if "current" in task.result else batch_size
+                    for task in batch_results.children
+                    if task.result
+                )
+                progress_percentage = (completed_tasks / total_users) * 100
+                logger.debug(f"Progress: {progress_percentage:.1f}% ({completed_tasks}/{total_users} users)")
+                progress_recorder.set_progress(completed_tasks, total_users)
+                time.sleep(1.5)
+            except Exception as e:
+                logger.warning(f"Error calculating progress: {e}")
+                time.sleep(1.5)
+                continue
+
+        # Aggregate results
+        logger.info(f"All batch tasks completed, aggregating results")
+        logger.debug(f"Batch results: {batch_results}")
+
+        success_count = 0
+        failure_count = 0
+
         for batch in batch_results.get(disable_sync_subtasks=False):
             batch_result = UpdateResult(**batch["result"])
+
             if batch_result.success is False:
+                failure_count += 1
                 result.success = False
+                logger.warning(f"Batch task reported failure: {batch_result.error_messages}")
+            else:
+                success_count += 1
+
+            # Aggregate counts
             result.num_updates += batch_result.num_updates
             result.num_inserts += batch_result.num_inserts
             result.num_deletes += batch_result.num_deletes
             result.num_errors += batch_result.num_errors
             result.error_messages.extend(batch_result.error_messages)
 
-        # Retrieve ArcGIS Pro license information from the portal's admin interface.
-        licenses = target.admin.license.get("ArcGIS Pro")
-        if licenses:
-            # Extract license usage details from the report for different license types.
-            desktopAdvN = licenses.report.to_numpy()[2][4]
-            desktopBasicN = licenses.report.to_numpy()[3][4]
-            desktopStdN = licenses.report.to_numpy()[4][4]
-            # Update user records with Advanced license information.
-            for user_license in desktopAdvN:
-                user = user_license["user"]
-                last_used = user_license["lastUsed"]
-                if last_used:
-                    last_used = datetime.datetime.strptime(last_used, "%B %d, %Y").date()
-                try:
-                    update_entry = User.objects.get(portal_instance=instance_item, user_username__exact=user)
-                    update_entry.user_pro_license = "desktopAdvN"
-                    update_entry.user_pro_last = last_used
-                    update_entry.save()
-                except Exception as e:
-                    result.add_error(f"Error with licenses: {e}")
-            # Update user records with Basic license information.
-            for user_license in desktopBasicN:
-                user = user_license["user"]
-                last_used = user_license["lastUsed"]
-                if last_used:
-                    last_used = datetime.datetime.strptime(last_used, "%B %d, %Y").date()
-                try:
-                    update_entry = User.objects.get(portal_instance=instance_item, user_username__exact=user)
-                    update_entry.user_pro_license = "desktopBasicN"
-                    update_entry.user_pro_last = last_used
-                    update_entry.save()
-                except Exception as e:
-                    result.add_error(f"Error with licenses: {e}")
-            # Update user records with Standard license information.
-            for user_license in desktopStdN:
-                user = user_license["user"]
-                last_used = user_license["lastUsed"]
-                if last_used:
-                    last_used = datetime.datetime.strptime(last_used, "%B %d, %Y").date()
-                try:
-                    update_entry = User.objects.get(portal_instance=instance_item, user_username__exact=user)
-                    update_entry.user_pro_license = "desktopStdN"
-                    update_entry.user_pro_last = last_used
-                    update_entry.save()
-                except Exception as e:
-                    result.add_error(f"Error with licenses: {e}")
+        logger.info(f"Batch processing summary: {success_count} successful batches, {failure_count} failed batches")
 
-        # Identify and delete outdated user records.
+        logger.debug("Retrieving ArcGIS Pro license information from portal")
+        try:
+            licenses = target.admin.license.get("ArcGIS Pro")
+            if licenses:
+                logger.info("Successfully retrieved ArcGIS Pro license information")
+
+                try:
+                    logger.debug("Extracting license usage details from report")
+                    desktop_adv_n = licenses.report.to_numpy()[2][4]
+                    desktop_basic_n = licenses.report.to_numpy()[3][4]
+                    desktop_std_n = licenses.report.to_numpy()[4][4]
+
+                    adv_count = len(desktop_adv_n)
+                    basic_count = len(desktop_basic_n)
+                    std_count = len(desktop_std_n)
+                    logger.debug(f"Found {adv_count} Advanced, {basic_count} Basic, and {std_count} Standard licenses")
+
+                    logger.debug(f"Processing {adv_count} Advanced licenses")
+                    adv_success = 0
+                    adv_errors = 0
+
+                    for license_index, user_license in enumerate(desktop_adv_n):
+                        user = user_license["user"]
+                        last_used = user_license["lastUsed"]
+                        logger.debug(f"Processing Advanced license {license_index+1}/{adv_count} for user: {user}")
+
+                        if last_used:
+                            try:
+                                last_used = datetime.strptime(last_used, "%B %d, %Y").date()
+                                logger.debug(f"Last used date: {last_used}")
+                            except Exception as e:
+                                logger.warning(f"Error parsing last used date '{last_used}' for user {user}: {e}")
+                                last_used = None
+
+                        try:
+                            update_entry = User.objects.get(portal_instance=instance_item, user_username__exact=user)
+                            update_entry.user_pro_license = "desktopAdvN"
+                            update_entry.user_pro_last = last_used
+                            update_entry.save()
+                            logger.debug(f"Updated Advanced license information for user: {user}")
+                            adv_success += 1
+                        except User.DoesNotExist:
+                            logger.warning(f"User {user} not found in database for Advanced license update")
+                            result.add_error(f"User {user} not found in database for Advanced license update")
+                            adv_errors += 1
+                        except Exception as e:
+                            logger.error(f"Error updating Advanced license for user {user}: {e}", exc_info=True)
+                            result.add_error(f"Error with licenses: {e}")
+                            adv_errors += 1
+
+                    logger.info(f"Advanced license processing completed: {adv_success} successful, {adv_errors} errors")
+
+                    logger.debug(f"Processing {basic_count} Basic licenses")
+                    basic_success = 0
+                    basic_errors = 0
+
+                    for license_index, user_license in enumerate(desktop_basic_n):
+                        user = user_license["user"]
+                        last_used = user_license["lastUsed"]
+                        logger.debug(f"Processing Basic license {license_index+1}/{basic_count} for user: {user}")
+
+                        if last_used:
+                            try:
+                                last_used = datetime.strptime(last_used, "%B %d, %Y").date()
+                                logger.debug(f"Last used date: {last_used}")
+                            except Exception as e:
+                                logger.warning(f"Error parsing last used date '{last_used}' for user {user}: {e}")
+                                last_used = None
+
+                        try:
+                            update_entry = User.objects.get(portal_instance=instance_item, user_username__exact=user)
+                            update_entry.user_pro_license = "desktopBasicN"
+                            update_entry.user_pro_last = last_used
+                            update_entry.save()
+                            logger.debug(f"Updated Basic license information for user: {user}")
+                            basic_success += 1
+                        except User.DoesNotExist:
+                            logger.warning(f"User {user} not found in database for Basic license update")
+                            result.add_error(f"User {user} not found in database for Basic license update")
+                            basic_errors += 1
+                        except Exception as e:
+                            logger.error(f"Error updating Basic license for user {user}: {e}", exc_info=True)
+                            result.add_error(f"Error with licenses: {e}")
+                            basic_errors += 1
+
+                    logger.info(f"Basic license processing completed: {basic_success} successful, {basic_errors} errors")
+
+                    logger.debug(f"Processing {std_count} Standard licenses")
+                    std_success = 0
+                    std_errors = 0
+
+                    for license_index, user_license in enumerate(desktop_std_n):
+                        user = user_license["user"]
+                        last_used = user_license["lastUsed"]
+                        logger.debug(f"Processing Standard license {license_index+1}/{std_count} for user: {user}")
+
+                        if last_used:
+                            try:
+                                last_used = datetime.strptime(last_used, "%B %d, %Y").date()
+                                logger.debug(f"Last used date: {last_used}")
+                            except Exception as e:
+                                logger.warning(f"Error parsing last used date '{last_used}' for user {user}: {e}")
+                                last_used = None
+
+                        try:
+                            update_entry = User.objects.get(portal_instance=instance_item, user_username__exact=user)
+                            update_entry.user_pro_license = "desktopStdN"
+                            update_entry.user_pro_last = last_used
+                            update_entry.save()
+                            logger.debug(f"Updated Standard license information for user: {user}")
+                            std_success += 1
+                        except User.DoesNotExist:
+                            logger.warning(f"User {user} not found in database for Standard license update")
+                            result.add_error(f"User {user} not found in database for Standard license update")
+                            std_errors += 1
+                        except Exception as e:
+                            logger.error(f"Error updating Standard license for user {user}: {e}", exc_info=True)
+                            result.add_error(f"Error with licenses: {e}")
+                            std_errors += 1
+
+                    logger.info(f"Standard license processing completed: {std_success} successful, {std_errors} errors")
+
+                except Exception as e:
+                    logger.error(f"Error extracting license information from report: {e}", exc_info=True)
+                    result.add_error("Error extracting license information from report")
+            else:
+                logger.debug("No ArcGIS Pro license information available")
+        except Exception as e:
+            logger.error(f"Error retrieving ArcGIS Pro license information: {e}", exc_info=True)
+            result.add_error("Error retrieving ArcGIS Pro license information")
+
+        logger.debug(f"Cleaning up outdated user records for portal '{instance_alias}'")
         delete_outdated_records(instance_item, update_time, [User], result)
+        logger.info(f"Outdated user records cleanup completed with {result.num_deletes} deletions")
 
-        # Update the portal instance's last user update timestamp.
-        instance_item.user_updated = datetime.datetime.now()
+        instance_item.user_updated = datetime.now()
         instance_item.save()
 
         result.set_success()
+        logger.info(f"Users update for portal '{instance_alias}' completed successfully")
         return result.to_json()
 
     except Exception as e:
-        # Capture and log any exceptions during the update process, then return the result.
-        logger.exception(f"Unable to update users for {instance_alias}: {e}")
-        result.add_error(f"Unable to update users for {instance_alias}")
-        # Get child tasks
+        logger.critical(f"Users update failed for portal '{instance_alias}': {e}", exc_info=True)
+        result.add_error(f"Unable to update users")
+
+        # Revoke child tasks if they exist
         if batch_results and batch_results.children:
+            logger.warning(f"Revoking {len(batch_results.children)} child tasks due to failure")
             for child in batch_results.children:
                 if child.id:
+                    logger.debug(f"Revoking child task: {child.id}")
                     current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
+            logger.info("All child tasks revoked")
 
         # Also revoke the current task
+        logger.debug(f"Revoking current task: {self.request.id}")
         current_app.control.revoke(self.request.id, terminate=True, signal="SIGKILL")
+        logger.debug("Current task revoked")
 
         self.update_state(state="FAILURE", meta=result.to_json())
         raise Ignore()
 
 
 @shared_task(bind=True)
+@celery_logging_context
 def process_batch_users(self, instance_alias, username, password, batch, batch_size, roles, update_time):
     result = UpdateResult()
     progress_recorder = ProgressRecorder(self)
-    instance_item = Portal.objects.get(alias=instance_alias)
-    target = connect(instance_item, username, password)
-    user_list = target.users.advanced_search(query="!_esri", max_users=batch_size,
-                                             start=batch, sort_field="username", sort_order="asc")
-    for counter, user in enumerate(user_list.get("results")):
+
+    try:
         try:
-            if not (user.get("userType", None) and user.get("role", None)):
-                # Likely a system user. Can't exclude in advanced_search
-                continue
-            items = target.content.advanced_search(query=f"owner:{user.username}", max_items=-1, return_count=True)
+            instance_item = Portal.objects.get(alias=instance_alias)
+            target = connect(instance_item, username, password)
+
+        except Exception as e:
+            logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+            result.add_error(f"Unable to connect to {instance_alias}")
+            return {"result": result.to_json()}
+
+        logger.debug(f"Retrieving users for batch {batch} to {batch + batch_size}")
+
+        if instance_item.portal_type == "agol":
+            org_id = instance_item.org_id
+            logger.debug(f"Using AGOL-specific query with org_id: {org_id}")
+            query = f"orgid:{org_id} AND NOT username:_esri"
+
+            user_list = target.users.advanced_search(
+                query=query,
+                max_users=batch_size,
+                start=batch,
+                sort_field="username",
+                sort_order="asc"
+            )
+        else:
+            logger.debug("Using standard Portal for ArcGIS query")
+            query = "!_esri"
+
+            user_list = target.users.advanced_search(
+                query=query,
+                max_users=batch_size,
+                start=batch,
+                sort_field="username",
+                sort_order="asc"
+            )
+
+        results = user_list.get("results", [])
+        total_users = len(results)
+        logger.info(f"Retrieved {total_users} users for batch {batch} to {batch + batch_size}")
+
+        logger.debug(f"Starting to process {total_users} users")
+
+        for counter, user in enumerate(results):
+            user_name = user.get("username", "unknown")
+            logger.debug(f"Processing user {counter+1}/{total_users}: {user_name}")
+
+            try:
+                # Skip system users
+                if not (user.get("userType", None) and user.get("role", None)):
+                    logger.debug(f"Skipping system user: {user_name}")
+                    continue
+
+                logger.debug(f"Retrieving item count for user: {user_name}")
+                items = target.content.advanced_search(query=f"owner:{user_name}", max_items=-1, return_count=True)
+                logger.debug(f"User {user_name} has {items} items")
+
+                first_name = user.fullName.split(" ")[0] if user.get("firstName", None) is None else user.firstName
+                last_name = user.fullName.split(" ")[-1] if user.get("lastName", None) is None else user.lastName
+                role = roles.get(user.roleId, user.roleId)
+
+                logger.debug(f"Creating or updating user record for: {user_name}")
+                obj, created = User.objects.update_or_create(
+                    portal_instance=instance_item,
+                    user_username=user_name,
+                    defaults={
+                        "user_first_name": first_name,
+                        "user_last_name": last_name,
+                        "user_email": user.email,
+                        "user_created": epoch_to_datetime(user.created),
+                        "user_last_login": epoch_to_datetime(user.lastLogin),
+                        "user_role": role,
+                        "user_level": user.userLicenseTypeId,
+                        "user_disabled": user.disabled,
+                        "user_provider": user.provider,
+                        "user_items": items,
+                        "updated_date": update_time
+                    }
+                )
+
+                if created:
+                    logger.info(f"Created new user record for: {user_name}")
+                    result.add_insert()
+                else:
+                    logger.info(f"Updated existing user record for: {user_name}")
+                    result.add_update()
+
+                progress_percentage = ((counter + 1) / total_users) * 100
+                logger.debug(f"Progress: {progress_percentage:.1f}% ({counter+1}/{total_users})")
+                progress_recorder.set_progress(counter + 1, total_users)
+
+            except Exception as e:
+                logger.error(f"Unable to process user {user_name}: {e}", exc_info=True)
+                result.add_error(f"Unable to update user {user_name}")
+
+        logger.info(f"Completed processing {total_users} users in batch {batch} to {batch + batch_size}")
+        logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
+
+        result.set_success()
+        return {"result": result.to_json()}
+
+    except Exception as e:
+        logger.error(f"Error processing users in batch {batch} to {batch + batch_size}: {e}", exc_info=True)
+        result.add_error(f"Error processing users in batch {batch} to {batch + batch_size}")
+        return {"result": result.to_json()}
+    finally:
+        batch_password = None
+
+
+@shared_task(bind=True)
+@celery_logging_context
+def process_user(self, instance_alias, username, operation):
+    # Operations: delete, update, add(?)
+    # Event triggers: add, delete, disable, enable, updateUserRole, updateUserLicenseType
+    logger.debug(
+        f"Starting process_user for instance_alias={instance_alias}, username={username}, operation={operation}")
+
+    update_time = datetime.now()
+    result = UpdateResult()
+    try:
+        instance_item = Portal.objects.get(alias=instance_alias)
+        target = connect(instance_item)
+
+    except Exception as e:
+        logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+        self.update_state(state="FAILURE")
+        raise Ignore()
+
+    if operation == 'delete':
+        logger.info(f"Processing delete operation for user '{username}' in portal '{instance_alias}'")
+        try:
+            logger.debug(f"Finding user records to delete with username: {username}")
+            deletes = User.objects.filter(portal_instance=instance_item, user_username=username)
+            delete_count = len(deletes)
+
+            if delete_count > 0:
+                logger.debug(f"Found {delete_count} user records to delete")
+                deletes.delete()
+                logger.info(f"Successfully deleted {delete_count} user records")
+            else:
+                logger.warning(f"No user records found to delete for username: {username}")
+
+            instance_item.user_updated = update_time
+            instance_item.save()
+
+            logger.info(f"User '{username}' deletion completed")
+            return
+
+        except Exception as e:
+            logger.error(f"Unable to delete user '{username}' for portal '{instance_alias}': {e}", exc_info=True)
+            self.update_state(state="FAILURE")
+            raise Ignore()
+
+    else:
+        logger.info(f"Processing {operation} operation for user '{username}' in portal '{instance_alias}'")
+        try:
+            logger.debug(f"Retrieving roles from portal for user '{username}'")
+            roles = dict([(role.role_id, role.name) for role in target.users.roles.all()])
+            logger.debug(f"Retrieved {len(roles)} roles from portal")
+
+            logger.debug(f"Retrieving user details for '{username}'")
+            user = target.users.get(username)
+            if not user:
+                logger.error(f"User '{username}' not found in portal '{instance_alias}'")
+                return
+            logger.debug(f"Successfully retrieved user details for '{username}'")
+
+            logger.debug(f"Retrieving ArcGIS Pro license information for user '{username}'")
+            try:
+                user_license = target.admin.license.get("ArcGIS Pro").user_entitlement(username)
+                target_entitlements = ['desktopAdvN', 'desktopStdN', 'desktopBasicN']
+                pro_license = next((e for e in target_entitlements if e in user_license['entitlements']), None)
+                logger.debug(f"User '{username}' has Pro license: {pro_license}")
+            except Exception as e:
+                logger.warning(f"Error retrieving Pro license for user '{username}': {e}")
+                pro_license = None
+                user_license = {}
+
+            logger.debug(f"Retrieving items owned by user '{username}'")
+            items = target.content.search(query=f'owner:{user.username}', max_items=10000)
+            item_count = len(items)
+            logger.debug(f"User '{username}' owns {item_count} items")
+
+            first_name = user.fullName.split(" ")[0] if user.firstName is None else user.firstName
+            last_name = user.fullName.split(" ")[-1] if user.lastName is None else user.lastName
+
+            logger.debug(f"Creating or updating user record for '{username}'")
             obj, created = User.objects.update_or_create(
                 portal_instance=instance_item,
                 user_username=user.username,
                 defaults={
-                    "user_first_name": user.fullName.split(" ")[0] if user.get("firstName",
-                                                                               None) is None else user.firstName,
-                    "user_last_name": user.fullName.split(" ")[-1] if user.get("lastName",
-                                                                               None) is None else user.lastName,
-                    "user_email": user.email,
-                    "user_created": epoch_to_datetime(user.created),
-                    "user_last_login": epoch_to_datetime(user.lastLogin),
-                    "user_role": roles.get(user.roleId, user.roleId),
-                    "user_level": user.userLicenseTypeId,
-                    "user_disabled": user.disabled,
-                    "user_provider": user.provider,
-                    "user_items": items,
-                    "updated_date": update_time
+                    'user_first_name': first_name,
+                    'user_last_name': last_name,
+                    'user_email': user.email,
+                    'user_created': epoch_to_datetime(user.created),
+                    'user_last_login': epoch_to_datetime(user.lastLogin),
+                    'user_role': roles.get(user.roleId, user.roleId),
+                    'user_level': user.userLicenseTypeId,
+                    'user_disabled': user.disabled,
+                    'user_provider': user.provider,
+                    'user_items': item_count,
+                    'user_pro_license': pro_license,
+                    'user_pro_last': user_license.get('lastLogin', None),
                 }
             )
-            result.add_insert() if created else result.add_update()
-            progress_recorder.set_progress(counter, len(user_list.get("results")))
-        except Exception as e:
-            # Log and record any errors encountered during processing of this web map.
-            logger.exception(f"Unable to update user {user.username}: {e}")
-            result.add_error(f"Unable to update user {user.username}")
-    result.set_success()
-    return {"result": result.to_json()}
 
+            if created:
+                logger.info(f"Created new user record for '{username}'")
+            else:
+                logger.info(f"Updated existing user record for '{username}'")
 
-# TODO create logging model
-@shared_task(bind=True)
-def process_user(self, instance_alias, username, operation):
-    # Operations: delete, update, add(?)
-    # Event triggers: add, delete, disable, enable, updateUserRole, updateUserLicenseType
-    logger.debug("updating users")
-    result = UpdateResult()
-    try:
-        instance_item = Portal.objects.get(alias=instance_alias)
-        # Connect to the target portal using provided credentials.
-        target = connect(instance_item)
-    except Exception as e:
-        # Record connection error and return error result.
-        logger.exception(f"Unable to connect to {instance_alias}: {e}")
-        result.add_error(f"Unable to connect to {instance_alias}")
-        self.update_state(state="FAILURE", meta={result.to_json()})
-        raise Ignore()
-    if operation == 'delete':
-        try:
-            deletes = User.objects.filter(portal_instance=instance_item, user_username=username)
-            result.add_delete(len(deletes))
-            deletes.delete()
-
-            instance_item.user_updated = datetime.datetime.now()
+            instance_item.user_updated = datetime.now()
             instance_item.save()
-            result.set_success()
-            return result.to_json()
+
+            logger.info(f"User '{username}' {operation} operation completed successfully")
+            return
+
         except Exception as e:
-            logger.exception(f"Unable to delete user {username} for {instance_alias}: {e}")
-            result.add_error(f"Unable to delete user {username} for {instance_alias}")
-            self.update_state(state="FAILURE", meta={result.to_json()})
-            raise Ignore()
-
-    else:
-        try:
-            roles = dict([(role.role_id, role.name) for role in target.users.roles.all()])
-            user = target.users.get(username)
-
-            user_license = target.admin.license.get("ArcGIS Pro").user_entitlement(username)
-            target_entitlements = ['desktopAdvN', 'desktopStdN', 'desktopBasicN']
-            pro_license = next((e for e in target_entitlements if e in user_license['entitlements']), None)
-
-            items = target.content.search(query=f'owner:{user.username}', max_items=10000)
-            obj, created = User.objects.update_or_create(portal_instance=instance_item, user_username=user.username,
-                                                         defaults={
-                                                             'user_first_name': user.fullName.split(" ")[
-                                                                 0] if user.firstName is None else user.firstName,
-                                                             'user_last_name': user.fullName.split(" ")[
-                                                                 -1] if user.lastName is None else user.lastName,
-                                                             'user_email': user.email,
-                                                             'user_created': epoch_to_datetime(user.created),
-                                                             'user_last_login': epoch_to_datetime(user.lastLogin),
-                                                             'user_role': roles.get(user.roleId, user.roleId),
-                                                             'user_level': user.userLicenseTypeId,
-                                                             'user_disabled': user.disabled,
-                                                             'user_provider': user.provider,
-                                                             'user_items': len(items),
-                                                             'user_pro_license': pro_license,
-                                                             'user_pro_last': user_license.get('lastLogin', None),
-                                                         })
-            result.add_insert() if created else result.add_update()
-
-            instance_item.user_updated = datetime.datetime.now()
-            instance_item.save()
-            result.set_success()
-            return result.to_json()
-        except Exception as e:
-            logger.exception(f"Unable to update user {username} for {instance_alias}: {e}")
-            result.add_error(f"Unable to update user {username} for {instance_alias}")
-            self.update_state(state="FAILURE", meta={result.to_json()})
+            logger.error(f"Unable to process {operation} operation for user '{username}' in portal '{instance_alias}': {e}", exc_info=True)
+            self.update_state(state="FAILURE")
             raise Ignore()
 
 
 @shared_task(bind=True)
+@celery_logging_context
 def process_webmap(self, instance_alias, item_id, operation):
     # Operation: add, delete, publish, share, unshare, update
-    logger.debug("updating webmap")
+    logger.debug(
+        f"Starting process_webmap for instance_alias={instance_alias}, item_id={item_id}, operation={operation}")
+
+    update_time = datetime.now()
     result = UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        # Connect to the target portal using provided credentials.
         target = connect(instance_item)
+
     except Exception as e:
-        # Record connection error and return error result.
-        logger.exception(f"Unable to connect to {instance_alias}: {e}")
-        result.add_error(f"Unable to connect to {instance_alias}")
-        self.update_state(state="FAILURE", meta={result.to_json()})
+        logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+        self.update_state(state="FAILURE")
         raise Ignore()
-    if operation == 'delete':
-        try:
-            deletes = Webmap.objects.filter(portal_instance=instance_item, webmap_id=item_id)
-            result.add_delete(len(deletes))
-            deletes.delete()
 
-            instance_item.webmap_updated = datetime.datetime.now()
-            instance_item.save()
-            result.set_success()
-            return result.to_json()
-        except Exception as e:
-            logger.exception(f"Unable to delete webmap {item_id} for {instance_alias}: {e}")
-            result.add_error(f"Unable to delete webmap {item_id} for {instance_alias}")
-            self.update_state(state="FAILURE", meta={result.to_json()})
-            raise Ignore()
-    else:
+    logger.info(f"Processing web map {item_id} with operation: {operation}")
+    try:
+        logger.debug(f"Retrieving web map item with ID: {item_id}")
         wm_item = target.content.get(item_id)
-        try:
-            logger.debug(wm_item)
-            webmap_data = extract_webmap_data(wm_item, instance_item)
-            obj, created = Webmap.objects.update_or_create(
-                portal_instance=instance_item, webmap_id=wm_item.id, defaults=webmap_data
-            )
-            result.add_insert() if created else result.add_update()
 
-            link_services_to_webmap(instance_item, obj, webmap_data["webmap_services"])
-
-            # Update the portal instance's last updated timestamp.
-            instance_item.webmap_updated = datetime.datetime.now()
-            instance_item.save()
-
-            # Mark the overall update result as successful.
-            result.set_success()
-            return result.to_json()
-
-        except Exception as e:
-            # Log any unexpected exceptions during the update process and record the error.
-            logger.exception(f"Unable to update webmap {item_id} for {instance_alias}: {e}")
-            result.add_error(f"Unable to update webmap {item_id} for {instance_alias}")
-            self.update_state(state="FAILURE", meta={result.to_json()})
+        if wm_item is None:
+            logger.error(f"Web map with ID {item_id} not found in portal '{instance_alias}'")
+            self.update_state(state="FAILURE")
             raise Ignore()
+
+        logger.debug(f"Successfully retrieved web map: {wm_item.title} (ID: {item_id})")
+
+        logger.debug(f"Extracting data for web map: {item_id}")
+        webmap_data = extract_webmap_data(wm_item, instance_item, update_time)
+
+        logger.debug(f"Updating or creating database record for web map: {item_id}")
+        obj, created = Webmap.objects.update_or_create(
+            portal_instance=instance_item,
+            webmap_id=wm_item.id,
+            defaults=webmap_data
+        )
+
+        if created:
+            logger.info(f"Created new record for web map: {item_id} - '{wm_item.title}'")
+        else:
+            logger.info(f"Updated existing record for web map: {item_id} - '{wm_item.title}'")
+
+        service_count = len(webmap_data["webmap_services"])
+        logger.debug(f"Linking {service_count} services to web map: {item_id}")
+        link_services_to_webmap(instance_item, obj, webmap_data["webmap_services"])
+        logger.debug(f"Successfully linked {service_count} services to web map: {item_id}")
+
+        instance_item.webmap_updated = update_time
+        instance_item.save()
+
+        logger.info(f"Web map {item_id} processing completed successfully")
+        return
+
+    except Exception as e:
+        logger.error(f"Unable to process web map {item_id} for portal '{instance_alias}': {e}", exc_info=True)
+        self.update_state(state="FAILURE")
+        raise Ignore()
 
 
 @shared_task(bind=True)
+@celery_logging_context
 def process_service(self, instance_alias, item, operation):
-    return
+    logger.debug(f"Starting process_service for instance_alias={instance_alias}, item={item}, operation={operation}")
+
     import re
     # Operation: add, delete, publish, share, unshare, update
-    logger.debug("updating service")
-    result = UpdateResult()
-    update_time = datetime.datetime.now()
+    logger.info(f"Processing service {item} with operation: {operation}")
+
+    update_time = datetime.now()
+
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        # Connect to the target portal using provided credentials.
         target = connect(instance_item)
+
     except Exception as e:
-        # Record connection error and return error result.
-        logger.exception(f"Unable to connect to {instance_alias}: {e}")
-        result.add_error(f"Unable to connect to {instance_alias}")
-        self.update_state(state="FAILURE", meta={result.to_json()})
+        logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+        self.update_state(state="FAILURE")
         raise Ignore()
-    service = arcgis.gis.server.Service(item, target)
 
-    if service is None:
-        result.add_error(f"Unable to create service {item}. Service not found.")
-    if operation == 'delete':
-        try:
-            deletes = Service.objects.filter(portal_instance=instance_item, service_url__icontains=service.url.url)
-            result.add_delete(len(deletes))
-            deletes.delete()
+    try:
+        logger.debug(f"Creating service object for item: {item}")
+        service = arcgis.gis.server.Service(item, target)
 
-            instance_item.webmap_updated = datetime.datetime.now()
-            instance_item.save()
-            result.set_success()
-            return result.to_json()
-        except Exception as e:
-            logger.exception(f"Unable to delete service {item} for {instance_alias}: {e}")
-            result.add_error(f"Unable to delete service {item} for {instance_item}")
-            self.update_state(state="FAILURE", meta={result.to_json()})
+        if service is None:
+            logger.error(f"Unable to create service {item}. Service not found.")
+            self.update_state(state="FAILURE")
             raise Ignore()
-    else:
+
+        logger.debug(f"Successfully created service object for item: {item}")
+        logger.debug(f"Service URL: {service.url.url if hasattr(service, 'url') else 'Unknown'}")
+
+    except Exception as e:
+        logger.error(f"Error creating service object for item: {item}: {e}", exc_info=True)
+        self.update_state(state="FAILURE")
+        raise Ignore()
+
+    try:
+        match = re.search(r"/services(?:/([^/]+))?/([^/]+)/[^/]+(?:/\d+)?$", service.url.url)
+        if match:
+            folder_name = match.group(1)
+            if folder_name is None:
+                folder_name = ""
+            service_name = match.group(2)
+        else:
+            return
+        service_admin = target.admin.servers.list()[0].services.get(service_name, folder_name)
+        services_list = []
+        regexp_server = re.compile("(?<=SERVER=)([^;]*)")
+        regexp_version = re.compile("(?<=VERSION=)([^;]*)")
+        regexp_branch = re.compile("(?<=BRANCH=)([^;]*)")
+        regexp_database = re.compile("(?<=DATABASE=)([^;]*)")
+        url = []
+        portal_ids = {}
+        service_layers = {}
+        owner, access, description = None, None, None
+        mxd_map = service.properties['mapName']
+        service_type = service_admin.properties["type"]
+        service.url
+        if folder_name == '':
+            name = "{}".format(service_admin.properties["serviceName"])
+            url.append(target.hosting_servers[0].url + "/{}/{}".format(name, service_type))
+        else:
+            name = "{}/{}".format(folder_name, service_admin.properties["serviceName"])
+            url.append(target.hosting_servers[0].url + "/{}/{}".format(name, service_type))
+        services_list.append(f"services/{name}.{service_type}")
+
         try:
-            match = re.search(r"/services(?:/([^/]+))?/([^/]+)/[^/]+(?:/\d+)?$", service.url.url)
-            if match:
-                folder_name = match.group(1)
-                if folder_name is None:
-                    folder_name = ""
-                service_name = match.group(2)
-            else:
-                result.add_error(f"Unable to determine service folder and name {item}")
-                return result.to_json()
-            service_admin = target.admin.servers.list()[0].services.get(service_name, folder_name)
-            services_list = []
-            regexp_server = re.compile("(?<=SERVER=)([^;]*)")
-            regexp_version = re.compile("(?<=VERSION=)([^;]*)")
-            regexp_branch = re.compile("(?<=BRANCH=)([^;]*)")
-            regexp_database = re.compile("(?<=DATABASE=)([^;]*)")
-            url = []
-            portal_ids = {}
-            service_layers = {}
-            owner, access, description = None, None, None
-            mxd_map = service.properties['mapName']
-            service_type = service_admin.properties["type"]
-            service.url
-            if folder_name == '':
-                name = "{}".format(service_admin.properties["serviceName"])
-                url.append(target.hosting_servers[0].url + "/{}/{}".format(name, service_type))
-            else:
-                name = "{}/{}".format(folder_name, service_admin.properties["serviceName"])
-                url.append(target.hosting_servers[0].url + "/{}/{}".format(name, service_type))
-            services_list.append(f"services/{name}.{service_type}")
-
-            try:
-                portal_items = service_admin._json_dict['portalProperties']['portalItems']
-                for item in portal_items:
-                    portal_ids[item['type']] = item['itemID']
-                    if item['type'] == "FeatureServer" and not target.hosting_servers[
-                                                                   0].url + "/{}/{}".format(name,
-                                                                                            "FeatureServer") in url:
-                        url.append(
-                            target.hosting_servers[0].url + "/{}/{}".format(name, "FeatureServer"))
-                    portal_item = target.content.get(item['itemID'])
-                    if portal_item:
-                        try:
-                            owner = User.objects.get(portal_instance=instance_item,
-                                                     user_username=portal_item.owner)
-                        except User.DoesNotExist:
-                            owner = None
-                        if portal_item.access == 'shared':  # or used .shared_with https://developers.arcgis.com/python/api-reference/arcgis.gis.toc.html#arcgis.gis.Item.shared_with
-                            access = "Groups: " + ", ".join(
-                                x.title for x in portal_item.shared_with['groups'])
-                        else:
-                            access = portal_item.access.title()
-                        soup = BeautifulSoup(portal_item.description, 'html.parser')
-                        description = soup.get_text()
-                    else:
+            portal_items = service_admin._json_dict['portalProperties']['portalItems']
+            for item in portal_items:
+                portal_ids[item['type']] = item['itemID']
+                if item['type'] == "FeatureServer" and not target.hosting_servers[
+                                                               0].url + "/{}/{}".format(name,
+                                                                                        "FeatureServer") in url:
+                    url.append(
+                        target.hosting_servers[0].url + "/{}/{}".format(name, "FeatureServer"))
+                portal_item = target.content.get(item['itemID'])
+                if portal_item:
+                    try:
+                        owner = User.objects.get(portal_instance=instance_item,
+                                                 user_username=portal_item.owner)
+                    except User.DoesNotExist:
                         owner = None
-            except Exception as e:
-                logger.exception(f"Unable to get portal items for {item}: {e}")
-                result.add_error(f"No portal item for {item}")
-            sm = json.loads(service_admin.service_manifest())
-            if sm.get('code') == 500 and sm.get(
-                'status') == 'error' and 'FeatureServer' in portal_ids.keys():
-                result.add_error(f"Unable to update {name}: No Service Manifest")
-                s_obj, created = Service.objects.update_or_create(portal_instance=instance_item,
-                                                                  service_name=name,
-                                                                  defaults={
-                                                                      'service_url': ','.join(url),
-                                                                      'service_mxd_server': None,
-                                                                      'service_mxd': None,
-                                                                      'portal_id': portal_ids,
-                                                                      'service_type': service_type,
-                                                                      'service_description': description,
-                                                                      'service_owner': owner,
-                                                                      'service_access': access,
-                                                                      'updated_date': update_time})
-                if created:
-                    result.add_insert()
+                    if portal_item.access == 'shared':  # or used .shared_with https://developers.arcgis.com/python/api-reference/arcgis.gis.toc.html#arcgis.gis.Item.shared_with
+                        access = "Groups: " + ", ".join(
+                            x.title for x in portal_item.shared_with['groups'])
+                    else:
+                        access = portal_item.access.title()
+                    soup = BeautifulSoup(portal_item.description, 'html.parser')
+                    description = soup.get_text()
                 else:
-                    result.add_update()
-                id = portal_ids['FeatureServer']
-                l = target.content.get(id)
-                if l.layers:
-                    for layer in l.layers:
-                        obj, created = Layer.objects.update_or_create(portal_instance=instance_item,
-                                                                      layer_server='Hosted',
-                                                                      layer_version=None,
-                                                                      layer_database=None,
-                                                                      layer_name=layer.properties.name,
-                                                                      defaults={
-                                                                          'updated_date': update_time})
-                        # TODO track layer CRUD
-                        obj, created = Layer_Service.objects.update_or_create(
-                            portal_instance=instance_item,
-                            layer_id=obj, service_id=s_obj,
-                            defaults={'updated_date': update_time})
+                    owner = None
+        except Exception as e:
+            logger.error(f"Unable to get portal items for {item}: {e}")
+        sm = json.loads(service_admin.service_manifest())
+        if sm.get('code') == 500 and sm.get(
+            'status') == 'error' and 'FeatureServer' in portal_ids.keys():
+            s_obj, created = Service.objects.update_or_create(portal_instance=instance_item,
+                                                              service_name=name,
+                                                              defaults={
+                                                                  'service_url': ','.join(url),
+                                                                  'service_mxd_server': None,
+                                                                  'service_mxd': None,
+                                                                  'portal_id': portal_ids,
+                                                                  'service_type': service_type,
+                                                                  'service_description': description,
+                                                                  'service_owner': owner,
+                                                                  'service_access': access,
+                                                                  'updated_date': update_time})
+            if created:
+                result.add_insert()
             else:
-                if 'resources' in sm.keys():
-                    res_obj = sm["resources"]
-                    for obj in res_obj:
-                        mxd = f"{obj['onPremisePath']}/{mxd_map}"
-                        mxd_server = obj["clientName"]
-                else:
-                    mxd = None
-                    mxd_server = None
+                result.add_update()
+            id = portal_ids['FeatureServer']
+            l = target.content.get(id)
+            if l.layers:
+                for layer in l.layers:
+                    obj, created = Layer.objects.update_or_create(portal_instance=instance_item,
+                                                                  layer_server='Hosted',
+                                                                  layer_version=None,
+                                                                  layer_database=None,
+                                                                  layer_name=layer.properties.name,
+                                                                  defaults={
+                                                                      'updated_date': update_time})
+                    # TODO track layer CRUD
+                    obj, created = Layer_Service.objects.update_or_create(
+                        portal_instance=instance_item,
+                        layer_id=obj, service_id=s_obj,
+                        defaults={'updated_date': update_time})
+        else:
+            if 'resources' in sm.keys():
+                res_obj = sm["resources"]
+                for obj in res_obj:
+                    mxd = f"{obj['onPremisePath']}/{mxd_map}"
+                    mxd_server = obj["clientName"]
+            else:
+                mxd = None
+                mxd_server = None
 
-                s_obj, created = Service.objects.update_or_create(portal_instance=instance_item,
-                                                                  service_name=name,
-                                                                  defaults={'service_url': ','.join(url),
-                                                                            'service_mxd_server': mxd_server,
-                                                                            'service_mxd': mxd,
-                                                                            'portal_id': portal_ids,
-                                                                            'service_type': service_type,
-                                                                            'service_description': description,
-                                                                            'service_owner': owner,
-                                                                            'service_access': access,
-                                                                            'updated_date': update_time})
-                if created:
-                    result.add_insert()
-                else:
-                    result.add_update()
+            s_obj, created = Service.objects.update_or_create(portal_instance=instance_item,
+                                                              service_name=name,
+                                                              defaults={'service_url': ','.join(url),
+                                                                        'service_mxd_server': mxd_server,
+                                                                        'service_mxd': mxd,
+                                                                        'portal_id': portal_ids,
+                                                                        'service_type': service_type,
+                                                                        'service_description': description,
+                                                                        'service_owner': owner,
+                                                                        'service_access': access,
+                                                                        'updated_date': update_time})
+            if created:
+                result.add_insert()
+            else:
+                result.add_update()
 
-                if 'databases' in sm.keys():
-                    db_obj = sm["databases"]
-                    for obj in db_obj:
-                        db_server = ""
-                        db_version = ""
-                        db_database = ""
-                        if "Sde" in obj["onServerWorkspaceFactoryProgID"]:
-                            db_server = str(
-                                regexp_server.search(obj["onServerConnectionString"]).group(0)).upper()
+            if 'databases' in sm.keys():
+                db_obj = sm["databases"]
+                for obj in db_obj:
+                    db_server = ""
+                    db_version = ""
+                    db_database = ""
+                    if "Sde" in obj["onServerWorkspaceFactoryProgID"]:
+                        db_server = str(
+                            regexp_server.search(obj["onServerConnectionString"]).group(0)).upper()
+                        try:
+                            db_version = str(
+                                regexp_version.search(obj["onServerConnectionString"]).group(
+                                    0)).upper()
+                        except:
                             try:
                                 db_version = str(
-                                    regexp_version.search(obj["onServerConnectionString"]).group(
+                                    regexp_branch.search(obj["onServerConnectionString"]).group(
                                         0)).upper()
                             except:
-                                try:
-                                    db_version = str(
-                                        regexp_branch.search(obj["onServerConnectionString"]).group(
-                                            0)).upper()
-                                except:
-                                    db_version = ""
-                            db_database = str(
-                                regexp_database.search(obj["onServerConnectionString"]).group(
-                                    0)).upper()
-                            db = "{}@{}@{}".format(db_server, db_database, db_version)
-                        elif "FileGDB" in obj["onServerWorkspaceFactoryProgID"]:
-                            db_database = obj["onServerConnectionString"].split("DATABASE=")[1].replace(
-                                '\\\\',
-                                '\\')
-                            db = db_database
-                        datasets = obj["datasets"]
-                        for dataset in datasets:
-                            service_layers[dataset["onServerName"]] = db
-                            if db_database:
-                                obj, created = Layer.objects.update_or_create(portal_instance=instance_item,
-                                                                              layer_server=db_server,
-                                                                              layer_version=db_version,
-                                                                              layer_database=db_database,
-                                                                              layer_name=dataset[
-                                                                                  "onServerName"],
-                                                                              defaults={
-                                                                                  'updated_date': update_time})
-                                # TODO track layer CRUD
-                                obj, created = Layer_Service.objects.update_or_create(
-                                    portal_instance=instance_item,
-                                    layer_id=obj, service_id=s_obj,
-                                    defaults={'updated_date': update_time})
+                                db_version = ""
+                        db_database = str(
+                            regexp_database.search(obj["onServerConnectionString"]).group(
+                                0)).upper()
+                        db = "{}@{}@{}".format(db_server, db_database, db_version)
+                    elif "FileGDB" in obj["onServerWorkspaceFactoryProgID"]:
+                        db_database = obj["onServerConnectionString"].split("DATABASE=")[1].replace(
+                            '\\\\',
+                            '\\')
+                        db = db_database
+                    datasets = obj["datasets"]
+                    for dataset in datasets:
+                        service_layers[dataset["onServerName"]] = db
+                        if db_database:
+                            obj, created = Layer.objects.update_or_create(portal_instance=instance_item,
+                                                                          layer_server=db_server,
+                                                                          layer_version=db_version,
+                                                                          layer_database=db_database,
+                                                                          layer_name=dataset[
+                                                                              "onServerName"],
+                                                                          defaults={
+                                                                              'updated_date': update_time})
+                            # TODO track layer CRUD
+                            obj, created = Layer_Service.objects.update_or_create(
+                                portal_instance=instance_item,
+                                layer_id=obj, service_id=s_obj,
+                                defaults={'updated_date': update_time})
 
-            # Search all views, then associate with the parent service
-            service_views = service.related_items(rel_type="Service2Service", direction="reverse")
-            for parent in service_views:
-                try:
-                    view_obj = Service.objects.get(portal_instance=instance_item,
-                                                   service_url__iregex=rf'^{service.url}$')
-                except Service.DoesNotExist:
-                    continue
-                except MultipleObjectsReturned:
-                    view_obj = Service.objects.filter(portal_instance=instance_item,
-                                                      service_url__iregex=rf'{service.url}').first()
-                try:
-                    service_obj = Service.objects.get(portal_instance=instance_item,
-                                                      service_url__iregex=rf'^{parent.url}$')
-                except Service.DoesNotExist:
-                    continue
-                except MultipleObjectsReturned:
-                    service_obj = Service.objects.filter(portal_instance=instance_item,
-                                                         service_url__iregex=rf'{parent.url}').first()
-                logger.debug(f"{service_obj} related to {view_obj}")
+        # Search all views, then associate with the parent service
+        service_views = service.related_items(rel_type="Service2Service", direction="reverse")
+        for parent in service_views:
+            try:
+                view_obj = Service.objects.get(portal_instance=instance_item,
+                                               service_url__overlap=[service.url])
+            except Service.DoesNotExist:
+                continue
+            except MultipleObjectsReturned:
+                view_obj = Service.objects.filter(portal_instance=instance_item,
+                                                  service_url__overlap=[service.url]).first()
+            try:
+                service_obj = Service.objects.get(portal_instance=instance_item,
+                                                  service_url__overlap=[parent.url])
+            except Service.DoesNotExist:
+                continue
+            except MultipleObjectsReturned:
+                service_obj = Service.objects.filter(portal_instance=instance_item,
+                                                     service_url__overlap=[parent.url]).first()
+            logger.debug(f"{service_obj} related to {view_obj}")
 
-                view_obj.service_view = service_obj
-                service_obj.service_view = view_obj
-                view_obj.save()
-                service_obj.save()
-            instance_item.service_updated = update_time
-            instance_item.save()
-            result.set_success()
-            return result.to_json()
-        except Exception as e:
-            logger.exception(f"Unable to update service {item} for {instance_alias}: {e}")
-            result.add_error(f"Unable to update service {item} for {instance_alias}")
-            self.update_state(state="FAILURE", meta={result.to_json()})
-            raise Ignore()
+            view_obj.service_view = service_obj
+            service_obj.service_view = view_obj
+            view_obj.save()
+            service_obj.save()
+        instance_item.service_updated = update_time
+        instance_item.save()
+        return
+    except Exception as e:
+        logger.exception(f"Unable to update service {item} for {instance_alias}: {e}")
+        self.update_state(state="FAILURE")
+        raise Ignore()
 
 
 @shared_task(bind=True)
+@celery_logging_context
 def process_webapp(self, instance_alias, item_id, operation):
     # Operation: add, delete, publish, share, unshare, update
-    logger.debug("updating app")
+    logger.debug(
+        f"Starting process_webapp for instance_alias={instance_alias}, item_id={item_id}, operation={operation}")
+
+    update_time = datetime.now()
     result = UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        # Connect to the target portal using provided credentials.
         target = connect(instance_item)
+
     except Exception as e:
-        # Record connection error and return error result.
-        logger.exception(f"Unable to connect to {instance_alias}: {e}")
-        result.add_error(f"Unable to connect to {instance_alias}")
-        self.update_state(state="FAILURE", meta={result.to_json()})
+        logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+        self.update_state(state="FAILURE")
         raise Ignore()
-    if operation == 'delete':
-        try:
-            deletes = App.objects.filter(portal_instance=instance_item, app_id=item_id)
-            result.add_delete(len(deletes))
-            deletes.delete()
 
-            instance_item.webapp_updated = datetime.datetime.now()
-            instance_item.save()
-            result.set_success()
-            return result.to_json()
-        except Exception as e:
-            logger.exception(f"Unable to delete app {item_id} for {instance_alias}: {e}")
-            result.add_error(f"Unable to delete app {item_id}")
-            self.update_state(state="FAILURE", meta={result.to_json()})
+    logger.info(f"Processing web application {item_id} with operation: {operation}")
+    try:
+        logger.debug(f"Retrieving web application item with ID: {item_id}")
+        item = target.content.get(item_id)
+
+        if item is None:
+            logger.error(f"Web application with ID {item_id} not found in portal '{instance_alias}'")
+            self.update_state(state="FAILURE")
             raise Ignore()
-    else:
-        try:
-            item = target.content.get(item_id)
-            update_time = datetime.datetime.now()
-            logger.debug(item)  # Log the current item for debugging
 
-            # Determine access level: if shared, format group names; otherwise use title case.
-            access = get_access(item)
-            # Process usage statistics based on portal type.
-            usage = calculate_usage(item, instance_item)
-            # Attempt to retrieve the owner of the item.
-            owner = get_owner(instance_item, item.owner)
+        logger.debug(f"Successfully retrieved web application: {item.title} (ID: {item_id})")
+        logger.debug(f"Web application type: {item.type}, Owner: {item.owner}")
 
-            app_data = {
-                "app_title": item.title,
-                "app_url": item.homepage,
-                "app_type": item.type,
-                "app_owner": owner,
-                "app_created": epoch_to_datetime(item.created),
-                "app_modified": epoch_to_datetime(item.modified),
-                "app_access": access,
-                "app_extent": item.extent,
-                "app_description": item.description,
-                "app_views": item.numViews,
-                "app_usage": usage,
-                "updated_date": update_time,
-                "app_last_viewed": epoch_to_datetime(
-                    item.lastViewed) if instance_item.portal_type == 'agol' else None
-            }
-            # Update or create the application record with the latest information.
-            app_obj, created = App.objects.update_or_create(
-                portal_instance=instance_item,
-                app_id=item.id,
-                defaults=app_data
-            )
-            # Record insert or update operation.
-            result.add_insert() if created else result.add_update()
+        logger.debug(f"Processing web application details for: {item_id}")
+        process_single_app(item, target, instance_item, update_time)
 
-            # Retrieve detailed data from the item for further processing.
-            data = item.get_data()
-            logger.debug(item.type)
+        instance_item.webapp_updated = update_time
+        instance_item.save()
 
-            # Process different app types and extract related resources.
-            if item.type == 'Web Mapping Application':
-                logger.debug(data)
-                # If the application has an associated map.
-                if 'map' in data:
-                    logger.debug("WAB has map")
-                    try:
-                        map_id = data['map']['itemId']
-                        map_obj = Webmap.objects.get(portal_instance=instance_item, webmap_id=map_id)
-                        logger.debug(map_obj)
-                        # Create or update the relationship between the app and its web map.
-                        am_obj, created = App_Map.objects.update_or_create(
-                            portal_instance=instance_item,
-                            app_id=app_obj,
-                            webmap_id=map_obj,
-                            rel_type='map',
-                            defaults={'updated_date': update_time}
-                        )
-                    except Webmap.DoesNotExist:
-                        result.add_error(f"{item.title}: map does not exist")
-                # Process additional resources extracted from URLs.
-                for resource in extract_webappbuilder(data):
-                    try:
-                        if resource[2] == 'url':
-                            logger.debug(f"WAB has url {resource[0]}")
-                            # Normalize URL by removing trailing numeric segments if present.
-                            url = resource[0] if not resource[0].split("/")[-1].isdigit() else "/".join(
-                                resource[0].split("/")[:-1])
-                            try:
-                                service_obj = Service.objects.get(service_url__iregex=rf'^{url}$')
-                            except Service.DoesNotExist:
-                                continue
-                            except MultipleObjectsReturned:
-                                service_obj = Service.objects.filter(service_url__iregex=rf'{url}').first()
-                            logger.debug(service_obj)
-                            # Determine relationship type based on resource context.
-                            rel_type = lambda t: 'search' if 'searchLayers' in resource[
-                                1] else 'filter' if 'filters' in resource[1] else 'widget' if 'widgets' in resource[
-                                1] else 'other'
-                            t = rel_type(resource[1])
-                            # Update or create the relationship between the app and the service.
-                            as_obj, created = App_Service.objects.update_or_create(
-                                portal_instance=instance_item,
-                                app_id=app_obj,
-                                service_id=service_obj,
-                                rel_type=t,
-                                defaults={'updated_date': update_time}
-                            )
-                    except Exception:
-                        pass
+        logger.info(f"Web application {item_id} processing completed successfully")
+        return
 
-            if item.type == 'StoryMap':
-                # Process StoryMap resources to link with web maps.
-                for resource in extract_storymap(data['resources']):
-                    try:
-                        if resource[2] == 'Web Map':
-                            logger.debug(f"StoryMap has map {resource[4]}")
-                            map_obj = Webmap.objects.get(webmap_id=resource[4])
-                            logger.debug(map_obj)
-                            am_obj, created = App_Map.objects.update_or_create(
-                                app_id=app_obj,
-                                webmap_id=map_obj,
-                                rel_type='map',
-                                defaults={"updated_date": update_time}
-                            )
-                    except Webmap.DoesNotExist:
-                        result.add_error(f"{item.title}: map does not exist")
-
-            if item.type == 'Dashboard':
-                # Process Dashboard resources to link with services or web maps.
-                for resource in extract_dashboard(data):
-                    try:
-                        dashboard_id = target.content.get(resource[2])
-                        logger.debug(f"Dashboard has resource {resource}")
-                        if dashboard_id.type in ['Map Image Layer', 'Feature Layer']:
-
-                            try:
-                                service_obj = Service.objects.get(service_url__iregex=rf'^{dashboard_id.url}$')
-                            except Service.DoesNotExist:
-                                continue
-                            except MultipleObjectsReturned:
-                                service_obj = Service.objects.filter(
-                                    service_url__iregex=rf'^{dashboard_id.url}').first()
-                            logger.debug(service_obj)
-                            sa_obj, created = App_Service.objects.update_or_create(
-                                portal_instance=instance_item,
-                                app_id=app_obj,
-                                service_id=service_obj,
-                                rel_type='other',
-                                defaults={'updated_date': update_time}
-                            )
-                        if dashboard_id.type == 'Web Map':
-                            map_obj = Webmap.objects.get(webmap_id=dashboard_id.id)
-                            logger.debug(map_obj)
-                            am_obj, created = App_Map.objects.update_or_create(
-                                portal_instance=instance_item,
-                                app_id=app_obj,
-                                webmap_id=map_obj,
-                                rel_type='map',
-                                defaults={'updated_date': update_time}
-                            )
-                    except:
-                        pass
-
-            if item.type == 'Form':
-                # For Form items, process related Survey2Service items.
-                for resource in item.related_items('Survey2Service', 'forward'):
-                    try:
-                        logger.debug(f"Form has service {resource}")
-                        try:
-                            service_obj = Service.objects.get(service_url__iregex=rf'^{resource.url}$')
-                        except Service.DoesNotExist:
-                            continue
-                        except MultipleObjectsReturned:
-                            service_obj = Service.objects.filter(service_url__iregex=rf'{resource.url}').first()
-                        logger.debug(service_obj)
-                        sa_obj, created = App_Service.objects.update_or_create(
-                            portal_instance=instance_item,
-                            app_id=app_obj,
-                            service_id=service_obj,
-                            rel_type='survey',
-                            defaults={"updated_date": update_time}
-                        )
-                    except:
-                        pass
-
-            if item.type == 'Web Experience':
-                # Process Experience Builder resources based on type.
-                for resource in extract_experiencebuilder(data):
-                    try:
-                        logger.debug(f"ExB has resource {resource[3]}")
-                        if resource[3] == 'WEB_MAP':
-                            map_obj = Webmap.objects.get(webmap_id=resource[2])
-                            logger.debug(map_obj)
-                            am_obj, created = App_Map.objects.update_or_create(
-                                portal_instance=instance_item,
-                                webmap_id=map_obj,
-                                app_id=app_obj,
-                                rel_type='map',
-                                defaults={'updated_date': update_time}
-                            )
-                        if resource[3] == 'FEATURE_LAYER':
-                            try:
-                                service_obj = Service.objects.get(service_url__iregex=rf'^{resource[2]}$')
-                            except Service.DoesNotExist:
-                                continue
-                            except MultipleObjectsReturned:
-                                service_obj = Service.objects.filter(service_url__iregex=rf'{resource[2]}').first()
-                            logger.debug(service_obj)
-                            as_obj, created = App_Service.objects.update_or_create(
-                                portal_instance=instance_item,
-                                service_id=service_obj,
-                                app_id=app_obj,
-                                rel_type='other',
-                                defaults={'updated_date': update_time}
-                            )
-                        if resource[3] == 'GEOCODING':
-                            try:
-                                service_obj = Service.objects.get(service_url__iregex=rf'^{resource[2]}$')
-                            except Service.DoesNotExist:
-                                continue
-                            except MultipleObjectsReturned:
-                                service_obj = Service.objects.filter(service_url__iregex=rf'{resource[2]}').first()
-                            service_obj = Service.objects.get(service_url__icontains=resource[2])
-                            logger.debug(service_obj)
-                            as_obj, created = App_Service.objects.update_or_create(
-                                portal_instance=instance_item,
-                                service_id=service_obj,
-                                app_id=app_obj,
-                                rel_type='other',
-                                defaults={'updated_date': update_time}
-                            )
-                    except:
-                        pass
-            deletes = App_Map.objects.filter(portal_instance=instance_item, app_id=item.id,
-                                             updated_date__lt=update_time)
-            deletes.delete()
-            deletes = App_Service.objects.filter(portal_instance=instance_item, app_id=item.id,
-                                                 updated_date__lt=update_time)
-            deletes.delete()
-
-            # Update the portal instance with the current webapp update timestamp.
-            instance_item.webapp_updated = datetime.datetime.now()
-            instance_item.save()
-
-            result.set_success()
-            return result.to_json()
-
-        except Exception as e:
-            logger.exception(f"Unable to update app {item_id} for {instance_alias}: {e}")
-            result.add_error(f"Unable to update app {item_id} for {instance_item}")
-            self.update_state(state="FAILURE", meta={result.to_json()})
-            raise Ignore()
+    except Exception as e:
+        logger.error(f"Unable to process web application {item_id} for portal '{instance_alias}': {e}", exc_info=True)
+        self.update_state(state="FAILURE")
+        raise Ignore()

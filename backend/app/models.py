@@ -27,6 +27,8 @@ from django.db import models
 from django_celery_beat.models import PeriodicTask
 from django_celery_results.models import TaskResult
 from django_cryptography.fields import encrypt
+from django.contrib.postgres.fields import ArrayField
+
 
 
 class Portal(models.Model):
@@ -129,7 +131,12 @@ class Service(models.Model):
     """
     portal_instance = models.ForeignKey(Portal, on_delete=models.CASCADE)
     service_name = models.TextField(verbose_name="Name", blank=True, null=True)
-    service_url = models.TextField(verbose_name="URL", blank=True, null=True)
+    service_url = ArrayField(
+        models.URLField(max_length=1024),
+        blank=True,
+        null=True,
+        help_text="List of URLs for this service (e.g., MapServer, FeatureServer)."
+    )
     service_layers = models.JSONField(verbose_name="Layers", default=dict)
     service_mxd_server = models.TextField(verbose_name="Publish Server", blank=True, null=True)
     service_mxd = models.TextField(verbose_name="Publish Map", blank=True, null=True)
@@ -158,7 +165,7 @@ class Service(models.Model):
         return "%s" % self.service_name
 
     def service_url_as_list(self):
-        return self.service_url.split(",")
+        return self.service_url
 
     def service_owner_as_list(self):
         return self.service_owner.split(",")
