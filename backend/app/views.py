@@ -46,7 +46,7 @@ from django_tables2.export.views import ExportMixin
 
 from app import utils
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
-from .forms import ScheduleForm, SiteSettingsForm
+from .forms import ScheduleForm
 from .models import PortalCreateForm, UserProfile, LogEntry
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *

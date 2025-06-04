@@ -162,7 +162,7 @@ def connect(portal_model_instance, username=None, password=None):
     url = portal_model_instance.url
     logger.debug(f"Preparing to connect to {url} for instance {portal_model_instance.alias}.")
 
-    gis_kwargs = {'verify_cert': False}
+    gis_kwargs = {'verify_cert': True}
 
     try:
         if username and password:
