@@ -81,7 +81,7 @@ Once you've configured the `.env` files, you can deploy EnterpriseViz using Dock
 
     *   **Adding Portals:**
 
-        1.  Log in to the Django admin interface as a superuser.
+        1.  Log into Enterpriseviz as an administrator.
         2.  Navigate to the "Manage Menu" in the left-hand menu.
         3.  Click "Add Portal".
         4.  Fill in the required information:
@@ -127,6 +127,15 @@ Once you've configured the `.env` files, you can deploy EnterpriseViz using Dock
             *   The services that include the layer (based on layer name).
             *   The web maps using those services.
             *   The apps using those services or the maps.
+
+    *   **Settings**
+
+        *   **Logging:** Application logs can be viewed through the Settings panel.
+             *   Logging levels may be changed here
+        *   **Theme:** Change between light and dark mode.
+             *   Preferences are saved to your user
+        *   **Service Usage** Enable or disable real-time service usage graphs in detail pages
+             *   Sometimes usage graphs can take a while to retrieve from ArcGIS Server
 
 
 ## Screenshots

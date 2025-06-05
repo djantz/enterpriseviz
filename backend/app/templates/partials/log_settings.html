@@ -1,0 +1,32 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<calcite-dialog id="log-settings-modal" modal heading="Log Settings" scale="m" open width="m"
+                {% if form.errors %}kind="danger"{% endif %}>
+
+  <div>
+    <form id="log-settings-form">
+      {% csrf_token %}
+      <calcite-label>
+        Application Log Level
+        <calcite-select name="level" id="log-level-select">
+          {% for level_name in log_levels %}
+            <calcite-option value="{{ level_name }}" {% if level_name == current_log_level %}selected{% endif %}>{{ level_name }}</calcite-option>
+          {% endfor %}
+        </calcite-select>
+      </calcite-label>
+    </form>
+  </div>
+
+  <calcite-button id="log-settings-cancel" data-action="close-modal" slot="footer-end" appearance="outline"
+                  icon-start="circle-disallowed">
+    Cancel
+  </calcite-button>
+
+  <calcite-button id="log-settings-save" slot="footer-end"
+                  hx-post="{% url 'enterpriseviz:log_settings' %}"
+                  target="#log-settings-modal"
+                  hx-include="#log-settings-form"
+                  icon-start="save" value="save">
+    Save
+  </calcite-button>
+
+</calcite-dialog>

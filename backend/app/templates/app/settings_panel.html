@@ -1,5 +1,18 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
-<div id="settings-container" slot="content-bottom" style="width: 100%">
+<div id="settings-container">
+  <calcite-action id="log-viewer-action" text="Logs" icon="access-string-results" text-enabled
+                      hx-get="{% url 'enterpriseviz:log' %}"
+                      hx-target="#mainbodycontent"
+                      hx-push-url="true"
+                      hx-indicator="#loading">
+      </calcite-action>
+      <calcite-tooltip reference-element="log-viewer-action" placement="left" overlay-positioning="fixed" close-on-click="true">
+        <span>View application logs</span>
+      </calcite-tooltip>
+
+</div>
+
+<div slot="content-bottom" style="width: 100%">
   <calcite-label layout="inline-space-between"
                  hx-post="{% url 'enterpriseviz:mode_toggle' %}"
                  hx-target="#mode-switch" hx-push-url="false">
@@ -8,9 +21,9 @@
     <calcite-switch {% if user.profile.mode == 'dark' %}
       checked {% endif %}id="mode-switch" label="Mode switch"></calcite-switch>
     <calcite-icon icon="moon" preload="true" scale="s"></calcite-icon>
-  <calcite-tooltip reference-element="mode-switch">
-            <span>Change between light and dark mode</span>
-        </calcite-tooltip>
+    <calcite-tooltip reference-element="mode-switch" placement="left" overlay-positioning="fixed" close-on-click="true">
+      <span>Change between light and dark mode</span>
+    </calcite-tooltip>
 
 
   </calcite-label>
@@ -23,12 +36,13 @@
       checked {% endif %}id="usage-switch" label="Service usage switch"></calcite-switch>
     <calcite-icon icon="graph-time-series" preload="true" scale="s"></calcite-icon>
   </calcite-label>
-<calcite-tooltip reference-element="usage-switch">
-            <span>Enable or disable service usage graphs</span>
-        </calcite-tooltip>
-
+  <calcite-tooltip reference-element="usage-switch" placement="left" overlay-positioning="fixed" close-on-click="true">
+    <span>Enable or disable service usage graphs</span>
+  </calcite-tooltip>
 </div>
+
 <calcite-button kind="neutral" scale="m" icon-start="sign-out" slot="footer" width="full"
-                href="/enterpriseviz/logout/">
+                href="{% url 'enterpriseviz:logout' %}"
+>
   Sign-Out
 </calcite-button>

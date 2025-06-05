@@ -1,0 +1,144 @@
+{% load django_tables2 %}
+{% load i18n %}
+{% load export_url from django_tables2 %}
+
+{% block content %}
+<div class="clearfix"></div>
+<div class="row">
+  <div class="col-md-12 col-sm-12 col-xs-12">
+    <div class="x_panel">
+      <div class="x_title">
+        <h2>
+          Application Logs
+        </h2>
+        <div class="clearfix"></div>
+      </div>
+      <div class="x_content">
+        <div class="log_filter" id="logs-filter">
+          <form id="log-form" class="form-inline" style="gap: 0.5rem;">
+            {% if filter %}
+              <calcite-dropdown id="column-visibility-dropdown" close-on-select-disabled width="s">
+                <calcite-button slot="trigger" appearance="outline" icon-end="chevron-down" scale="s"
+                                title="Toggle Columns" kind="inverse">
+                  Columns
+                </calcite-button>
+                <calcite-dropdown-group selection-mode="multiple" group-title="Visible Columns">
+                  {% for field_name, field_label in all_columns %}
+                    <calcite-dropdown-item
+                      value="{{ field_name }}"
+                      data-field-name="{{ field_name }}"
+                      id="col-vis-{{ field_name }}">
+                      {{ field_label }}
+                    </calcite-dropdown-item>
+                  {% endfor %}
+                </calcite-dropdown-group>
+              </calcite-dropdown>
+              <input type="hidden" name="visible_cols_hidden" id="visible_cols_hidden_input">
+
+              {% for field in filter.form %}
+                {% if field.name == "level" %}
+                  <calcite-dropdown id="level-dropdown" data-hidden-input-target="level_hidden_input"
+                                    selection-mode="multiple" close-on-select-disabled type="click">
+                    <calcite-button slot="trigger" appearance="outline" icon-end="chevron-down" scale="s"
+                                    title="Filter by Level" kind="inverse">
+                          <span id="level-dropdown-button-text">
+                            Level
+                          </span>
+                    </calcite-button>
+                    <calcite-dropdown-group selection-mode="multiple" group-title="Log Levels">
+                      {% for value, text in field.field.choices %}
+                        <calcite-dropdown-item value="{{ value }}"
+                                               {% if value in field.value %}selected{% endif %}>
+                          {{ text }}
+                        </calcite-dropdown-item>
+                      {% endfor %}
+                    </calcite-dropdown-group>
+                  </calcite-dropdown>
+                  <input type="hidden" name="{{ field.html_name }}" id="level_hidden_input"
+                         value="{{ field.value|join:','|default:'' }}">
+                  {% for error in field.errors %}
+                    <calcite-input-message status="invalid" icon="exclamation-mark-triangle-f"
+                                           active>{{ error }}</calcite-input-message>{% endfor %}
+                {% endif %}
+              {% endfor %}
+
+              {% for field in filter.form %}
+                {% if field.name == "time_range" %}
+                  <calcite-dropdown id="time-range-dropdown" data-hidden-input-target="time_range_hidden_input"
+                                    type="click">
+                    <calcite-button slot="trigger" appearance="outline" icon-end="chevron-down" scale="s"
+                                    title="Filter by Time Range" kind="inverse">
+                           <span id="time-range-dropdown-button-text">
+                             Any Time
+                           </span>
+                    </calcite-button>
+                    <calcite-dropdown-group>
+                      {% for value, text in field.field.choices %}
+                        <calcite-dropdown-item value="{{ value }}"
+                                               {% if value == "" and not field.value %}selected{% endif %}
+                                               {% if field.value == value %}selected{% endif %}>
+                          {{ text }}
+                        </calcite-dropdown-item>
+                      {% endfor %}
+                    </calcite-dropdown-group>
+                  </calcite-dropdown>
+                  <input type="hidden" name="{{ field.html_name }}" id="time_range_hidden_input"
+                         value="{{ field.value|default:'' }}">
+                  {% for error in field.errors %}
+                    <calcite-input-message status="invalid" icon="exclamation-mark-triangle-f"
+                                           active>{{ error }}</calcite-input-message>{% endfor %}
+                {% endif %}
+              {% endfor %}
+
+              {% for field in filter.form %}
+                {% if field.name == "search_term" %}
+                  <calcite-input-text
+                    name="{{ field.html_name }}"
+                    id="{{ field.auto_id }}"
+                    value="{{ field.value|default_if_none:'' }}"
+                    placeholder="Search logs..."
+                    scale="s"
+                    clearable style="width: 300px;">
+                  </calcite-input-text>
+                  {% for error in field.errors %}
+                    <calcite-input-message status="invalid" icon="exclamation-mark-triangle-f"
+                                           active>{{ error }}</calcite-input-message>{% endfor %}
+                {% endif %}
+              {% endfor %}
+
+              <calcite-button id="apply-filters-and-visibility" icon-start="filter" scale="s" kind="inverse">Filter
+              </calcite-button>
+              <calcite-button id="reset-filters-and-visibility" kind="neutral" icon-start="reset" scale="s"
+                              title="Resets filters and column visibility">Reset
+              </calcite-button>
+            {% else %}
+              <p>No filters available.</p>
+            {% endif %}
+            <div style="margin-right: auto;">
+              <calcite-button id="log-settings-action" text="Log Settings"
+                              icon-start="gear"
+                              text-enabled kind="inverse"
+                              hx-get="{% url 'enterpriseviz:log_settings' %}"
+                              hx-target="#logSettingsModalContent" scale="s">
+              </calcite-button>
+              <calcite-tooltip reference-element="log-settings-action">
+                <span>Configure application log level</span>
+              </calcite-tooltip>
+            </div>
+          </form>
+        </div>
+        <div id="logSettingsModalContent"></div>
+        <div id="log-table-container"
+             data-log-table-url="{% url 'enterpriseviz:log_table' %}"
+             hx-get="{% url 'enterpriseviz:log_table' %}?{{ request.GET.urlencode }}"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{{ current_visible_columns|json_script:"log_initial_visible_cols_data" }}
+
+{% endblock %}

@@ -235,8 +235,242 @@ function init_Charts() {
 }
 
 // Custom color function to ensure all colors are used before repeating
+function getInitialLogVisibleColumns() {
+    let initialVisibleColumns = [];
+    const visibleColsDataElement = document.getElementById('log_initial_visible_cols_data');
+    if (visibleColsDataElement) {
+        try {
+            initialVisibleColumns = JSON.parse(visibleColsDataElement.textContent);
+        } catch (e) {
+            console.error("Failed to parse initial visible columns from json_script:", e);
+        }
+    }
+    return initialVisibleColumns;
+}
+
+function init_LogFilters(logTableUrl) {
+    const applyButton = document.getElementById('apply-filters-and-visibility');
+    const resetButton = document.getElementById('reset-filters-and-visibility');
+
+    const columnVisibilityDropdown = document.getElementById('column-visibility-dropdown');
+    const levelDropdown = document.getElementById('level-dropdown');
+    const timeRangeDropdown = document.getElementById('time-range-dropdown');
+
+    const visibleColsHiddenInput = document.getElementById('visible_cols_hidden_input');
+    const levelHiddenInput = document.getElementById('level_hidden_input');
+    const timeRangeHiddenInput = document.getElementById('time_range_hidden_input');
+
+    const logForm = document.getElementById('log-form');
+
+    if (!logForm) {
+        console.log("Log filter elements not found, skipping init_LogFilters.");
+        return;
+    }
+
+    // Get initial visible columns using the helper
+    const initialVisibleColumns = getInitialLogVisibleColumns();
+
+    async function initializeDropdown(dropdownElement, hiddenInputElement, isMultiSelect, buttonTextElementId, defaultButtonText) {
+        if (!dropdownElement) return;
+        if (typeof customElements !== 'undefined' && customElements.whenDefined) {
+            await Promise.all([
+                customElements.whenDefined('calcite-dropdown'),
+                customElements.whenDefined('calcite-dropdown-item'),
+                customElements.whenDefined('calcite-dropdown-group')
+            ]);
+        }
+        if (dropdownElement.componentOnReady) await dropdownElement.componentOnReady();
+
+        const buttonTextElement = buttonTextElementId ? document.getElementById(buttonTextElementId) : null;
+        const selectedItems = Array.from(dropdownElement.selectedItems || []);
+        const selectedValues = selectedItems.map(item => item.getAttribute('value')).filter(v => v !== null && v !== undefined && v !== '');
+
+        if (hiddenInputElement) {
+            hiddenInputElement.value = selectedValues.join(',');
+        }
+
+        if (buttonTextElement) {
+            if (selectedValues.length > 0) {
+                const selectedTexts = selectedItems.map(item => item.textContent.trim());
+                if (isMultiSelect) {
+                    buttonTextElement.textContent = selectedTexts.join(', ');
+                } else {
+                    buttonTextElement.textContent = selectedTexts.length > 0 ? selectedTexts[0] : defaultButtonText;
+                }
+            } else {
+                buttonTextElement.textContent = defaultButtonText;
+            }
+        }
+
+        dropdownElement.addEventListener('calciteDropdownSelect', () => {
+            const currentSelectedItems = Array.from(dropdownElement.selectedItems || []);
+            const currentSelectedValues = currentSelectedItems.map(item => item.getAttribute('value')).filter(v => v !== null && v !== undefined && v !== '');
+
+            if (hiddenInputElement) {
+                hiddenInputElement.value = currentSelectedValues.join(',');
+            }
+            if (buttonTextElement) {
+                if (currentSelectedValues.length > 0) {
+                    const currentSelectedTexts = currentSelectedItems.map(item => item.textContent.trim());
+                    if (isMultiSelect) {
+                        buttonTextElement.textContent = currentSelectedTexts.join(', ');
+                    } else {
+                        buttonTextElement.textContent = currentSelectedTexts.length > 0 ? currentSelectedTexts[0] : defaultButtonText;
+                    }
+                } else {
+                    buttonTextElement.textContent = defaultButtonText;
+                }
+            }
+            if (dropdownElement.id === 'column-visibility-dropdown') {
+                dropdownElement.setAttribute('data-interacted', 'true');
+            }
+        });
+    }
+
+    async function initializeColumnVisibility(initialCols) {
+        if (!columnVisibilityDropdown || !visibleColsHiddenInput) return;
+        if (typeof customElements !== 'undefined' && customElements.whenDefined) {
+            await Promise.all([
+                customElements.whenDefined('calcite-dropdown'),
+                customElements.whenDefined('calcite-dropdown-item')
+            ]);
+        }
+        if (columnVisibilityDropdown.componentOnReady) await columnVisibilityDropdown.componentOnReady();
+
+        const items = columnVisibilityDropdown.querySelectorAll('calcite-dropdown-item');
+        let currentVisibleForInput = [];
+
+        items.forEach(item => {
+            const itemValue = item.getAttribute('value');
+            const isSelected = initialCols.includes(itemValue); // Use the passed-in initialCols
+            item.selected = isSelected;
+            if (isSelected) {
+                currentVisibleForInput.push(itemValue);
+            }
+        });
+        visibleColsHiddenInput.value = currentVisibleForInput.join(',');
+
+        columnVisibilityDropdown.addEventListener('calciteDropdownSelect', () => {
+            const selectedItems = Array.from(columnVisibilityDropdown.selectedItems || []);
+            const selectedValues = selectedItems.map(item => item.getAttribute('value')).filter(v => v !== null && v !== undefined && v !== '');
+            visibleColsHiddenInput.value = selectedValues.join(',');
+            columnVisibilityDropdown.setAttribute('data-interacted', 'true');
+        });
+    }
+
+    (async () => {
+        await initializeColumnVisibility(initialVisibleColumns);
+        await initializeDropdown(levelDropdown, levelHiddenInput, true, 'level-dropdown-button-text', 'Level');
+        await initializeDropdown(timeRangeDropdown, timeRangeHiddenInput, false, 'time-range-dropdown-button-text', 'Any Time');
+    })();
+
+    function triggerTableUpdate() {
+        if (!logForm) return;
+        const params = new URLSearchParams(new FormData(logForm));
+
+        // If you need 'visible_cols' as multiple params (e.g. for Django's MultipleChoiceFilter from query params):
+        const currentVisibleColsVal = params.get('visible_cols_hidden');
+        params.delete('visible_cols_hidden');
+
+        if (currentVisibleColsVal) {
+            const visibleColsArray = currentVisibleColsVal.split(',').filter(v => v);
+            if (visibleColsArray.length > 0) {
+                visibleColsArray.forEach(col => params.append('visible_cols', col));
+            } else if (columnVisibilityDropdown && columnVisibilityDropdown.hasAttribute('data-interacted')) {
+                params.append('visible_cols', ''); // User deselected all
+            }
+        } else if (columnVisibilityDropdown && columnVisibilityDropdown.hasAttribute('data-interacted')) {
+            params.append('visible_cols', ''); // User deselected all, and hidden input is now empty
+        }
+        // If not interacted, and hidden input was empty, no 'visible_cols' param will be sent.
+
+        const targetUrlWithParams = `${logTableUrl}?${params.toString()}`;
+        htmx.ajax('GET', targetUrlWithParams, {
+            target: '#log-table-container',
+            swap: 'innerHTML'
+        });
+    }
+
+    if (applyButton) {
+        applyButton.addEventListener('click', triggerTableUpdate);
+    }
+
+    if (resetButton) {
+        resetButton.addEventListener('click', async function () {
+            if (logForm) {
+                logForm.querySelectorAll('input[type="text"], calcite-input-text').forEach(input => {
+                   if (input.name !== 'visible_cols_hidden' && input.name !== 'level' && input.name !== 'time_range') {
+                       if (input.tagName === 'CALCITE-INPUT-TEXT' && input.value) {
+                           input.value = '';
+                       } else if (input.tagName === 'INPUT') {
+                           input.value = '';
+                       }
+                   }
+                });
+
+                const colsToResetTo = getInitialLogVisibleColumns(); // Get fresh initial columns for reset
+
+                if (columnVisibilityDropdown) {
+                    if(columnVisibilityDropdown.componentOnReady) await columnVisibilityDropdown.componentOnReady();
+                    const allColumnItems = columnVisibilityDropdown.querySelectorAll('calcite-dropdown-item');
+                    let resetVisibleColsForInput = [];
+                    allColumnItems.forEach(item => {
+                        const itemValue = item.getAttribute('value');
+                        const isSelected = colsToResetTo.includes(itemValue); // Reset to initial state
+                        item.selected = isSelected;
+                        if (isSelected) {
+                           resetVisibleColsForInput.push(itemValue);
+                        }
+                    });
+                    if (visibleColsHiddenInput) visibleColsHiddenInput.value = resetVisibleColsForInput.join(',');
+                    columnVisibilityDropdown.removeAttribute('data-interacted');
+                }
+                if (levelDropdown) {
+                    if(levelDropdown.componentOnReady) await levelDropdown.componentOnReady();
+                    Array.from(levelDropdown.selectedItems || []).forEach(item => item.selected = false);
+                    if (levelHiddenInput) levelHiddenInput.value = '';
+                    const levelButtonText = document.getElementById('level-dropdown-button-text');
+                    if (levelButtonText) levelButtonText.textContent = 'Level';
+                }
+                if (timeRangeDropdown) {
+                    if(timeRangeDropdown.componentOnReady) await timeRangeDropdown.componentOnReady();
+                    const timeRangeItems = timeRangeDropdown.querySelectorAll('calcite-dropdown-item');
+                    let anyTimeSelected = false;
+                    timeRangeItems.forEach(item => {
+                        if (item.getAttribute('value') === '') { // Default "Any Time"
+                            item.selected = true;
+                            anyTimeSelected = true;
+                        } else {
+                            item.selected = false;
+                        }
+                    });
+                    // Fallback logic if "Any Time" (empty value) isn't present or isn't first
+                    if (!anyTimeSelected && timeRangeItems.length > 0) {
+                        let defaultSelectedItem = timeRangeItems[0]; // Default to first
+                        // Prefer selecting an item that was initially selected if possible
+                        const initialTimeRangeValue = document.querySelector('#time_range_hidden_input[name="time_range"]')?.defaultValue || '';
+                        const initiallySelectedItem = Array.from(timeRangeItems).find(item => item.getAttribute('value') === initialTimeRangeValue);
+                        if (initiallySelectedItem) defaultSelectedItem = initiallySelectedItem;
+
+                        defaultSelectedItem.selected = true;
+                        if (timeRangeHiddenInput) timeRangeHiddenInput.value = defaultSelectedItem.getAttribute('value');
+                        const timeRangeButtonText = document.getElementById('time-range-dropdown-button-text');
+                        if (timeRangeButtonText) timeRangeButtonText.textContent = defaultSelectedItem.textContent.trim() || 'Any Time';
+                    } else { // "Any Time" was selected or no items
+                        if (timeRangeHiddenInput) timeRangeHiddenInput.value = '';
+                        const timeRangeButtonText = document.getElementById('time-range-dropdown-button-text');
+                        if (timeRangeButtonText) timeRangeButtonText.textContent = 'Any Time';
+                    }
+                }
+            }
+            triggerTableUpdate();
+        });
+    }
+}
+
+
 function customColors() {
-    // Define an array of custom colors
+    // Esri Calcite colors
     const underTheSea = ["#bf9727", "#607100", "#00734c", "#704489", "#01acca", "#024e76", "#f09100", "#ea311f", "#c6004b", "#7570b3", "#666666", "#333333"];
     const vibrantRainbow = ["#fffb00", "#f5cb11", "#9fd40c", "#46e39c", "#32b8a6", "#7ff2fa", "#ac08cc", "#dd33ff", "#eb7200", "#e8a784", "#bf2e2e", "#6c7000"];
     const sixty = ['#edd317', "#f89927", "#f36f20", "#da4d1e", "#d83020", "#e04ea6", "#8e499b", "#633b9b", "#007ac2", "#00bab5", "#35ac46", "#aad04b", "#7b4f1c"];
@@ -266,6 +500,19 @@ document.addEventListener("DOMContentLoaded", () => {
     init_DataTables();
     init_Charts();
     initD3();
+
+
+    const logTableContainer = document.getElementById('log-table-container');
+    // Check for a key element of the log filters AND the data script tag
+    if (document.getElementById('log-form') && document.getElementById('log_initial_visible_cols_data')) {
+        const logTableUrl = logTableContainer?.dataset.logTableUrl;
+        if (logTableUrl) {
+             init_LogFilters(logTableUrl);
+        } else if (logTableContainer) { // Log table container exists, but URL missing
+            console.warn("Log table URL not found on #log-table-container for init_LogFilters.");
+        }
+    }
+
     const content = document.getElementById("mainbodycontent");
     if (content) {
         content.hidden = false;
@@ -273,6 +520,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     }
 });
+
 htmx.on('htmx:afterRequest', (e) => {
     if (e.detail.target.id === 'mainbodycontent') {
         init_DataTables();
@@ -280,6 +528,15 @@ htmx.on('htmx:afterRequest', (e) => {
         initD3();
         content = document.getElementById('mainbodycontent');
         content.hidden = false;
+        if (document.getElementById('log-form') && document.getElementById('log_initial_visible_cols_data')) {
+            const logTableContainer = document.getElementById('log-table-container');
+            const logTableUrl = logTableContainer?.dataset.logTableUrl;
+            if (logTableUrl) {
+                init_LogFilters(logTableUrl);
+            } else if (logTableContainer) {
+                 console.warn("Log table URL not found for re-init after HTMX swap.");
+            }
+        }
     }
     $('.sparkline').sparkline('html', {
         type: 'line',

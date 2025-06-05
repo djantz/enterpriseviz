@@ -104,6 +104,7 @@ MIDDLEWARE = [
     'django_htmx.middleware.HtmxMiddleware',
     'config.customArcGIS.MySocialAuthExceptionMiddleware',
     'social_django.middleware.SocialAuthExceptionMiddleware',
+    "app.middleware.RequestContextLogMiddleware",
 ]
 
 AUTHENTICATION_BACKENDS = (
@@ -215,24 +216,87 @@ DJANGO_ADMIN_FORCE_ALLAUTH = env.bool("DJANGO_ADMIN_FORCE_ALLAUTH", default=Fals
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    'filters': {
+        'combined_context_filter': { # Renamed for clarity
+            '()': 'app.log_handlers.CombinedContextFilter',
+        }
+    },
     "formatters": {
         "verbose": {
-            "format": "%(levelname)s %(asctime)s %(module)s %(process)d %(thread)d %(message)s",
+            "format": "{levelname} {asctime} {module} {process:d} {thread:d} {message}",
+            "style": "{",
         },
+        "simple": {
+            "format": "{levelname} {asctime} {name}: {message}",
+            "style": "{",
+        },
+        "database": {
+            "format": "{message}",
+            "style": "{",
+        }
     },
     "handlers": {
         "console": {
             "level": "INFO",
             "class": "logging.StreamHandler",
-            "formatter": "verbose",
+            "formatter": "simple",
+            'filters': ['combined_context_filter'],  # Also filter console output for context
         },
-        "file": {
-            "level": "ERROR",
-            "class": "logging.FileHandler",
-            "filename": "/var/log/django_errors.log",
+        "database": {
+            "level": "DEBUG",
+            "class": "app.log_handlers.DatabaseLogHandler",
+            'filters': ['combined_context_filter'],  # Apply the context filter
+            "formatter": "database",
         },
     },
-    "root": {"level": "INFO", "handlers": ["console", "file"]},
+    "loggers": {
+        "root": {
+            "level": "WARNING",
+            "handlers": ["console"],
+        },
+        "django": {
+            "handlers": ["console", "database"],
+            "level": "WARNING",
+            "propagate": True,
+        },
+        "django.server": {
+            "handlers": ["database"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": True,
+        },
+        "celery": {
+            "handlers": ["console", "database"],
+            "level": "ERROR",
+            "propagate": True,
+        },
+        "celery.task": {  # Logs from @shared_task or app.task, if not caught by a more specific logger
+            "handlers": ["console", "database"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "enterpriseviz": {
+            "handlers": ["console", "database"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "enterpriseviz.utils": {
+            "handlers": ["console", "database"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "enterpriseviz.tasks": {
+            "handlers": ["console", "database"],
+            "level": "INFO",
+            "propagate": False,
+        },
+
+    },
+
 }
 
 TASKS = {
@@ -248,7 +312,7 @@ if USE_TZ:
     # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-timezone
     CELERY_TIMEZONE = TIME_ZONE
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-broker_url
-CELERY_BROKER_URL = env("CELERY_BROKER_URL")
+CELERY_BROKER_URL = env("REDIS_URL")
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-result_backend
 CELERY_RESULT_BACKEND = 'django-db'
 CELERY_RESULT_EXPIRES = 86400
@@ -277,3 +341,4 @@ CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_WORKER_SEND_TASK_EVENTS = True
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std-setting-task_send_sent_event
 CELERY_TASK_SEND_SENT_EVENT = True
+CELERY_HIJACK_ROOT_LOGGER = False

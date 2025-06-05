@@ -4,7 +4,7 @@ from django.utils.html import format_html
 from collections import defaultdict
 
 
-from .models import Webmap, Service, Layer, App, User
+from .models import Webmap, Service, Layer, App, User, LogEntry
 
 
 class WebmapTable(tables.Table):
@@ -119,3 +119,51 @@ class UserTable(tables.Table):
         fields = ("user_username", "user_first_name", "user_last_name", "user_email", "user_created",
                   "user_last_login", "user_role", "user_pro_license", "user_pro_last", "user_items")
         order_by = 'user_username'
+
+
+class LogEntryTable(tables.Table):
+    DEFAULT_VISIBLE_COLUMNS = ("timestamp", "level", "logger_name", "message", "traceback")
+
+    timestamp = tables.DateTimeColumn(format="Y-m-d H:i:s T", verbose_name="Timestamp")
+    message = tables.Column(verbose_name="Message", attrs={
+        "td": {"style": "max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"}})
+    traceback = tables.TemplateColumn(
+        template_code='''
+                {% if record.traceback %}
+                    <calcite-button appearance="transparent" scale="s" icon-start="information" id="traceback-btn-{{ record.id }}">View</calcite-button>
+                    <calcite-popover reference-element="traceback-btn-{{ record.id }}" label="Traceback" placement="auto" scale="m" auto-close>
+                        <pre style="white-space: pre-wrap; word-wrap: break-word; max-height: 300px; overflow-y: auto; padding: 0.5rem;">{{ record.traceback }}</pre>
+                    </calcite-popover>
+                {% else %}
+                    -
+                {% endif %}
+            ''',
+        verbose_name="Details",
+        orderable=False
+    )
+
+    class Meta:
+        model = LogEntry
+        fields = (
+            "timestamp", "level", "logger_name", "message", "funcName", "traceback",
+            "request_id", "request_username", "client_ip", "request_path",
+            "request_method", "request_duration", "pathname", "lineno"
+        )
+        sequence = (
+            "timestamp", "level", "logger_name", "funcName", "message", "traceback",
+            "request_id", "request_username", "client_ip", "request_path",
+            "request_method", "request_duration"
+        )
+        order_by = "-timestamp"
+
+    @classmethod
+    def get_column_labels(cls):
+        """Return a list of tuples (field_name, field_label) for columns in Meta.sequence or Meta.fields."""
+        column_source_list = cls.Meta.sequence if hasattr(cls.Meta,
+                                                          'sequence') and cls.Meta.sequence else cls.Meta.fields
+        labels = []
+        if column_source_list:
+            for field_name in column_source_list:
+                if field_name in cls.base_columns:
+                    labels.append((field_name, cls.base_columns[field_name].verbose_name))
+        return labels
