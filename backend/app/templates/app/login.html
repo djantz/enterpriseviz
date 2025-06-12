@@ -6,34 +6,6 @@
 
 {% block stylesheets %}
   {{ block.super }}
-  <style>
-
-    .content-container {
-      display: flex;
-      flex-direction: column;
-      padding: 1rem;
-      gap: 0.75rem;
-    }
-
-    img[slot="header-actions-end"] {
-      height: 1.25rem;
-      align-self: center;
-      margin-inline: 1rem;
-    }
-
-    calcite-block {
-      margin-block: 0;
-      --calcite-font-size--1: 1rem;
-      --calcite-block-padding: 1rem;
-      --calcite-block-toggle-icon-color: transparent;
-      --calcite-block-toggle-icon-color-hover: transparent;
-    }
-
-    calcite-block * {
-      --calcite-font-size--1: 0.875rem;
-    }
-
-  </style>
 {% endblock stylesheets %}
 
 {% block body_class %}login{% endblock body_class %}
@@ -42,10 +14,10 @@
   <calcite-dialog open modal close-disabled escape-disabled outside-close-disabled id="login-modal" heading="Login"
                   width="s">
     <img src="https://raw.githubusercontent.com/Esri/calcite-ui-icons/master/icons/map-pin-32.svg"
-         slot="header-actions-end"
+         slot="header-actions-end" class="login-header-img"
          draggable="false">
 
-    <div class="content-container">
+    <div class="login-content-container">
 
       <calcite-block open collapsible heading="Use your organization URL">
         <calcite-label>

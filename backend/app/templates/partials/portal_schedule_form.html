@@ -13,8 +13,8 @@
     </calcite-input-message>
   </calcite-label>
 
-  <div style="display: flex; column-gap: 1rem;">
-    <div style="width: 50%;">
+  <div class="flex-container flex-column-gap-1">
+    <div class="width-50">
       <calcite-label>
         Beginning on
         <calcite-input-date-picker id="beginning-on" name="beginning_on"
@@ -25,7 +25,7 @@
         </calcite-input-message>
       </calcite-label>
     </div>
-    <div style="width: 50%;">
+    <div class="width-50">
       <calcite-label>
         Repeat Type
         <calcite-select name="{{ form.repeat_type.name }}" id="repeat-type" value="{{ form.repeat_type.value }}">
@@ -62,7 +62,7 @@
 
     <div id="days-of-week-container">
       <calcite-label>On Days</calcite-label>
-      <div style="display: flex; justify-content: space-between;">
+      <div class="flex-container flex-justify-between">
         {% for value, label in form.fields.day_of_week_minute.choices %}
           <calcite-label layout="inline">
             <calcite-checkbox name="day_of_week_minute" value="{{ value }}"
@@ -75,16 +75,16 @@
         {{ form.day_of_week_minute.errors|join:" " }}
       </calcite-input-message>
     </div>
-    <div id="between-hours-container" style="display: grid; margin-top: 0.75rem">
+    <div id="between-hours-container" class="display-grid margin-top-075">
       <calcite-label alignment="start" layout="default">
-        <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div class="flex-container flex-align-center flex-justify-between">
           Between hours
-          <calcite-label layout="inline" style="--calcite-label-margin-bottom: 0">
+          <calcite-label layout="inline" class="no-margin-bottom">
             All day
             <calcite-switch id="all-day-minute" checked scale="m"></calcite-switch>
           </calcite-label>
         </div>
-        <div style="display: flex; align-items: center">
+        <div class="flex-container flex-align-center">
           <calcite-input-time-picker disabled id="between-hours-start-minute" name="between_hours_start_minute"
                                      class="col-50"
                                      position="bottom" value="{% if form.between_hours_start_minute.value %}{{ form.between_hours_start_minute.value }}{% else %}00:00{% endif %}"></calcite-input-time-picker>
@@ -93,8 +93,7 @@
             {{ form.between_hours_start_minute.errors|join:" " }}
           </calcite-input-message>
           <calcite-input-time-picker disabled id="between-hours-end-minute" name="between_hours_end_minute"
-                                     class="col-50"
-                                     style="margin-inline-start: 1rem"
+                                     class="col-50 margin-inline-start-1"
                                      position="bottom"
                                      value="{{ form.between_hours_end_minute.value }}"></calcite-input-time-picker>
           <calcite-input-message {% if not form.between_hours_end_minute.errors %}hidden{% endif %}
@@ -107,8 +106,8 @@
   </div>
 
   <div id="repeat-hour" hidden>
-    <div style="display: flex; gap: 1rem;">
-      <div style="width: 50%;">
+    <div class="flex-container flex-gap-1">
+      <div class="width-50">
         <calcite-label>
           Repeat interval
           <calcite-select id="repeat-interval-hour" name="repeat_interval_hour"
@@ -126,7 +125,7 @@
           </calcite-input-message>
         </calcite-label>
       </div>
-      <div style="width: 50%;">
+      <div class="width-50">
         <calcite-label>
           On minute
           <calcite-select id="on-minute-hour" name="on_minute_hour" value="{{ form.on_minute_hour.value }}">
@@ -146,7 +145,7 @@
 
     <div id="days-of-week-container">
       <calcite-label>On Days</calcite-label>
-      <div style="display: flex; justify-content: space-between;">
+      <div class="flex-container flex-justify-between">
         {% for value, label in form.fields.day_of_week_hour.choices %}
           <calcite-label layout="inline">
             <calcite-checkbox name="day_of_week_hour" value="{{ value }}" {% if value in form.day_of_week_hour.value %}
@@ -159,16 +158,16 @@
         {{ form.days_of_week_hour.errors|join:" " }}
       </calcite-input-message>
     </div>
-    <div id="between-hours-container" style="display: grid; margin-top: 0.75rem">
+    <div id="between-hours-container" class="display-grid margin-top-075">
       <calcite-label alignment="start" layout="default">
-        <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div class="flex-container flex-align-center flex-justify-between">
           Between hours
-          <calcite-label layout="inline" style="--calcite-label-margin-bottom: 0">
+          <calcite-label layout="inline" class="no-margin-bottom">
             All day
             <calcite-switch id="all-day-hour" checked scale="m"></calcite-switch>
           </calcite-label>
         </div>
-        <div style="display: flex; align-items: center">
+        <div class="flex-container flex-align-center">
           <calcite-input-time-picker disabled id="between-hours-start-hour" name="between_hours_start_hour"
                                      class="col-50"
                                      position="bottom"
@@ -177,8 +176,7 @@
                                  icon="exclamation-mark-triangle-f" status="invalid">
             {{ form.between_hours_start_hour.errors|join:" " }}
           </calcite-input-message>
-          <calcite-input-time-picker disabled id="between-hours-end-hour" name="between_hours_end_hour" class="col-50"
-                                     style="margin-inline-start: 1rem"
+          <calcite-input-time-picker disabled id="between-hours-end-hour" name="between_hours_end_hour" class="col-50 margin-inline-start-1"
                                      position="bottom"
                                      value="{{ form.between_hours_end_hour.value }}"></calcite-input-time-picker>
           <calcite-input-message {% if not form.between_hours_end_hour.errors %}hidden{% endif %}
@@ -191,8 +189,8 @@
   </div>
 
   <div id="repeat-day" hidden>
-    <div style="display: flex; gap: 1rem;">
-      <div style="width: 50%;">
+    <div class="flex-container flex-gap-1">
+      <div class="width-50">
         <calcite-label>
           Repeat Interval
           <calcite-select id="repeat-interval-day" name="repeat_interval_day"
@@ -212,7 +210,7 @@
           </calcite-input-message>
         </calcite-label>
       </div>
-      <div style="width: 50%;">
+      <div class="width-50">
         <calcite-label>
           Time
           <calcite-input-time-picker name="time_day" id="time-day"
@@ -230,7 +228,7 @@
   <div id="repeat-week" hidden>
     <div id="days-of-week-container">
       <calcite-label>On Days</calcite-label>
-      <div style="display: flex; justify-content: space-between;">
+      <div class="flex-container flex-justify-between">
         {% for value, label in form.fields.day_of_week_week.choices %}
           <calcite-label layout="inline">
             <calcite-checkbox name="day_of_week_week" value="{{ value }}" {% if value in form.day_of_week_week.value %}
@@ -243,7 +241,7 @@
         {{ form.day_of_week_week.errors|join:" " }}
       </calcite-input-message>
     </div>
-    <calcite-label id="time-container" style="margin-top: 0.75rem">
+    <calcite-label id="time-container" class="margin-top-075">
       Time
       <calcite-input-time-picker value="{{ form.time_week.value }}" name="time_week"
                                  id="time-week"></calcite-input-time-picker>
@@ -256,8 +254,8 @@
 
   <div id="repeat-month" hidden>
     <calcite-label>
-      <div style="display: flex; column-gap: 1rem; margin-top: 0.75rem">
-        <div style="width: 50%;">
+      <div class="flex-container flex-column-gap-1 margin-top-075">
+        <div class="width-50">
           <calcite-label>
             Repeat Interval
             <calcite-select id="repeat-interval-month" name="repeat_interval_month"
@@ -275,7 +273,7 @@
             </calcite-input-message>
           </calcite-label>
         </div>
-        <div style="width: 50%;">
+        <div class="width-50">
           <calcite-label>
             Day of Month
             <calcite-input type="number" name="{{ form.day_of_month.name }}" id="day-of-month" min="1" max="31"
@@ -298,7 +296,7 @@
       </calcite-input-message>
     </calcite-label>
   </div>
-  <div style="display: flex;">
+  <div class="flex-container">
     <div class="col-50">
       <calcite-label>
         Ending On
@@ -314,7 +312,7 @@
       </calcite-label>
     </div>
     <div id="end-date-container" class="col-50" hidden>
-      <calcite-label style="margin-left: 1rem">
+      <calcite-label class="margin-left-1">
         End Date
         <calcite-input-date-picker type="date" name="ending_on_date" id="ending-on-date"
                                    {% if form.ending_on_date.value is None %}value=""
@@ -328,7 +326,7 @@
     </div>
 
 
-    {#    <calcite-label id="end-count-container" hidden class="col-50" style="margin-left: 1rem">#}
+    {#    <calcite-label id="end-count-container" hidden class="col-50 margin-left-1">#}
     {#      End Count#}
     {#      <calcite-input type="number" name="ending_on_count" min="1"#}
     {#                     value="{{ form.ending_on_count.value }}"></calcite-input>#}

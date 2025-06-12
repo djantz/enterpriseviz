@@ -1,18 +1,19 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
 <div id="settings-container">
   <calcite-action id="log-viewer-action" text="Logs" icon="access-string-results" text-enabled
-                      hx-get="{% url 'enterpriseviz:log' %}"
-                      hx-target="#mainbodycontent"
-                      hx-push-url="true"
-                      hx-indicator="#loading">
-      </calcite-action>
-      <calcite-tooltip reference-element="log-viewer-action" placement="left" overlay-positioning="fixed" close-on-click="true">
-        <span>View application logs</span>
-      </calcite-tooltip>
+                  hx-get="{% url 'enterpriseviz:log' %}"
+                  hx-target="#mainbodycontent"
+                  hx-push-url="true"
+                  hx-indicator="#loading">
+  </calcite-action>
+  <calcite-tooltip reference-element="log-viewer-action" placement="left" overlay-positioning="fixed"
+                   close-on-click="true">
+    <span>View application logs</span>
+  </calcite-tooltip>
 
 </div>
 
-<div slot="content-bottom" style="width: 100%">
+<div slot="content-bottom" class="width-full">
   <calcite-label layout="inline-space-between"
                  hx-post="{% url 'enterpriseviz:mode_toggle' %}"
                  hx-target="#mode-switch" hx-push-url="false">

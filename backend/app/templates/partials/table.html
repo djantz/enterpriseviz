@@ -1,5 +1,5 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
-{% extends 'django_tables2/bootstrap4-responsive.html' %}
+{% extends 'django_tables2/table.html' %}
 {% load i18n %}
 {% load django_tables2 %}
 {% load export_url from django_tables2 %}
@@ -12,6 +12,7 @@
       {% for column in table.columns %}
         <th {{ column.attrs.th.as_html }} scope="col"
           {% if column.orderable %}
+                                          class="cursor-pointer"
                                           {% if instance %}hx-get="
 
                                             {% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_order_by_field=column.order_by_alias.next %}"
@@ -23,7 +24,7 @@
                                           hx-trigger="click"
                                           hx-target="closest div.table-container"
                                           hx-swap="outerHTML"
-                                          style="cursor: pointer;"
+
           {% endif %}>
           {{ column.header }}
         </th>
@@ -45,7 +46,7 @@
       {% endfor %}
     {% else %}
       <tr>
-        <td colspan="{{ table.columns|length }}" class="text-center">No data available in table</td>
+        <td colspan="{{ table.columns|length }}" class="text-center">No records available.</td>
       </tr>
     {% endif %}
   </tbody>
@@ -71,9 +72,9 @@
                                    hx-target="closest div.table-container"
                                    hx-swap="outerHTML"
                                    hx-indicator="previous .progress"
-                                   class="page-link"><calcite-icon icon="chevron-left" scale="s"></calcite-icon></a></li>
+                                   class="page-link"><calcite-icon icon="chevron-left" preload="true" scale="s"></calcite-icon></a></li>
         {% else %}
-          <li class="disabled page-item"><span class="page-link"><calcite-icon icon="chevron-left" scale="s"></calcite-icon></span></li>
+          <li class="disabled page-item"><span class="page-link"><calcite-icon icon="chevron-left" preload="true" scale="s"></calcite-icon></span></li>
         {% endif %}
         {% for i in paginator_range|default_if_none:page_obj.paginator.get_elided_page_range %}
           {% if page_obj.number == i %}
@@ -109,12 +110,11 @@
                                    hx-target="closest div.table-container"
                                    hx-swap="outerHTML"
                                    hx-indicator="previous .progress"
-                                   class="page-link"><calcite-icon icon="chevron-right" scale="s"></calcite-icon></a></li>
+                                   class="page-link"><calcite-icon icon="chevron-right" preload="true" scale="s"></calcite-icon></a></li>
         {% else %}
-          <li class="disabled page-item"><span class="page-link"><calcite-icon icon="chevron-right" scale="s"></calcite-icon></span></li>
+          <li class="disabled page-item"><span class="page-link"><calcite-icon icon="chevron-right" preload="true" scale="s"></calcite-icon></span></li>
         {% endif %}
       </ul>
     </div>
   </div>
 {% endblock pagination %}
-

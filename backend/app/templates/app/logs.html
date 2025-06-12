@@ -15,7 +15,7 @@
       </div>
       <div class="x_content">
         <div class="log_filter" id="logs-filter">
-          <form id="log-form" class="form-inline" style="gap: 0.5rem;">
+          <form id="log-form" class="form-inline flex-container flex-gap-05">
             {% if filter %}
               <calcite-dropdown id="column-visibility-dropdown" close-on-select-disabled width="s">
                 <calcite-button slot="trigger" appearance="outline" icon-end="chevron-down" scale="s"
@@ -98,7 +98,7 @@
                     value="{{ field.value|default_if_none:'' }}"
                     placeholder="Search logs..."
                     scale="s"
-                    clearable style="width: 300px;">
+                    clearable class="width-300">
                   </calcite-input-text>
                   {% for error in field.errors %}
                     <calcite-input-message status="invalid" icon="exclamation-mark-triangle-f"
@@ -114,14 +114,14 @@
             {% else %}
               <p>No filters available.</p>
             {% endif %}
-            <div style="margin-right: auto;">
+            <div class="margin-right-auto">
               <calcite-button id="log-settings-action" text="Log Settings"
                               icon-start="gear"
                               text-enabled kind="inverse"
                               hx-get="{% url 'enterpriseviz:log_settings' %}"
                               hx-target="#logSettingsModalContent" scale="s">
               </calcite-button>
-              <calcite-tooltip reference-element="log-settings-action">
+              <calcite-tooltip reference-element="log-settings-action" placement="left" overlay-positioning="fixed" close-on-click="true">
                 <span>Configure application log level</span>
               </calcite-tooltip>
             </div>
