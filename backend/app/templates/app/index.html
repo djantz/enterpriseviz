@@ -197,17 +197,17 @@
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='webmap' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='webmap' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
-                           hx-target="next div.table-container"
-                           hx-swap="outerHTML"
-                           hx-indicator=".progress" autocomplete="off"></calcite-input>
+                           hx-target="#webmap-table"
+                           hx-swap="innerHTML"
+                           hx-indicator="#webmap-table-progress" autocomplete="off"></calcite-input>
           </div>
-          <div class="progress">
+          <div id="webmap-table-progress" class="progress">
             <div class="indeterminate"></div>
           </div>
           <div id="webmap-table">
             <div {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='webmap' %}"
                  {% else %}hx-get="{% url 'enterpriseviz:table' name='webmap' %}"{% endif %}
-                 hx-trigger="load" hx-swap="outerHTML">
+                 hx-trigger="load" hx-target="#webmap-table" hx-swap="innerHTML">
               Loading...
             </div>
           </div>
@@ -271,17 +271,17 @@
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='service' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='service' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
-                           hx-target="next div.table-container"
-                           hx-swap="outerHTML"
-                           hx-indicator=".progress"></calcite-input>
+                           hx-target="#service-table"
+                           hx-swap="innerHTML"
+                           hx-indicator="#service-table-progress"></calcite-input>
           </div>
-          <div class="progress">
+          <div id="service-table-progress" class="progress">
             <div class="indeterminate"></div>
           </div>
           <div id="service-table">
             <div {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='service' %}"
                  {% else %}hx-get="{% url 'enterpriseviz:table' name='service' %}"{% endif %}
-                 hx-trigger="load" hx-target="#service-table">
+                 hx-trigger="load" hx-target="#service-table" hx-swap="innerHTML">
               Loading...
             </div>
           </div>
@@ -331,17 +331,17 @@
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='layer' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='layer' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
-                           hx-target="next div.table-container"
-                           hx-swap="outerHTML"
-                           hx-indicator=".progress" autocomplete="off"></calcite-input>
+                           hx-target="#layer-table"
+                           hx-swap="innerHTML"
+                           hx-indicator="#layer-table-progress" autocomplete="off"></calcite-input>
           </div>
-          <div class="progress">
+          <div id="layer-table-progress" class="progress">
             <div class="indeterminate"></div>
           </div>
           <div id="layer-table">
             <div {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='layer' %}"
                  {% else %}hx-get="{% url 'enterpriseviz:table' name='layer' %}"{% endif %}
-                 hx-trigger="load" hx-swap="outerHTML">
+                 hx-trigger="load" hx-target="#layer-table" hx-swap="innerHTML">
               Loading...
             </div>
           </div>
@@ -408,17 +408,17 @@
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='app' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='app' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
-                           hx-target="next div.table-container"
-                           hx-swap="outerHTML"
-                           hx-indicator=".progress" autocomplete="off"></calcite-input>
+                           hx-target="#app-table"
+                           hx-swap="innerHTML"
+                           hx-indicator="#app-table-progress" autocomplete="off"></calcite-input>
           </div>
-          <div class="progress">
+          <div id="app-table-progress" class="progress">
             <div class="indeterminate"></div>
           </div>
           <div id="app-table">
             <div {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='app' %}"
                  {% else %}hx-get="{% url 'enterpriseviz:table' name='app' %}"{% endif %}
-                 hx-trigger="load" hx-swap="outerHTML">
+                 hx-trigger="load" hx-target="#app-table" hx-swap="innerHTML">
               Loading...
             </div>
           </div>
@@ -484,17 +484,17 @@
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='user' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='user' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
-                           hx-target="next div.table-container"
-                           hx-swap="outerHTML"
-                           hx-indicator=".progress" autocomplete="off"></calcite-input>
+                           hx-target="#user-table"
+                           hx-swap="innerHTML"
+                           hx-indicator="#user-table-progress" autocomplete="off"></calcite-input>
           </div>
-          <div class="progress">
+          <div id="user-table-progress" class="progress">
             <div class="indeterminate"></div>
           </div>
           <div id="user-table">
             <div {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='user' %}"
                  {% else %}hx-get="{% url 'enterpriseviz:table' name='user' %}"{% endif %}
-                 hx-trigger="load" hx-swap="outerHTML">
+                 hx-trigger="load" hx-target="#user-table" hx-swap="innerHTML">
               Loading...
             </div>
           </div>

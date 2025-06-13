@@ -287,6 +287,7 @@ h2 {
   line-height: 1.25;
   justify-content: end;
 }
+
 .page-link calcite-icon {
   vertical-align: sub;
 }
@@ -881,15 +882,19 @@ calcite-button[kind="inverse"] {
 .col-50 {
   width: 50%;
 }
+
 .danger-icon {
   --calcite-ui-icon-color: var(--calcite-color-status-danger);
 }
-calcite-dialog{
+
+calcite-dialog {
   --calcite-dialog-background-color: var(--calcite-color-background);
 }
+
 calcite-dialog {
-    --calcite-dialog-max-size-y: 80%;
+  --calcite-dialog-max-size-y: 80%;
 }
+
 .log_filter {
   float: right;
   padding-right: 16px;
@@ -944,14 +949,16 @@ calcite-dialog#login-modal calcite-block * {
 .progress_bar.progress-failure calcite-progress {
   --calcite-progress-fill-color: var(--calcite-color-status-danger);
 }
+
 .dt-buttons .dt-calcite-button {
-    margin-right: 5px;
-    margin-bottom: 5px;
+  margin-right: 5px;
+  margin-bottom: 5px;
 }
 
 .dt-buttons .dt-calcite-button:last-child {
-    margin-right: 0;
+  margin-right: 0;
 }
+
 .panel-height-auto {
   height: auto !important;
 }
@@ -963,12 +970,14 @@ calcite-dialog#login-modal calcite-block * {
 .table-cell-details {
   width: 74px !important;
 }
+
 .table-cell-message {
   max-width: 400px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .table-cell-message-popover {
   white-space: pre-wrap;
   word-wrap: break-word;
@@ -977,6 +986,7 @@ calcite-dialog#login-modal calcite-block * {
   overflow-y: auto;
   padding: 0.5rem;
 }
+
 .trend-positive {
   color: var(--calcite-color-status-success);
 }
@@ -984,25 +994,64 @@ calcite-dialog#login-modal calcite-block * {
 .trend-negative {
   color: var(--calcite-color-status-danger);
 }
+
 .sparkline-chart {
-    position: relative;
-    z-index: 10;
+  position: relative;
+  z-index: 10;
 }
 
 .sparkline-cell {
-    position: relative;
-    overflow: visible;
+  position: relative;
+  overflow: visible;
+  padding: 8px 8px 28px 8px;
 }
 
 .chartjs-tooltip {
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.9);
+  border-radius: 6px;
+  color: white;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  transition: opacity 0.2s ease;
+  font-size: 12px;
+  padding: 8px 10px;
+  z-index: 1000;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  max-width: 200px;
+}
+
+.chartjs-tooltip.visible {
+  opacity: 1;
+}
+
+.chartjs-tooltip-title {
+  font-weight: 600;
+  margin-bottom: 3px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.chartjs-tooltip-body {
+  font-weight: 500;
+  color: white;
 }
 
 .table-container {
-    overflow: visible;
+  overflow: visible;
 }
 
-.sparkline-cell {
-    padding: 12px 8px;
+.chartjs-tooltip::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 5px solid rgba(0, 0, 0, 0.9);
 }
