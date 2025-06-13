@@ -610,16 +610,26 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
         quick_report = server.usage.quick_report(since="LAST_MONTH",
                                                  queries=query_list,
                                                  metrics="RequestCount")
+
+        dates = [epoch_to_date(ts) for ts in quick_report["report"]["time-slices"]]
+
         for s in quick_report["report"]["report-data"][0]:
             name = s["resourceURI"].replace("services/", "").split(".")[0]
             service_type = s["resourceURI"].split('.')[-1]
             data = [0 if d is None else d for d in s["data"]]
+
+            usage_data = {
+                "dates": dates,
+                "values": data,
+            }
+
             baseline = sum(data[0:15])
             compare = sum(data[15:])
             try:
                 trend = ((compare - baseline) / baseline) * 100
             except ZeroDivisionError:
                 trend = 0 if (baseline == 0 and compare == 0) else 999
+
             try:
                 s_obj = Service.objects.get(portal_instance=instance_item,
                                             service_name=name,
@@ -630,7 +640,8 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
                 s_obj = Service.objects.filter(portal_instance=instance_item,
                                                service_name=name,
                                                service_type=service_type).first()
-            s_obj.service_usage = data
+
+            s_obj.service_usage = usage_data
             s_obj.service_usage_trend = trend
             s_obj.save()
 
