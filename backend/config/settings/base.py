@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/3.2/ref/settings/
 from pathlib import Path
 
 import environ
+from csp.constants import NONE, SELF, UNSAFE_INLINE, UNSAFE_EVAL, NONCE
 
 BASE_DIR = Path(__file__).resolve(strict=True).parent.parent.parent
 
@@ -83,6 +84,7 @@ THIRD_PARTY_APPS = [
     'django_tables2',
     'django_filters',
     'django_tasks.backends.database',
+    'csp',
 ]
 
 LOCAL_APPS = [
@@ -94,6 +96,7 @@ INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    'csp.middleware.CSPMiddleware',
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -217,7 +220,7 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     'filters': {
-        'combined_context_filter': { # Renamed for clarity
+        'combined_context_filter': {
             '()': 'app.log_handlers.CombinedContextFilter',
         }
     },
@@ -286,7 +289,7 @@ LOGGING = {
         },
         "enterpriseviz.utils": {
             "handlers": ["console", "database"],
-            "level": "WARNING",
+            "level": "INFO",
             "propagate": False,
         },
         "enterpriseviz.tasks": {
@@ -342,3 +345,57 @@ CELERY_WORKER_SEND_TASK_EVENTS = True
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std-setting-task_send_sent_event
 CELERY_TASK_SEND_SENT_EVENT = True
 CELERY_HIJACK_ROOT_LOGGER = False
+
+# CSP_INCLUDE_NONCE_IN = ['style-src', 'script-src']
+
+CONTENT_SECURITY_POLICY = {
+    "DIRECTIVES": {
+        "default-src": [SELF],
+
+        "script-src": [
+            SELF,
+            "https://cdnjs.cloudflare.com",
+            'https://cdn.datatables.net',
+            "https://cdn.jsdelivr.net",
+            "https://js.arcgis.com",
+            "https://code.jquery.com",
+        ],
+
+        "style-src": [
+            SELF,
+            "https://cdnjs.cloudflare.com",
+            "https://cdn.jsdelivr.net",
+            "https://cdn.datatables.net",
+            "https://js.arcgis.com",
+            # UNSAFE_INLINE
+        ],
+
+        "img-src": [
+            SELF,
+        ],
+
+        "font-src": [
+            SELF,
+            "https://cdnjs.cloudflare.com",
+            "https://js.arcgis.com",
+        ],
+
+        "connect-src": [
+            SELF,
+            "https://js.arcgis.com",
+        ],
+
+        "worker-src": [
+            SELF,
+        ],
+
+        "frame-src": [NONE],
+        "object-src": [NONE],
+        "base-uri": [SELF],
+        "form-action": [SELF],
+        "frame-ancestors": [NONE],
+        "manifest-src": [SELF],
+        "media-src": [SELF],
+
+    }
+}

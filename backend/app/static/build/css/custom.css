@@ -1055,3 +1055,8 @@ calcite-dialog#login-modal calcite-block * {
   border-right: 5px solid transparent;
   border-bottom: 5px solid rgba(0, 0, 0, 0.9);
 }
+
+calcite-navigation-user {
+  --calcite-avatar-background-color: var(--calcite-color-inverse);
+  --calcite-navigation-user-avatar-color: var(--calcite-color-text-1);
+}
