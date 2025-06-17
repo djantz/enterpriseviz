@@ -729,6 +729,8 @@ canvas#line-chart {
   text-align: right;
   display: inline;
   padding-right: 16px;
+  position: relative;
+  z-index: 1;
 }
 
 .chartjs-filter {
@@ -748,7 +750,7 @@ ul, pre {
 
 .htmx-indicator {
   opacity: 0;
-  transition: opacity 500ms ease-in;
+  /*transition: opacity 500ms ease-in;*/
 }
 
 .htmx-request .htmx-indicator {

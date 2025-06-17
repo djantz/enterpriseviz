@@ -22,7 +22,8 @@
   {% block head %}
     {% block meta %}
       <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-      <meta name="htmx-config" content='{"refreshOnHistoryMiss":"true","useTemplateFragments": true,"includeIndicatorStyles": false}'>
+      <meta name="htmx-config"
+            content='{"refreshOnHistoryMiss":"true","useTemplateFragments": true,"includeIndicatorStyles": false}'>
 
       <!-- Meta, title, CSS, favicons, etc. -->
       <meta charset="utf-8">
@@ -76,6 +77,8 @@
   <div>
     <calcite-shell>
       <calcite-navigation slot="header">
+        <calcite-progress slot="progress" type="indeterminate" id="loading" data-loading loading
+                          data-loading-delay></calcite-progress>
         <calcite-navigation-logo slot="logo" heading="EnterpriseViz"
                                  icon="map-pin" preload="true">
         </calcite-navigation-logo>
@@ -114,7 +117,6 @@
         </calcite-panel>
       </calcite-shell-panel>
       <calcite-panel>
-        <calcite-scrim id="loading" data-loading loading data-loading-delay></calcite-scrim>
         <div id="mainbodycontent" hx-history-elt hidden>
           {% block content %}
           {% endblock content %}
@@ -172,9 +174,8 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.4/htmx.min.js"
           integrity="sha512-2kIcAizYXhIn8TzUvqzEDZNuDZ+aW7yE/+f1HJHXFjQcGNfv1kqzJSTBRBSlOgp6B/KZsz1K0a3ZTqP9dnxioQ=="
           crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.4/ext/loading-states.min.js"
-          integrity="sha512-IPQ/OHuOZJW1j+Fyeg3DfsRM6wviC14qqzUN0CmN1Juy2Q51SHC/TAj9MjUSK3CHIp1fvekHIdXRPJlkvsgZMQ=="
-          crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://unpkg.com/htmx-ext-loading-states@2.0.0/loading-states.js"></script>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/pdfmake.min.js"
           integrity="sha384-VFQrHzqBh5qiJIU0uGU5CIW3+OWpdGGJM9LBnGbuIH2mkICcFZ7lPd/AAtI7SNf7"
           crossorigin="anonymous"></script>
@@ -191,8 +192,6 @@
           integrity="sha384-+YQ4JLhjyBLPDQt//I+STsc9iw4uQqACwlvpslubQzn4u2UU2UFM80nGisd026JF"
           crossorigin="anonymous"></script>
   <script src="https://cdn.datatables.net/plug-ins/1.13.4/sorting/datetime-moment.js"></script>
-
-{#  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery-sparklines/2.1.2/jquery.sparkline.min.js"></script>#}
 
   <script type="module" src="https://js.arcgis.com/calcite-components/3.2.1/calcite.esm.js"></script>
 

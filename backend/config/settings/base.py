@@ -359,6 +359,7 @@ CONTENT_SECURITY_POLICY = {
             "https://cdn.jsdelivr.net",
             "https://js.arcgis.com",
             "https://code.jquery.com",
+            "https://unpkg.com",
         ],
 
         "style-src": [

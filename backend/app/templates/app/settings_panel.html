@@ -3,8 +3,7 @@
   <calcite-action id="log-viewer-action" text="Logs" icon="access-string-results" text-enabled
                   hx-get="{% url 'enterpriseviz:log' %}"
                   hx-target="#mainbodycontent"
-                  hx-push-url="true"
-                  hx-indicator="#loading">
+                  hx-push-url="true">
   </calcite-action>
   <calcite-tooltip reference-element="log-viewer-action" placement="left" overlay-positioning="fixed"
                    close-on-click="true">

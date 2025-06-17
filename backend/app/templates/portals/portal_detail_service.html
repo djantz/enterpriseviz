@@ -111,13 +111,14 @@
               <tbody>
               {% for map in maps %}
                 <tr>
-                  <td><a hx-get="/enterpriseviz/portal/{{ map.portal_instance.alias }}/map/{{ map.webmap_id }}"
-                         hx-target="#mainbodycontent"
-                         hx-push-url="/enterpriseviz/portal/{{ map.portal_instance.alias }}/map/{{ map.webmap_id }}"
-                         hx-swap="show:window:top">
-                    <button class="btn btn-secondary badge badge-dark">Details
-                    </button>
-                  </a></td>
+                  <td><calcite-button
+                    scale="s" kind="inverse"
+                    hx-get="/enterpriseviz/portal/{{ map.portal_instance.alias }}/map/{{ map.webmap_id }}"
+                    hx-target="#mainbodycontent"
+                    hx-push-url="/enterpriseviz/portal/{{ map.portal_instance.alias }}/map/{{ map.webmap_id }}"
+                    hx-swap="show:window:top">
+                    Details
+                  </calcite-button></td>
                   <td>
                     <calcite-link href="{{ map.webmap_url }}" target="_blank">{{ map.webmap_title }}</calcite-link>
                   </td>
