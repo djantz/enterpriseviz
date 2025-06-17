@@ -1,33 +1,27 @@
 $('.collapse-link').on('click', function () {
-    var $BOX_PANEL = $(this).closest('.x_panel'),
-        $ICON = $(this).find('calcite-icon'),
-        $BOX_CONTENT = $BOX_PANEL.find('.x_content');
+    var $BOX_PANEL = $(this).closest('.x_panel');
+    var $ICON = $(this).find('calcite-icon');
+    var $BOX_CONTENT = $BOX_PANEL.find('.x_content');
 
-    // fix for some div with hardcoded fix class
-    if ($BOX_PANEL.attr('style')) {
-        $BOX_CONTENT.slideToggle(200, function () {
-            $BOX_PANEL.removeAttr('style');
+    $BOX_CONTENT.slideToggle(200, function () {
+        if ($BOX_CONTENT.is(':visible')) {
+            $BOX_PANEL.addClass('panel-height-auto');
+        } else {
+            $BOX_PANEL.removeClass('panel-height-auto');
+        }
         });
-    } else {
-        $BOX_CONTENT.slideToggle(200);
-        $BOX_PANEL.css('height', 'auto');
-    }
+
     var currentIcon = $ICON.attr('icon');
     var newIcon = (currentIcon === 'chevron-up') ? 'chevron-down' : 'chevron-up';
-
     $ICON.attr('icon', newIcon);
 });
 
 
 $('.close-link').click(function () {
     var $BOX_PANEL = $(this).closest('.x_panel');
-
     $BOX_PANEL.remove();
 });
 
-window.addEventListener('unload', function () {
-    document.documentElement.innerHTML = '';
-});
 
 function init_DataTables() {
     // Ensure moment.js sorting plugin is loaded
@@ -51,24 +45,24 @@ function init_DataTables() {
                 topStart: {
                     buttons: [
                         {
-                            extend: "copy",
+                            extend: "copyHtml5",
                             tag: 'calcite-button',
                             attr: {scale: "s", kind: "inverse", "icon-start": "copy-to-clipboard"}
                         },
                         {
-                            extend: "csv",
+                            extend: "csvHtml5",
                             tag: 'calcite-button',
                             attr: {scale: "s", kind: "inverse", "icon-start": "file-csv"}
                         },
                         {
-                            extend: "excel",
+                            extend: "excelHtml5",
                             tag: 'calcite-button',
                             attr: {scale: "s", kind: "inverse", "icon-start": "file-excel"}
                         },
                         {
-                            extend: "print",
+                            extend: "pdfHtml5",
                             tag: 'calcite-button',
-                            attr: {scale: "s", kind: "inverse", "icon-start": "print"}
+                            attr: {scale: "s", kind: "inverse", "icon-start": "file-pdf"}
                         }
                     ]
                 },
@@ -84,7 +78,11 @@ function init_DataTables() {
                     previous: '<calcite-icon icon="chevron-left" preload="true" scale="s"></calcite-icon>',
                     first: 'First',
                     last: 'Last'
-                }
+                },
+                info: "Displaying records _START_ to _END_ of _TOTAL_ records",
+                emptyTable: "No records available.",
+                infoFiltered: "(filtered from _MAX_ records)",
+                infoEmpty: "Displaying 0 to 0 of 0 records"
             },
             autoWidth: false,
             order: [[1, "asc"]],
@@ -102,7 +100,7 @@ function init_DataTables() {
                     var $select = $('<calcite-combobox placeholder="Instance" scale="s" selection-mode="single" placeholder-icon="filter"></calcite-combobox>');
                     column.data().unique().sort().each(function (d, j) {
                         var val = $('<div/>').html(d).text();
-                        $select.append(`<calcite-combobox-item value="${val}" text-label="${val}"></calcite-combobox-item>`);
+                        $select.append(`<calcite-combobox-item value="${val}" heading="${val}"></calcite-combobox-item>`);
                     });
                     $select.appendTo(filterSelector);
                     $select.on('calciteComboboxChange', function () {
@@ -129,8 +127,8 @@ function init_Charts() {
     if (!ctx) return; // Exit if no chart container is found
 
     $(function () {
-        const borderColor = getComputedStyle(document.body).getPropertyValue('--calcite-ui-border-3');
-        const fontColor = getComputedStyle(document.body).getPropertyValue('--calcite-ui-text-2');
+        const borderColor = getComputedStyle(document.body).getPropertyValue('--calcite-color-border-3');
+        const fontColor = getComputedStyle(document.body).getPropertyValue('--calcite-color-text-2');
         const chartDataElement = document.getElementById('chartdata');
 
         if (!chartDataElement) {
@@ -182,6 +180,10 @@ function init_Charts() {
                     }
                 }
             },
+            interaction: {
+                intersect: false,
+                mode: 'index',
+            },
             plugins: {
                 legend: {
                     display: true,
@@ -213,7 +215,7 @@ function init_Charts() {
 
         // Append unique instances to dropdown
         for (const instance of instances) {
-            $select.append(`<calcite-combobox-item value="${instance}" text-label="${instance}"></calcite-combobox-item>`);
+            $select.append(`<calcite-combobox-item value="${instance}" heading="${instance}"></calcite-combobox-item>`);
         }
 
         // Ensure the dropdown is empty before appending (prevents duplicates)
@@ -538,27 +540,141 @@ htmx.on('htmx:afterRequest', (e) => {
             }
         }
     }
-    $('.sparkline').sparkline('html', {
-        type: 'line',
-        width: '110',
-        height: '20',
-        lineColor: getComputedStyle(document.body)
-            .getPropertyValue('--calcite-ui-text-3'),
-        fillColor: getComputedStyle(document.body)
-            .getPropertyValue('--calcite-ui-text-3'),
-        lineWidth: 0.5,
-        spotColor: null,
-        minSpotColor: null,
-        maxSpotColor: null,
-        highlightSpotColor: null,
-        highlightLineColor: null,
-        spotRadius: 2,
-        normalRangeColor: '#ffffff',
-        drawNormalOnTop: false,
-        tooltipContainer: "#mainbodycontent",
-        chartRangeMinX: 0
-    })
+    if (e.detail.target.id === 'service-table') {
+        initializeSparklines();
+    }
+
 })
+
+function externalTooltipHandler(context) {
+    // Tooltip Element
+    const {chart, tooltip} = context;
+    const tooltipEl = getOrCreateTooltip(chart);
+
+    // Hide if no tooltip
+    if (tooltip.opacity === 0) {
+        tooltipEl.classList.remove('visible');
+        return;
+    }
+
+    // Set Text
+    let innerHtml = '';
+    if (tooltip.title && tooltip.title.length > 0) {
+        innerHtml += `<div class="chartjs-tooltip-title">${tooltip.title[0]}</div>`;
+    }
+    if (tooltip.body) {
+        const bodyLines = tooltip.body.map(b => b.lines);
+        innerHtml += `<div class="chartjs-tooltip-body">${bodyLines.map(lines => lines.join('')).join('<br>')}</div>`;
+    }
+
+    tooltipEl.innerHTML = innerHtml;
+
+    const {offsetLeft: positionX, offsetTop: positionY} = chart.canvas;
+
+    // Position tooltip below the canvas
+    const tooltipX = positionX + tooltip.caretX;
+    const tooltipY = positionY + 48;
+
+    tooltipEl.style.transform = `translate(${tooltipX}px, ${tooltipY}px) translateX(-50%)`;
+
+    // Show tooltip
+    tooltipEl.classList.add('visible');
+}
+
+function getOrCreateTooltip(chart) {
+    let tooltipEl = chart.canvas.parentNode.querySelector('.chartjs-tooltip');
+
+    if (!tooltipEl) {
+        tooltipEl = document.createElement('div');
+        tooltipEl.className = 'chartjs-tooltip';
+        chart.canvas.parentNode.appendChild(tooltipEl);
+    }
+
+    return tooltipEl;
+}
+
+function initializeSparklines() {
+    // Find all sparklines
+    const sparklineElements = document.querySelectorAll('.sparkline-chart');
+
+    sparklineElements.forEach(canvas => {
+        const dataString = canvas.getAttribute('data-chart');
+        const chartData = JSON.parse(dataString);
+
+        // Extract values and labels
+        const dataArray = chartData.values;
+        const labels = chartData.dates || dataArray.map((_, index) => index);
+
+        // Get Calcite colors
+        const lineColor = getComputedStyle(document.body)
+            .getPropertyValue('--calcite-color-text-1');
+        const fillColor = getComputedStyle(document.body)
+            .getPropertyValue('--calcite-color-text-3');
+
+        const ctx = canvas.getContext('2d');
+
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: dataArray,
+                    borderColor: lineColor || '#6b7280',
+                    backgroundColor: fillColor + '20',
+                    borderWidth: 0.5,
+                    fill: true,
+                    pointRadius: 0,
+                    pointHoverRadius: 2,
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: false,
+                maintainAspectRatio: false,
+                interaction: {
+                    intersect: false,
+                    mode: 'index'
+                },
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        enabled: false,
+                        external: externalTooltipHandler,
+                        callbacks: {
+                            title: function (context) {
+                                return context[0].label;
+                            },
+                            label: function (context) {
+                                return `Requests: ${context.parsed.y}`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        display: false,
+                        grid: {
+                            display: false
+                        }
+                    },
+                    y: {
+                        display: false,
+                        grid: {
+                            display: false
+                        }
+                    }
+                },
+                elements: {
+                    point: {
+                        hoverBackgroundColor: lineColor || '#6b7280'
+                    }
+                }
+            }
+        });
+    });
+}
 
 var activeWidget;
 var shellPanel = document.getElementById("shell-panel-start");
@@ -871,8 +987,9 @@ function mergeTableRows(tableSelector, columnIndex) {
         if (prevCell && cell.innerText === prevCell.innerText) {
             rowspan++;
             prevCell.rowSpan = rowspan; // Increase rowspan of previous cell
-            cell.style.display = "none"; // Hide duplicate cell
+            cell.classList.add("display-none"); // Hide duplicate cell
         } else {
+            cell.classList.remove("display-none");
             prevCell = cell;
             rowspan = 1;
         }
@@ -888,37 +1005,3 @@ blocks?.forEach((el) => {
         });
     });
 });
-
-// document.addEventListener("htmx:confirm", function (e) {
-//     // The event is triggered on every trigger for a request, so we need to check if the element
-//     // that triggered the request has a hx-confirm attribute, if not we can return early and let
-//     // the default behavior happen
-//     if (!e.detail.target.hasAttribute('hx-confirm')) return
-//     // This will prevent the request from being issued to later manually issue it
-//     e.preventDefault()
-//
-//     const confirm = document.createElement("calcite-dialog");
-//     confirm.setAttribute("modal", "true");
-//     confirm.setAttribute("open", "");
-//     confirm.setAttribute("width", "s");
-//     confirm.setAttribute("heading", "Confirm Deletion");
-//     confirm.setAttribute("icon", "");
-//
-//
-//     // Correctly interpolate e.detail.value
-//     confirm.innerHTML = `<div>Are you sure you want to delete ${e.detail.question}? This action cannot be undone</div>
-//                         <calcite-button slot="footer-start" appearance="outline" kind="neutral">Cancel</calcite-button>
-//                         <calcite-button slot="footer-end" appearance="solid" kind="danger" onClick="e.detail.issueRequest(true)">Delete</calcite-button>`;
-//
-//
-//     document.querySelector("#alert-container").appendChild(confirm);
-//     // Swal.fire({
-//     //   title: "Proceed?",
-//     //   text: `I ask you... ${e.detail.question}`
-//     // }).then(function(result) {
-//     //   if (result.isConfirmed) {
-//     //     // If the user confirms, we manually issue the request
-//     //     e.detail.issueRequest(true); // true to skip the built-in window.confirm()
-//     //   }
-//     // })
-// })
