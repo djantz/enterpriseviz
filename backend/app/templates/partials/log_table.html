@@ -9,11 +9,12 @@
       {% for column in table.columns %}
         <th {{ column.attrs.th.as_html }} scope="col"
           {% if column.orderable %}
+            class="cursor-pointer"
             hx-get="{{ request.path }}?{% querystring table.prefixed_order_by_field=column.order_by_alias.next %}"
             hx-trigger="click"
             hx-target="#log-table-container"
             hx-swap="innerHTML"
-            style="cursor: pointer;"
+
           {% endif %}>
           {{ column.header }}
         </th>
@@ -35,7 +36,7 @@
       {% endfor %}
     {% else %}
       <tr>
-        <td colspan="{{ table.columns|length }}" class="text-center">No data available in table</td>
+        <td colspan="{{ table.columns|length }}" class="text-center">No records available.</td>
       </tr>
     {% endif %}
   </tbody>

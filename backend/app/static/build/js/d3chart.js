@@ -56,7 +56,7 @@ function initD3() {
 
         for (const instance of instances) {
             if ($select.find('option[value=' + instance + ']').length == 0) {
-                $select.append('<calcite-combobox-item value=' + instance + ' text-label=' + instance + '></calcite-combobox-item>');
+                $select.append('<calcite-combobox-item value=' + instance + ' heading=' + instance + '></calcite-combobox-item>');
             }
         }
         $select.appendTo('#d3chart-filter');

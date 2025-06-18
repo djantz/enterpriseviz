@@ -2,6 +2,7 @@
 import django_tables2 as tables
 from django.utils.html import format_html
 from collections import defaultdict
+import json
 
 
 from .models import Webmap, Service, Layer, App, User, LogEntry
@@ -22,7 +23,7 @@ class WebmapTable(tables.Table):
   type="submit">
   Details
 </calcite-button>""",
-        orderable=False, attrs={"td": {"style": "width:74px;"}})
+        orderable=False, attrs={"td": {"class": "table-cell-details"}})
     title_link = tables.Column(orderable=True, accessor="webmap_title")
 
     class Meta:
@@ -33,6 +34,9 @@ class WebmapTable(tables.Table):
                   "webmap_views")
         order_by = "title_link"
         sequence = ("details", "title_link")
+        attrs = {
+            "class": "table table-striped"
+        }
 
     def render_title_link(self, value, record):
         return format_html('<calcite-link href="{}" target="_blank">{}</calcite-link>', record.webmap_url, value)
@@ -41,14 +45,18 @@ class WebmapTable(tables.Table):
 class ServiceTable(tables.Table):
     details = tables.TemplateColumn(
         """<calcite-button hx-get="{% url 'enterpriseviz:service' instance=record.portal_instance url=record.service_name %}" hx-target="#mainbodycontent" hx-push-url="{% url 'enterpriseviz:service' instance=record.portal_instance url=record.service_name %}" hx-swap="show:top" alignment="center" appearance="solid" kind="inverse" scale="s" width="auto" type="submit">Details</calcite-button>""",
-        orderable=False, attrs={"td": {"style": "width:74px;"}})
-    usage = tables.TemplateColumn('<span class="sparkline">{{ record.service_usage|cut:"["|cut:"]"|cut:" " }}</span>',
-                                  orderable=False)
+        orderable=False, attrs={"td": {"class": "table-cell-details"}})
     URL = tables.TemplateColumn(
         '{% for url in record.service_url_as_list %} <calcite-link href="{{ url }}" target="_blank">{{ url }}</calcite-link>{% endfor %}',
         orderable=False)
     grouped_layers = tables.Column(empty_values=(), verbose_name="Layers", orderable=False)
     service_usage_trend = tables.Column(empty_values=(), verbose_name="Usage Trend")
+    service_usage = tables.Column(
+        verbose_name="Trend",
+        orderable=False,
+        empty_values=(),
+        attrs={'td': {'class': 'sparkline-cell'}}
+    )
 
     class Meta:
         model = Service
@@ -57,6 +65,9 @@ class ServiceTable(tables.Table):
                   "service_access", "service_usage_trend")
         order_by = "service_name"
         sequence = ("details", "service_name", "grouped_layers", "URL")
+        attrs = {
+            "class": "table table-striped"
+        }
 
     def render_grouped_layers(self, value, record):
         """Django Tables2 calls this method to populate the `grouped_layers` column."""
@@ -75,27 +86,54 @@ class ServiceTable(tables.Table):
         return format_html("<br>".join(result) if result else "No Layers")
 
     def render_service_usage_trend(self, value):
-        if value is None:
+        if value is None or not isinstance(value, (int, float)):
             return "N/A"
 
         trend_symbol = "+" if value > 0 else ""
-        trend_color = "green" if value > 0 else "red"
+        trend_class = ""
+        if value > 0:
+            trend_class = "trend-positive"
+        elif value < 0:
+            trend_class = "trend-negative"
+
+
+        if trend_class:
+            return format_html(
+                '<span class="{}">{}{}%</span>',
+                trend_class,
+                trend_symbol,
+                value
+            )
+        else:
+            return format_html(
+                '<span>{}{}%</span>',
+                trend_symbol,
+                value
+            )
+
+    def render_service_usage(self, value, record):
+        # Create unique ID for this sparkline
+        chart_id = f"sparkline-{record.pk}"
 
         return format_html(
-            '<span style="color: {};">{}{}%</span>',
-            trend_color, trend_symbol, value
+            '<canvas id="{}" class="sparkline-chart" width="110" height="40" data-chart="{}"></canvas>',
+            chart_id,
+            json.dumps(value)
         )
 
 class LayerTable(tables.Table):
     details = tables.TemplateColumn(
         """<calcite-button hx-get="{% url 'enterpriseviz:layer' name=record.layer_name %}?server={{ record.layer_server }}&database={{ record.layer_database }}&version={{ record.layer_version }}" hx-target="#mainbodycontent" hx-push-url="{% url 'enterpriseviz:layer' name=record.layer_name %}?server={{ record.layer_server }}&database={{ record.layer_database }}&version={{ record.layer_version }}" hx-swap="show:top" alignment="center" appearance="solid" kind="inverse" scale="s" width="auto" type="submit">Details</calcite-button>""",
-        orderable=False, attrs={"td": {"style": "width:74px;"}})
+        orderable=False, attrs={"td": {"class": "table-cell-details"}})
 
     class Meta:
         model = Layer
         fields = ("layer_name", "layer_database", "layer_server", "layer_version")
         order_by = "layer_name"
         sequence = ("details", "layer_name")
+        attrs = {
+            "class": "table table-striped"
+        }
 
 
 class AppTable(tables.Table):
@@ -108,6 +146,9 @@ class AppTable(tables.Table):
             "app_access")
         order_by = "title_link"
         sequence = ("title_link", "app_type")
+        attrs = {
+            "class": "table table-striped"
+        }
 
     def render_title_link(self, value, record):
         return format_html('<calcite-link href="{}" target="_blank">{}</calcite-link>', record.app_url, value)
@@ -119,6 +160,9 @@ class UserTable(tables.Table):
         fields = ("user_username", "user_first_name", "user_last_name", "user_email", "user_created",
                   "user_last_login", "user_role", "user_pro_license", "user_pro_last", "user_items")
         order_by = 'user_username'
+        attrs = {
+            "class": "table table-striped"
+        }
 
 
 class LogEntryTable(tables.Table):
@@ -126,13 +170,13 @@ class LogEntryTable(tables.Table):
 
     timestamp = tables.DateTimeColumn(format="Y-m-d H:i:s T", verbose_name="Timestamp")
     message = tables.Column(verbose_name="Message", attrs={
-        "td": {"style": "max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"}})
+        "td": {"class": "table-cell-message"}})
     traceback = tables.TemplateColumn(
         template_code='''
                 {% if record.traceback %}
                     <calcite-button appearance="transparent" scale="s" icon-start="information" id="traceback-btn-{{ record.id }}">View</calcite-button>
                     <calcite-popover reference-element="traceback-btn-{{ record.id }}" label="Traceback" placement="auto" scale="m" auto-close>
-                        <pre style="white-space: pre-wrap; word-wrap: break-word; max-height: 300px; overflow-y: auto; padding: 0.5rem;">{{ record.traceback }}</pre>
+                        <pre class="table-cell-message-popover">{{ record.traceback }}</pre>
                     </calcite-popover>
                 {% else %}
                     -
@@ -155,6 +199,9 @@ class LogEntryTable(tables.Table):
             "request_method", "request_duration"
         )
         order_by = "-timestamp"
+        attrs = {
+            "class": "table table-striped"
+        }
 
     @classmethod
     def get_column_labels(cls):

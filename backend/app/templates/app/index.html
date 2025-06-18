@@ -89,7 +89,6 @@
                               hx-target="#mainbodycontent"
                               hx-push-url="{% url 'enterpriseviz:duplicate' instance=instance %}"
                               hx-swap="show:window:top"
-                              hx-on:htmx:beforeSwap="if (event.detail.xhr.status >= 400) { event.detail.shouldSwap = false; }"
                               {% else %}
                               hx-target="#credentials-input"
                               {% endif %}>
@@ -108,7 +107,6 @@
                               hx-target="#mainbodycontent"
                               hx-push-url="{% url 'enterpriseviz:metadata' instance=instance %}"
                               hx-swap="show:window:top"
-                              hx-on:htmx:beforeSwap="if (event.detail.xhr.status >= 400) { event.detail.shouldSwap = false; }"
                               {% else %}
                               hx-target="#credentials-input"
                               {% endif %}>
@@ -184,7 +182,7 @@
             {% endif %}
           </div>
           <div class="clearfix"></div>
-          <div style="height: 6px;"></div>
+          <div class="height-6px"></div>
           <calcite-button download scale="s" kind="inverse" icon-start="file-csv" {% if instance %}href="
               {% url 'enterpriseviz:table' instance=instance name='webmap' %}{% export_url 'csv' %}"{% else %}
                           href="{% url 'enterpriseviz:table' name='webmap' %}{% export_url 'csv' %}"{% endif %}>CSV
@@ -194,22 +192,22 @@
                           href="{% url 'enterpriseviz:table' name='webmap' %}{% export_url 'xlsx' %}"{% endif %}>Excel
           </calcite-button>
 
-          <div id="datatable-webmap_filter" class="dataTables_filter">
+          <div id="datatable-webmap_filter" class="table_filter">
             <calcite-input prefix-text="Search" status="idle" scale="s" name="search" kind="inverse"
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='webmap' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='webmap' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
-                           hx-target="next div.table-container"
-                           hx-swap="outerHTML"
-                           hx-indicator=".progress" autocomplete="off"></calcite-input>
+                           hx-target="#webmap-table"
+                           hx-swap="innerHTML"
+                           hx-indicator="#webmap-table-progress" autocomplete="off"></calcite-input>
           </div>
-          <div class="progress">
+          <div id="webmap-table-progress" class="progress">
             <div class="indeterminate"></div>
           </div>
           <div id="webmap-table">
             <div {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='webmap' %}"
                  {% else %}hx-get="{% url 'enterpriseviz:table' name='webmap' %}"{% endif %}
-                 hx-trigger="load" hx-swap="outerHTML">
+                 hx-trigger="load" hx-target="#webmap-table" hx-swap="innerHTML">
               Loading...
             </div>
           </div>
@@ -259,7 +257,7 @@
             {% endif %}
           {% endif %}
           <div class="clearfix"></div>
-          <div style="height: 6px;"></div>
+          <div class="height-6px"></div>
           <calcite-button scale="s" kind="inverse" icon-start="file-csv" {% if instance %}href="
               {% url 'enterpriseviz:table' instance=instance name='service' %}{% export_url 'csv' %}"{% else %}
                           href="{% url 'enterpriseviz:table' name='service' %}{% export_url 'csv' %}"{% endif %}>CSV
@@ -268,22 +266,22 @@
               {% url 'enterpriseviz:table' instance=instance name='service' %}{% export_url 'xlsx' %}"{% else %}
                           href="{% url 'enterpriseviz:table' name='service' %}{% export_url 'xlsx' %}"{% endif %}>Excel
           </calcite-button>
-          <div id="datatable-service_filter" class="dataTables_filter">
+          <div id="datatable-service_filter" class="table_filter">
             <calcite-input prefix-text="Search" status="idle" scale="s" name="search"
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='service' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='service' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
-                           hx-target="next div.table-container"
-                           hx-swap="outerHTML"
-                           hx-indicator=".progress"></calcite-input>
+                           hx-target="#service-table"
+                           hx-swap="innerHTML"
+                           hx-indicator="#service-table-progress"></calcite-input>
           </div>
-          <div class="progress">
+          <div id="service-table-progress" class="progress">
             <div class="indeterminate"></div>
           </div>
           <div id="service-table">
             <div {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='service' %}"
                  {% else %}hx-get="{% url 'enterpriseviz:table' name='service' %}"{% endif %}
-                 hx-trigger="load" hx-swap="outerHTML">
+                 hx-trigger="load" hx-target="#service-table" hx-swap="innerHTML">
               Loading...
             </div>
           </div>
@@ -318,7 +316,7 @@
               {{ instance.service_updated }}{% endif %}
           </p>
           <div class="clearfix"></div>
-          <div style="height: 6px;"></div>
+          <div class="height-6px"></div>
           <calcite-button scale="s" kind="inverse" icon-start="file-csv" {% if instance %}href="
               {% url 'enterpriseviz:table' instance=instance name='layer' %}{% export_url 'csv' %}"{% else %}
                           href="{% url 'enterpriseviz:table' name='layer' %}{% export_url 'csv' %}"{% endif %}>CSV
@@ -328,22 +326,22 @@
                           href="{% url 'enterpriseviz:table' name='layer' %}{% export_url 'xlsx' %}"{% endif %}>Excel
           </calcite-button>
 
-          <div id="datatable-layer_filter" class="dataTables_filter">
+          <div id="datatable-layer_filter" class="table_filter">
             <calcite-input prefix-text="Search" status="idle" scale="s" name="search"
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='layer' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='layer' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
-                           hx-target="next div.table-container"
-                           hx-swap="outerHTML"
-                           hx-indicator=".progress" autocomplete="off"></calcite-input>
+                           hx-target="#layer-table"
+                           hx-swap="innerHTML"
+                           hx-indicator="#layer-table-progress" autocomplete="off"></calcite-input>
           </div>
-          <div class="progress">
+          <div id="layer-table-progress" class="progress">
             <div class="indeterminate"></div>
           </div>
           <div id="layer-table">
             <div {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='layer' %}"
                  {% else %}hx-get="{% url 'enterpriseviz:table' name='layer' %}"{% endif %}
-                 hx-trigger="load" hx-swap="outerHTML">
+                 hx-trigger="load" hx-target="#layer-table" hx-swap="innerHTML">
               Loading...
             </div>
           </div>
@@ -395,7 +393,7 @@
             {% endif %}
           {% endif %}
           <div class="clearfix"></div>
-          <div style="height: 6px;"></div>
+          <div class="height-6px"></div>
           <calcite-button scale="s" kind="inverse" icon-start="file-csv" {% if instance %}href="
               {% url 'enterpriseviz:table' instance=instance name='app' %}{% export_url 'csv' %}"{% else %}
                           href="{% url 'enterpriseviz:table' name='app' %}{% export_url 'csv' %}"{% endif %}>CSV
@@ -405,22 +403,22 @@
                           href="{% url 'enterpriseviz:table' name='app' %}{% export_url 'xlsx' %}"{% endif %}>Excel
           </calcite-button>
 
-          <div id="datatable-app_filter" class="dataTables_filter">
+          <div id="datatable-app_filter" class="table_filter">
             <calcite-input prefix-text="Search" status="idle" scale="s" name="search"
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='app' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='app' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
-                           hx-target="next div.table-container"
-                           hx-swap="outerHTML"
-                           hx-indicator=".progress" autocomplete="off"></calcite-input>
+                           hx-target="#app-table"
+                           hx-swap="innerHTML"
+                           hx-indicator="#app-table-progress" autocomplete="off"></calcite-input>
           </div>
-          <div class="progress">
+          <div id="app-table-progress" class="progress">
             <div class="indeterminate"></div>
           </div>
           <div id="app-table">
             <div {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='app' %}"
                  {% else %}hx-get="{% url 'enterpriseviz:table' name='app' %}"{% endif %}
-                 hx-trigger="load" hx-swap="outerHTML">
+                 hx-trigger="load" hx-target="#app-table" hx-swap="innerHTML">
               Loading...
             </div>
           </div>
@@ -471,7 +469,7 @@
             {% endif %}
           {% endif %}
           <div class="clearfix"></div>
-          <div style="height: 6px;"></div>
+          <div class="height-6px"></div>
           <calcite-button scale="s" kind="inverse" icon-start="file-csv" {% if instance %}href="
               {% url 'enterpriseviz:table' instance=instance name='user' %}{% export_url 'csv' %}"{% else %}
                           href="{% url 'enterpriseviz:table' name='user' %}{% export_url 'csv' %}"{% endif %}>CSV
@@ -481,22 +479,22 @@
                           href="{% url 'enterpriseviz:table' name='user' %}{% export_url 'xlsx' %}"{% endif %}>Excel
           </calcite-button>
 
-          <div id="datatable-users_filter" class="dataTables_filter">
+          <div id="datatable-users_filter" class="table_filter">
             <calcite-input prefix-text="Search" status="idle" scale="s" name="search"
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='user' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='user' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
-                           hx-target="next div.table-container"
-                           hx-swap="outerHTML"
-                           hx-indicator=".progress" autocomplete="off"></calcite-input>
+                           hx-target="#user-table"
+                           hx-swap="innerHTML"
+                           hx-indicator="#user-table-progress" autocomplete="off"></calcite-input>
           </div>
-          <div class="progress">
+          <div id="user-table-progress" class="progress">
             <div class="indeterminate"></div>
           </div>
           <div id="user-table">
             <div {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='user' %}"
                  {% else %}hx-get="{% url 'enterpriseviz:table' name='user' %}"{% endif %}
-                 hx-trigger="load" hx-swap="outerHTML">
+                 hx-trigger="load" hx-target="#user-table" hx-swap="innerHTML">
               Loading...
             </div>
           </div>

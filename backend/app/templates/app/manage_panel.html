@@ -16,13 +16,16 @@
 
     </calcite-block>
   {% endfor %}
-<calcite-tooltip reference-element="manage-modal-delete">
-            <span>Delete this portal from Enterpriseviz</span>
-        </calcite-tooltip>
-    <calcite-tooltip reference-element="manage-modal-update">
-            <span>Update credentials for this portal</span>
-        </calcite-tooltip>
-    <calcite-tooltip reference-element="manage-modal-schedule">
-            <span>Schedule automatic updates and view previous results</span>
-        </calcite-tooltip>
+  <calcite-tooltip reference-element="manage-modal-delete" placement="left" overlay-positioning="fixed"
+                   close-on-click="true">
+    <span>Delete this portal from Enterpriseviz</span>
+  </calcite-tooltip>
+  <calcite-tooltip reference-element="manage-modal-update" placement="left" overlay-positioning="fixed"
+                   close-on-click="true">
+    <span>Update credentials for this portal</span>
+  </calcite-tooltip>
+  <calcite-tooltip reference-element="manage-modal-schedule" placement="left" overlay-positioning="fixed"
+                   close-on-click="true">
+    <span>Schedule automatic updates and view previous results</span>
+  </calcite-tooltip>
 </div>
