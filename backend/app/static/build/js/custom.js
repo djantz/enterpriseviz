@@ -805,13 +805,6 @@ async function setupPortalFormLogic(modal) {
     storePasswordControl.addEventListener("calciteSegmentedControlChange", toggleCredentials);
     toggleCredentials();
 
-    const cancelButton = modal.querySelector("#add-portal-cancel, #update-portal-cancel");
-    if (cancelButton) {
-        cancelButton.addEventListener("click", (e) => {
-            e.preventDefault();
-            modal.open = false;
-        });
-    }
 }
 
 function setupScheduleFormLogic(modal) {
@@ -862,13 +855,6 @@ function setupScheduleFormLogic(modal) {
     updateEndingOn();
 }
 
-function setupCredentialsFormLogic(modal) {
-    const cancelButton = modal.querySelector("#credentials-portal-cancel");
-    cancelButton.addEventListener("click", (e) => {
-        e.preventDefault();
-        modal.open = false;
-    });
-}
 
 function setupModalHTMXListeners(modal) {
     htmx.on(modal, "htmx:beforeRequest", (e) => {
@@ -889,13 +875,12 @@ function setupModalHTMXListeners(modal) {
 }
 
 function updateDarkMode() {
-    var modeswitch = document.querySelector("calcite-switch");
     document.body.classList.toggle("calcite-mode-dark");
 }
 
-modeSwitch = document.querySelector("calcite-switch")
+const modeSwitch = document.querySelector("calcite-switch#mode-switch"); // Be more specific if multiple switches
 if (modeSwitch) {
-    modeSwitch.addEventListener("calciteSwitchChange", updateDarkMode)
+    modeSwitch.addEventListener("calciteSwitchChange", updateDarkMode);
 }
 
 
@@ -930,8 +915,6 @@ htmx.on("showSuccessAlert", (e) => {
     alert.setAttribute("label", "Success alert");
     alert.setAttribute("icon", "");
 
-
-    // Correctly interpolate e.detail.value
     alert.innerHTML = `<div slot="message">${e.detail.value}</div>`;
 
     document.querySelector("#alert-container").appendChild(alert);
@@ -944,8 +927,6 @@ htmx.on("showInfoAlert", (e) => {
     alert.setAttribute("label", "Info alert");
     alert.setAttribute("icon", "");
 
-
-    // Correctly interpolate e.detail.value
     alert.innerHTML = `<div slot="message">${e.detail.value}</div>`;
 
     document.querySelector("#alert-container").appendChild(alert);
@@ -954,6 +935,28 @@ htmx.on("showInfoAlert", (e) => {
 document.addEventListener('DOMContentLoaded', function () {
     refreshActivePortal();
 });
+
+document.addEventListener('click', function (event) {
+    const closeButton = event.target.closest('[data-action="close-modal"]');
+    if (closeButton) {
+        const modal = closeButton.closest('calcite-dialog, dialog');
+        if (modal) {
+            event.preventDefault();
+            if (typeof modal.close === 'function') { // Standard dialogs
+                modal.close();
+            } else if (typeof modal.setOpen === 'function') { // Calcite dialogs
+                modal.setOpen(false);
+            } else {
+                modal.open = false;
+            }
+            // If it's an alert inside a modal, just remove the alert
+            if (closeButton.closest('calcite-alert')) {
+                closeButton.closest('calcite-alert').remove();
+            }
+        }
+    }
+});
+
 
 function refreshActivePortal() {
     // Get the current URL

@@ -1509,3 +1509,103 @@ def log_settings_view(request):
         'log_levels': LOG_LEVEL_NAMES,
     }
     return render(request, 'partials/log_settings.html', context)
+
+
+@staff_member_required
+def email_settings(request):
+    """
+    Manages application-wide email configuration settings.
+
+    On GET, displays the SiteSettingsForm with current email settings.
+    On POST, handles two actions:
+        - 'save': Validates and saves the email configuration from the form.
+        - 'test_email': Sends a test email using the (potentially unsaved)
+          configuration data in the form to a specified test email address.
+
+    Expected POST parameters for 'test_email' action:
+        - 'test_email': The email address to send the test email to.
+    All other POST data is expected to match SiteSettingsForm fields.
+
+    :param request: The HTTP request object.
+    :type request: django.http.HttpRequest
+    :return: Rendered HTML response, typically the email settings form or a partial.
+    :rtype: django.http.HttpResponse
+    """
+    logger.debug(f"Method={request.method}, user={request.user.username}")
+    settings_instance, _ = SiteSettings.objects.get_or_create(pk=1)
+
+    if request.method == "POST":
+        form = SiteSettingsForm(request.POST, instance=settings_instance)
+        action = request.POST.get("action")
+        logger.debug(f"POST action='{action}'")
+
+        if form.is_valid():
+            logger.debug("Form valid.")
+            if action == "save":
+                try:
+                    form.save()
+                    logger.info("Email configuration saved successfully.")
+                    response = render(request, "partials/portal_email_form.html", {"form": form})
+                    response["HX-Trigger-After-Settle"] = json.dumps(
+                        {"showSuccessAlert": "Email configuration saved.", "closeModal": True}
+                    )
+                    return response
+                except Exception as e:
+                    logger.error(f"Error saving config: {e}", exc_info=True)
+                    response = render(request, "partials/portal_email_form.html", {"form": form})
+                    response["HX-Trigger-After-Settle"] = json.dumps(
+                        {"showDangerAlert": f"Failed to save: {str(e)}"})
+                    return response
+
+            elif action == "test_email":
+                test_email_addr = request.POST.get("test_email", "").strip()
+                if not test_email_addr:
+                    logger.warning("Test email address missing.")
+                    return HttpResponse(status=400, headers={
+                        "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Test email address required."})})
+
+                config = form.cleaned_data
+                if not config.get("email_host") or not config.get("email_port"):
+                    return HttpResponse(status=400, headers={
+                        "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Host and Port required."})})
+
+                try:
+                    logger.debug(
+                        f"Sending test email to {test_email_addr} using host {config['email_host']}.")
+                    connection_kwargs = {
+                        "host": config["email_host"], "port": config["email_port"],
+                        "username": config.get("email_username") or None,
+                        "password": config.get("email_password") or None,
+                        "use_tls": (config.get("email_encryption") == "starttls"),
+                        "use_ssl": (config.get("email_encryption") == "ssl"),
+                        "fail_silently": False,
+                    }
+                    with get_connection(**connection_kwargs) as connection:
+                        email = EmailMessage(
+                            subject="Enterpriseviz Test Email",
+                            body="This is a test email from Enterpriseviz. Your email configuration appears to be working.",
+                            from_email=config["from_email"],
+                            to=[test_email_addr],
+                            reply_to=[config.get("reply_to") or config["from_email"]],
+                            connection=connection
+                        )
+                        email.send()
+                    logger.info(f"Test email sent successfully to {test_email_addr}.")
+                    return HttpResponse(headers={"HX-Trigger-After-Settle": json.dumps(
+                        {"showSuccessAlert": f"Test email sent to {test_email_addr}."})})
+                except Exception as e:
+                    logger.error(f"Failed to send test email: {e}", exc_info=True)
+                    return HttpResponse(status=500, headers={
+                        "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Test email failed: {str(e)}"})})
+            else:
+                logger.warning(f"Unknown POST action '{action}'.")
+        else:
+            logger.warning(f"Form invalid. Errors: {form.errors}")
+            return render(request, "partials/portal_email_form.html", {"form": form}, status=400)
+
+    else:
+        form = SiteSettingsForm(instance=settings_instance)
+
+    template_to_render = "portals/portal_email.html" if request.method == "GET" else "partials/portal_email_form.html"
+    return render(request, template_to_render, {"form": form})
+

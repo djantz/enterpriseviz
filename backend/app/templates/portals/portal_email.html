@@ -1,0 +1,28 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<calcite-dialog id="email-modal" modal heading="Configure Email Settings" scale="m" open
+                {% if form.errors %}kind="danger"{% endif %}>
+
+  <div>
+    {% include "partials/portal_email_form.html" %}
+  </div>
+
+  <calcite-button id="email-portal-delete" slot="footer-start" appearance="solid" kind="danger" icon-start="trash"
+                  {% if not description %}disabled{% endif %}
+                  hx-delete="{% url 'enterpriseviz:email_settings' %}"
+                  hx-target="#email-portal-form" hx-include="#email-portal-form">
+    Delete
+  </calcite-button>
+
+  <calcite-button id="email-portal-cancel" data-action="close-modal" slot="footer-end" appearance="outline" icon-start="circle-disallowed">
+    Cancel
+  </calcite-button>
+
+  <calcite-button id="email-portal-save" slot="footer-end"
+                  hx-post="{% url 'enterpriseviz:email_settings' %}"
+                  target="#email-portal-form"
+                  hx-include="#email-portal-form"
+                  icon-start="save" value="save">
+    Register
+  </calcite-button>
+
+</calcite-dialog>
