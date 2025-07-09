@@ -34,3 +34,4 @@ django-tables2-simplefilter
 tablib
 cron-descriptor
 python-Levenshtein
+tabulate

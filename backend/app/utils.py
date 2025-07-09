@@ -31,9 +31,12 @@ from django.core.cache import cache
 import requests
 from arcgis import gis
 from arcgis.mapping import WebMap
+from django.core.mail import get_connection, EmailMultiAlternatives
 from django.db.models import F, QuerySet, Q
 from django.utils import timezone
 from fuzzywuzzy import fuzz
+from tabulate import tabulate
+
 
 from .models import Webmap, Service, Layer, App, Portal
 
@@ -1019,3 +1022,106 @@ def apply_global_log_level(level_name=None, logger_name=None):
         util_logger.info(f"Finished applying log level {level_to_apply_str}. {changed_loggers} loggers updated.")
     else:
         util_logger.debug(f"Log level {level_to_apply_str} was already effectively set or no target loggers changed.")
+
+
+def generate_email_tables(maps_qs, apps_qs):
+    """
+    Generates plain text and HTML table representations of maps and apps.
+
+    :param maps_qs: QuerySet of Webmap model instances.
+    :type maps_qs: django.db.models.QuerySet
+    :param apps_qs: QuerySet of App model instances.
+    :type apps_qs: django.db.models.QuerySet
+    :return: Dictionary with 'plain' and 'html' table strings.
+    :rtype: dict
+    """
+    # Extract data for tables - select only needed fields for efficiency
+    map_rows = [(m.webmap_title, m.webmap_url, m.webmap_access,
+                 epoch_to_date(m.webmap_created), epoch_to_date(m.webmap_modified), m.webmap_views)
+                for m in maps_qs]
+    app_rows = [(a.app_title, a.app_url, a.app_type, a.app_access,
+                 epoch_to_date(a.app_created), epoch_to_date(a.app_modified), a.app_views)
+                for a in apps_qs]
+
+    plain_map_table = ""
+    html_map_table = ""
+    if map_rows:
+        headers = ["Title", "URL", "Access", "Created", "Modified", "Views"]
+        plain_map_table = tabulate(map_rows, headers=headers, tablefmt="grid")
+        html_map_table = tabulate(map_rows, headers=headers, tablefmt="html")
+
+    plain_app_table = ""
+    html_app_table = ""
+    if app_rows:
+        headers = ["Title", "URL", "Type", "Access", "Created", "Modified", "Views"]
+        plain_app_table = tabulate(app_rows, headers=headers, tablefmt="grid")
+        html_app_table = tabulate(app_rows, headers=headers, tablefmt="html")
+
+    plain_output = []
+    if plain_map_table: plain_output.append(f"Maps:\n{plain_map_table}")
+    if plain_app_table: plain_output.append(f"Apps:\n{plain_app_table}")
+
+    html_output = []
+    if html_map_table: html_output.append(f"<h2>Maps</h2>{html_map_table}")
+    if html_app_table: html_output.append(f"<h2>Apps</h2>{html_app_table}")
+
+    return {
+        "plain": "\n\n".join(plain_output),
+        "html": "<br><br>".join(html_output)
+    }
+
+
+def prepare_and_send_notification(owner, items_by_owner, change_item_desc, site_settings_obj):
+    """
+    Prepares and sends an email notification to a single owner.
+
+    Helper function for `notify_view`.
+
+    :param owner: The User object of the item owner.
+    :type owner: enterpriseviz.models.User
+    :param items_by_owner: Dictionary of items owned by this user, keyed by 'maps' and 'apps'.
+    :type items_by_owner: dict
+    :param change_item_desc: Description of the item/change causing the notification.
+    :type change_item_desc: str
+    :param site_settings_obj: The SiteSettings model instance with email configuration.
+    :type site_settings_obj: enterpriseviz.models.SiteSettings
+    :return: True if email was sent, False otherwise.
+    :rtype: bool
+    """
+    logger.debug(f"Preparing email for owner: {owner.user_username} ({owner.user_email})")
+    email_body = (f"Hello {owner.user_first_name or owner.user_username} {owner.user_last_name or ''},\n\n"
+                  f"This email is to inform you about upcoming changes to: {change_item_desc}.\n"
+                  "Below is content you own that may be impacted by this change. "
+                  "For additional information, questions, or concerns, please contact "
+                  f"{settings.ADMINS[0][1] if settings.ADMINS and settings.ADMINS[0] else 'your GIS administrator'}.\n\n")
+
+    maps_for_owner = items_by_owner.get("maps", [])
+    apps_for_owner = items_by_owner.get("apps", [])
+
+    if not maps_for_owner and not apps_for_owner:
+        logger.debug(f"No items for owner {owner.user_username}, skipping email.")
+        return False
+
+    email_tables = generate_email_tables(maps_for_owner, apps_for_owner)
+    email_body += email_tables["plain"]
+
+    connection_kwargs = {
+        "host": site_settings_obj.email_host, "port": site_settings_obj.email_port,
+        "username": site_settings_obj.email_username or None,
+        "password": site_settings_obj.email_password or None,
+        "use_tls": (site_settings_obj.email_encryption == "starttls"),
+        "use_ssl": (site_settings_obj.email_encryption == "ssl"),
+    }
+    with get_connection(**connection_kwargs) as connection:
+        msg = EmailMultiAlternatives(
+            subject="Impacting GIS Changes Notification",
+            body=email_body,
+            from_email=site_settings_obj.from_email,
+            to=[owner.user_email],
+            bcc=[site_settings_obj.admin_email] if site_settings_obj.admin_email else None,
+            connection=connection,
+        )
+        msg.attach_alternative(email_tables["html"], "text/html")
+        msg.send()
+    logger.info(f"Email sent successfully to {owner.user_email}.")
+    return True

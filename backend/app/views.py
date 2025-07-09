@@ -658,7 +658,7 @@ def refresh_portal_view(request):
         username = request.POST.get("username", None)
         password = request.POST.get("password", None)
         if username and password:
-            auth = webmaps.try_connection(request.POST)
+            auth = utils.try_connection(request.POST)
             if auth.get("authenticated", False):
                 if portal.portal_type is None:
                     portal.portal_type = "agol" if auth.get("is_agol") else "portal"
@@ -1375,15 +1375,13 @@ def webhook_view(request):
     - `404 Not Found` if the portal is unknown.
     """
     logger.debug("Received webhook request.")
-
-    # Read and verify request body
-    body = request.body
-    computed_signature = hmac.new(
-        key=settings.WEBHOOK_SECRET.encode(),
-        msg=body,
-        digestmod=hashlib.sha256
-    ).hexdigest()
-
+    signature = request.headers.get("Secret", "")
+    if not signature:
+        logger.warning("Received webhook request without signature.")
+        return HttpResponse(status=403)
+    if not signature == settings.WEBHOOK_SECRET:
+        logger.warning("Webhook signature mismatch.")
+        return HttpResponseForbidden()
     try:
         payload = json.loads(request.body)
     except json.JSONDecodeError:
@@ -1609,3 +1607,86 @@ def email_settings(request):
     template_to_render = "portals/portal_email.html" if request.method == "GET" else "partials/portal_email_form.html"
     return render(request, template_to_render, {"form": form})
 
+
+@require_POST
+def notify_view(request):
+    """
+    Sends email notifications to owners of selected maps and apps about an upcoming change.
+
+    Accepts a POST request with the description of the change and comma-separated
+    IDs of selected maps and apps. Groups items by owner and sends one email per owner.
+    Requires email settings to be configured in SiteSettings.
+
+    Expected POST parameters:
+        - 'change': Description of the upcoming change.
+        - 'selected_maps': Comma-separated string of Webmap IDs.
+        - 'selected_apps': Comma-separated string of App IDs.
+
+    :param request: The HTTP request object.
+    :type request: django.http.HttpRequest
+    :return: HTTP response, typically empty with HTMX triggers for alerts/modal closure.
+    :rtype: django.http.HttpResponse
+    """
+    logger.debug(f"user={request.user.username}")
+    change_item_description = request.POST.get("change", "related GIS resources")
+    map_ids_str = request.POST.get("selected_maps", "")
+    app_ids_str = request.POST.get("selected_apps", "")
+
+    logger.debug(f"Change='{change_item_description}', Maps='{map_ids_str}', Apps='{app_ids_str}'")
+
+    site_settings = SiteSettings.objects.first()
+    if not site_settings or not site_settings.email_host:
+        logger.error("Email settings not configured.")
+        return HttpResponse(status=500, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Email settings not configured."})})
+
+    selected_maps_qs = Webmap.objects.none()
+    if map_ids_str:
+        map_ids_list = [map_id.strip() for map_id in map_ids_str.split(',') if map_id.strip()]
+        if map_ids_list:
+            selected_maps_qs = Webmap.objects.filter(webmap_id__in=map_ids_list).select_related("webmap_owner")
+
+    selected_apps_qs = App.objects.none()
+    if app_ids_str:
+        app_ids_list = [app_id.strip() for app_id in app_ids_str.split(',') if app_id.strip()]
+        if app_ids_list:
+            selected_apps_qs = App.objects.filter(app_id__in=app_ids_list).select_related("app_owner")
+
+    if not selected_maps_qs.exists() and not selected_apps_qs.exists():
+        logger.debug("No maps or apps selected for notification.")
+        messages.info(request, "No items were selected for notification.")
+        response = HttpResponse("")
+        response["HX-Trigger"] = json.dumps({"closeModal": True})
+        return response
+
+    owner_items_map = defaultdict(lambda: {"maps": [], "apps": []})
+    for webmap_obj in selected_maps_qs:
+        if webmap_obj.webmap_owner and webmap_obj.webmap_owner.user_email:
+            owner_items_map[webmap_obj.webmap_owner]["maps"].append(webmap_obj)
+    for app_obj in selected_apps_qs:
+        if app_obj.app_owner and app_obj.app_owner.user_email:
+            owner_items_map[app_obj.app_owner]["apps"].append(app_obj)
+
+    logger.info(f"Preparing to send notifications to {len(owner_items_map)} owners.")
+    emails_sent_count = 0
+    emails_failed_count = 0
+
+    for owner_obj, items_for_owner in owner_items_map.items():
+        try:
+            if utils.prepare_and_send_notification(owner_obj, items_for_owner, change_item_description, site_settings):
+                emails_sent_count += 1
+        except Exception as e:
+            logger.error(f"Error sending email to {owner_obj.user_email}: {e}", exc_info=True)
+            emails_failed_count += 1
+
+    if emails_sent_count > 0:
+        messages.success(request, f"{emails_sent_count} notification emails sent successfully.")
+    if emails_failed_count > 0:
+        messages.warning(request, f"{emails_failed_count} notification emails failed to send. Check logs.")
+    if emails_sent_count == 0 and emails_failed_count == 0 and (
+        selected_maps_qs.exists() or selected_apps_qs.exists()):
+        messages.info(request, "No notifications were sent (e.g., selected items had no valid owners with emails).")
+
+    response = HttpResponse("")
+    response["HX-Trigger"] = json.dumps({"closeModal": True})
+    return response
