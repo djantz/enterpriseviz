@@ -31,6 +31,7 @@ from django.contrib.auth import login, logout, authenticate
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
 from django.core.exceptions import FieldError
+from django.core.mail import get_connection, EmailMessage, EmailMultiAlternatives
 from django.db import transaction, DatabaseError
 from django.db.models import Q
 from django.http import Http404
@@ -46,7 +47,7 @@ from django_tables2.export.views import ExportMixin
 
 from app import utils
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
-from .forms import ScheduleForm
+from .forms import ScheduleForm, SiteSettingsForm
 from .models import PortalCreateForm, UserProfile, LogEntry
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *
