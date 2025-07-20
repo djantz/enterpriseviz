@@ -45,6 +45,7 @@ urlpatterns = [
     path(r"/settings/logs/", log_settings_view, name='log_settings'),
     path(r"/logs/", logs_page, name="log"),
     path(r"/logs/table/", LogTable.as_view(), name="log_table"),
+    path(r"/notify/", notify_view, name="notify"),
 
     # The home page
     path(r"/", index_view, name="index"),

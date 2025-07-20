@@ -7,7 +7,7 @@
       <calcite-label>
         Address
         <calcite-input type="text" id="{{ form.email_host.name }}" name="{{ form.email_host.name }}"
-                       autocomplete="off" value="{{ form.email_host.value }}"></calcite-input>
+                       autocomplete="off" value="{{ form.email_host.value|default_if_none:"" }}"></calcite-input>
         <calcite-input-message {% if not form.email_host.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
                                status="invalid">
           {{ form.email_host.errors|join:" " }}
@@ -18,7 +18,7 @@
       <calcite-label>
         Port
         <calcite-input type="number" id="{{ form.email_port.name }}" name="{{ form.email_port.name }}"
-                       autocomplete="off" value="{{ form.email_port.value }}" number-button-type="none"></calcite-input>
+                       autocomplete="off" value="{{ form.email_port.value|default_if_none:"" }}" number-button-type="none"></calcite-input>
         <calcite-input-message {% if not form.email_port.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
                                status="invalid">
           {{ form.email_port.errors|join:" " }}
@@ -43,7 +43,7 @@
   <calcite-label>
     Sender Address
     <calcite-input type="email" id="{{ form.from_email.name }}" name="{{ form.from_email.name }}"
-                   autocomplete="off" value="{{ form.from_email.value }}"></calcite-input>
+                   autocomplete="off" value="{{ form.from_email.value|default_if_none:"" }}"></calcite-input>
     <calcite-input-message {% if not form.from_email.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
                            status="invalid">
       {{ form.from_email.errors|join:" " }}
@@ -52,7 +52,7 @@
   <calcite-label>
     Reply To (optional)
     <calcite-input type="email" id="{{ form.reply_to.name }}" name="{{ form.reply_to.name }}"
-                   autocomplete="off" value="{{ form.reply_to.value }}"></calcite-input>
+                   autocomplete="off" value="{{ form.reply_to.value|default_if_none:"" }}"></calcite-input>
     <calcite-input-message {% if not form.reply_to.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
                            status="invalid">
       {{ form.reply_to.errors|join:" " }}
@@ -61,9 +61,9 @@
 
 
   <calcite-label>
-    Username <span>(optional)</span>
+    Username (optional)
     <calcite-input type="text" id="{{ form.email_username.name }}" name="{{ form.email_username.name }}"
-                   autocomplete="off" value="{{ form.email_username.value }}"></calcite-input>
+                   autocomplete="off" value="{{ form.email_username.value|default_if_none:"" }}"></calcite-input>
     <calcite-input-message {% if not form.email_username.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
                            status="invalid">
       {{ form.email_username.errors|join:" " }}
@@ -71,9 +71,9 @@
   </calcite-label>
 
   <calcite-label>
-    Password <span>(optional)</span>
+    Password (optional)
     <calcite-input type="password" id="{{ form.email_password.name }}" name="{{ form.email_password.name }}"
-                   autocomplete="off" value="{{ form.email_password.value }}"></calcite-input>
+                   autocomplete="off" value="{{ form.email_password.value|default_if_none:"" }}"></calcite-input>
     <calcite-input-message {% if not form.email_host.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
                            status="invalid">
       {{ form.email_password.errors|join:" " }}

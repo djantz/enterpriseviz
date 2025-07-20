@@ -1638,7 +1638,7 @@ def notify_view(request):
     site_settings = SiteSettings.objects.first()
     if not site_settings or not site_settings.email_host:
         logger.error("Email settings not configured.")
-        return HttpResponse(status=500, headers={
+        return HttpResponse(status=200, headers={
             "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Email settings not configured."})})
 
     selected_maps_qs = Webmap.objects.none()

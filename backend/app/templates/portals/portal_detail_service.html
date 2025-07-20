@@ -71,10 +71,10 @@
         {% if user.is_superuser %}
         <div class="x_panel">
           <calcite-button scale="s" kind="inverse"
-            onclick="document.querySelector('#notify-modal').open = true;"
+            data-modal-trigger="notify-modal"
                       >Notify
-                    </calcite-button>
-        {% include "portals/portal_notify.html" %}
+          </calcite-button>
+        {% include "portals/portal_notify.html" with change_item_name=item %}
         </div>
         {% endif %}
       </div>
