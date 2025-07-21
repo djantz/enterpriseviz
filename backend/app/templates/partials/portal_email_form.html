@@ -2,10 +2,10 @@
 {% load filter %}
 <form id="email-site-form" class="calcite-form" autocomplete="off">
   {% csrf_token %}
-  <div style="display: flex; column-gap: 1rem;">
-    <div style="width: 50%;">
+  <div class="flex-container flex-column-gap-1">
+    <div class="col-50">
       <calcite-label>
-        Address
+        SMTP Server Address
         <calcite-input type="text" id="{{ form.email_host.name }}" name="{{ form.email_host.name }}"
                        autocomplete="off" value="{{ form.email_host.value|default_if_none:"" }}"></calcite-input>
         <calcite-input-message {% if not form.email_host.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
@@ -14,9 +14,9 @@
         </calcite-input-message>
       </calcite-label>
     </div>
-    <div style="width: 50%;">
+    <div class="col-50">
       <calcite-label>
-        Port
+        SMTP Port
         <calcite-input type="number" id="{{ form.email_port.name }}" name="{{ form.email_port.name }}"
                        autocomplete="off" value="{{ form.email_port.value|default_if_none:"" }}" number-button-type="none"></calcite-input>
         <calcite-input-message {% if not form.email_port.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
@@ -59,7 +59,8 @@
     </calcite-input-message>
   </calcite-label>
 
-
+<div class="flex-container flex-column-gap-1">
+    <div class="col-50">
   <calcite-label>
     Username (optional)
     <calcite-input type="text" id="{{ form.email_username.name }}" name="{{ form.email_username.name }}"
@@ -69,7 +70,8 @@
       {{ form.email_username.errors|join:" " }}
     </calcite-input-message>
   </calcite-label>
-
+    </div>
+<div class="col-50">
   <calcite-label>
     Password (optional)
     <calcite-input type="password" id="{{ form.email_password.name }}" name="{{ form.email_password.name }}"
@@ -79,6 +81,9 @@
       {{ form.email_password.errors|join:" " }}
     </calcite-input-message>
   </calcite-label>
+</div>
+</div>
+
   <calcite-label>
     Send Test Email
     <calcite-input type="email" id="test-email" name="test_email" placeholder="Enter an email address">
