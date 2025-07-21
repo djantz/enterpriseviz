@@ -41,9 +41,11 @@ urlpatterns = [
     path(r"/theme", mode_toggle_view, name="mode_toggle"),
     path(r"/usage", usage_toggle_view, name="usage_toggle"),
     path(r"/webhook", webhook_view, name="webhook"),
+    path(r"/settings/email/", email_settings, name="email_settings"),
     path(r"/settings/logs/", log_settings_view, name='log_settings'),
     path(r"/logs/", logs_page, name="log"),
     path(r"/logs/table/", LogTable.as_view(), name="log_table"),
+    path(r"/notify/", notify_view, name="notify"),
 
     # The home page
     path(r"/", index_view, name="index"),

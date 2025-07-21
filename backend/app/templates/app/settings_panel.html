@@ -1,5 +1,7 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
 <div id="settings-container">
+  <calcite-action id="email-action" text="Email" icon="envelope" text-enabled
+                  hx-get="{% url 'enterpriseviz:email_settings' %}" hx-target="#email_settings_modal"></calcite-action>
   <calcite-action id="log-viewer-action" text="Logs" icon="access-string-results" text-enabled
                   hx-get="{% url 'enterpriseviz:log' %}"
                   hx-target="#mainbodycontent"

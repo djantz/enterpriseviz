@@ -498,6 +498,82 @@ function shuffleArray(array) {
     return array;
 }
 
+function syncSelected(tableId, inputId) {
+    const table = document.getElementById(tableId);
+    const hiddenInput = document.getElementById(inputId);
+    if (!table || !hiddenInput) return;
+
+    table.addEventListener("calciteTableSelect", () => {
+        const selected = table.selectedItems.map(row => row.dataset.id);
+        hiddenInput.value = selected.join(",");
+    });
+}
+
+function initPortalNotification() {
+    syncSelected("maps-table", "selected-maps");
+    syncSelected("apps-table", "selected-apps");
+    const notifyModal = document.getElementById("notify-modal");
+    if (notifyModal) {
+        setupNotifyModalStepper();
+    }
+    document.addEventListener('click', function (event) {
+        const button = event.target.closest('calcite-button[onclick*="notify-modal"]');
+        if (button) {
+            setTimeout(() => {
+                setupNotifyModalStepper();
+            }, 100);
+        }
+    });
+}
+
+function setupNotifyModalStepper() {
+    const stepper = document.getElementById("notify-stepper");
+    const saveButton = document.getElementById("notify-portal-save");
+    const form = document.getElementById("notify-portal-form");
+
+    if (!stepper || !saveButton || !form) return;
+
+    let currentStepIndex = 0;
+    const stepperItems = stepper.querySelectorAll("calcite-stepper-item");
+    currentStepIndex = Array.from(stepperItems).findIndex(item => item.selected);
+    if (currentStepIndex === -1) currentStepIndex = 0;
+
+    function updateButtonState(stepIndex) {
+        if (stepIndex === 0) {
+            saveButton.textContent = "Next";
+            saveButton.setAttribute("icon-start", "chevron-right");
+        } else {
+            saveButton.textContent = "Notify";
+            saveButton.setAttribute("icon-start", "send");
+        }
+    }
+
+    function goToNextStep() {
+        if (currentStepIndex < stepperItems.length - 1) {
+            stepperItems[currentStepIndex].selected = false;
+            currentStepIndex++;
+            stepperItems[currentStepIndex].selected = true;
+            updateButtonState(currentStepIndex);
+        }
+    }
+
+    stepper.addEventListener("calciteStepperItemSelect", function (event) {
+        currentStepIndex = Array.from(stepperItems).findIndex(item => item.selected);
+        updateButtonState(currentStepIndex);
+    });
+
+    updateButtonState(currentStepIndex);
+
+    saveButton.addEventListener("click", function (event) {
+        if (currentStepIndex === 0) {
+            event.preventDefault();
+            goToNextStep();
+        } else {
+            htmx.trigger(form, 'submit');
+        }
+    });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     init_DataTables();
     init_Charts();
@@ -528,6 +604,7 @@ htmx.on('htmx:afterRequest', (e) => {
         init_DataTables();
         init_Charts();
         initD3();
+        initPortalNotification();
         content = document.getElementById('mainbodycontent');
         content.hidden = false;
         if (document.getElementById('log-form') && document.getElementById('log_initial_visible_cols_data')) {
@@ -718,9 +795,10 @@ document.addEventListener("calciteActionBarToggle", () => {
 htmx.on("closeModal", function (event) {
     (async () => {
         await customElements.whenDefined("calcite-dialog");
-
-        // Now safely access the components
-        let modal = await document.querySelector("calcite-dialog[open], dialog[open]")?.componentOnReady();
+        let modal = document.querySelector("calcite-dialog[open=true], calcite-dialog[open=''], dialog[open]");
+        if (modal?.componentOnReady) {
+            await modal.componentOnReady();
+        }
         if (modal) {
             modal.open = false;
         }
@@ -805,13 +883,6 @@ async function setupPortalFormLogic(modal) {
     storePasswordControl.addEventListener("calciteSegmentedControlChange", toggleCredentials);
     toggleCredentials();
 
-    const cancelButton = modal.querySelector("#add-portal-cancel, #update-portal-cancel");
-    if (cancelButton) {
-        cancelButton.addEventListener("click", (e) => {
-            e.preventDefault();
-            modal.open = false;
-        });
-    }
 }
 
 function setupScheduleFormLogic(modal) {
@@ -862,13 +933,6 @@ function setupScheduleFormLogic(modal) {
     updateEndingOn();
 }
 
-function setupCredentialsFormLogic(modal) {
-    const cancelButton = modal.querySelector("#credentials-portal-cancel");
-    cancelButton.addEventListener("click", (e) => {
-        e.preventDefault();
-        modal.open = false;
-    });
-}
 
 function setupModalHTMXListeners(modal) {
     htmx.on(modal, "htmx:beforeRequest", (e) => {
@@ -889,13 +953,12 @@ function setupModalHTMXListeners(modal) {
 }
 
 function updateDarkMode() {
-    var modeswitch = document.querySelector("calcite-switch");
     document.body.classList.toggle("calcite-mode-dark");
 }
 
-modeSwitch = document.querySelector("calcite-switch")
+const modeSwitch = document.querySelector("calcite-switch#mode-switch"); // Be more specific if multiple switches
 if (modeSwitch) {
-    modeSwitch.addEventListener("calciteSwitchChange", updateDarkMode)
+    modeSwitch.addEventListener("calciteSwitchChange", updateDarkMode);
 }
 
 
@@ -930,8 +993,6 @@ htmx.on("showSuccessAlert", (e) => {
     alert.setAttribute("label", "Success alert");
     alert.setAttribute("icon", "");
 
-
-    // Correctly interpolate e.detail.value
     alert.innerHTML = `<div slot="message">${e.detail.value}</div>`;
 
     document.querySelector("#alert-container").appendChild(alert);
@@ -944,8 +1005,6 @@ htmx.on("showInfoAlert", (e) => {
     alert.setAttribute("label", "Info alert");
     alert.setAttribute("icon", "");
 
-
-    // Correctly interpolate e.detail.value
     alert.innerHTML = `<div slot="message">${e.detail.value}</div>`;
 
     document.querySelector("#alert-container").appendChild(alert);
@@ -954,6 +1013,39 @@ htmx.on("showInfoAlert", (e) => {
 document.addEventListener('DOMContentLoaded', function () {
     refreshActivePortal();
 });
+
+document.addEventListener('click', function (event) {
+    const closeButton = event.target.closest('[data-action="close-modal"]');
+    if (closeButton) {
+        event.preventDefault();
+        const modal = closeButton.closest('calcite-dialog, dialog');
+        if (modal) {
+            if (typeof modal.setOpen === 'function') {
+                modal.setOpen(false);
+            } else {
+                modal.open = false;
+            }
+        }
+        if (closeButton.closest('calcite-alert')) {
+            closeButton.closest('calcite-alert').remove();
+        }
+    }
+
+    const openTrigger = event.target.closest('[data-modal-trigger]');
+    if (openTrigger) {
+        event.preventDefault();
+        const modalId = openTrigger.dataset.modalTrigger;
+        const modal = document.getElementById(modalId);
+        if (modal) {
+            if (typeof modal.setOpen === 'function') {
+                modal.setOpen(true);
+            } else {
+                modal.open = true;
+            }
+        }
+    }
+});
+
 
 function refreshActivePortal() {
     // Get the current URL
@@ -975,7 +1067,7 @@ function refreshActivePortal() {
 
 function mergeTableRows(tableSelector, columnIndex) {
     let table = document.querySelector(tableSelector);
-    if (!table) return; // Exit if table not found
+    if (!table) return;
 
     let rows = table.querySelectorAll("tbody tr");
     let prevCell = null;
@@ -983,6 +1075,7 @@ function mergeTableRows(tableSelector, columnIndex) {
 
     rows.forEach((row, rowIndex) => {
         let cell = row.cells[columnIndex];
+        if (!cell) return;
 
         if (prevCell && cell.innerText === prevCell.innerText) {
             rowspan++;

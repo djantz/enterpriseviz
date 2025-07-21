@@ -1,11 +1,15 @@
 # Licensed under GPLv3 - See LICENSE file for details.
 import datetime
 import json
+import logging
 
 from django import forms
+from django.core.exceptions import ValidationError
 from django_celery_beat.models import PeriodicTask, IntervalSchedule, CrontabSchedule
 
-from .models import Portal
+from .models import Portal, SiteSettings
+
+logger = logging.getLogger('enterpriseviz')
 
 
 class ScheduleForm(forms.Form):
@@ -230,3 +234,71 @@ class ScheduleForm(forms.Form):
 
         except Exception as e:
             return None, str(e)
+
+
+class SiteSettingsForm(forms.ModelForm):
+    """
+    Form for managing site-wide email configuration settings.
+
+    Based on the `SiteSettings` model. Includes validation for email port numbers
+    and encryption types, providing advisory messages for standard port usage.
+
+    Meta:
+        model (SiteSettings): The model this form is based on.
+        fields (list): List of fields from SiteSettings model to include in the form.
+    """
+
+    class Meta:
+        model = SiteSettings
+        fields = [
+            "admin_email", "email_host", "email_port", "email_encryption",
+            "email_username", "email_password", "from_email", "reply_to",
+        ]
+        widgets = {
+            'email_password': forms.PasswordInput(render_value=False),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def clean_email_encryption(self):
+        """Validates the selected email encryption type."""
+        enc = self.cleaned_data.get("email_encryption")
+        if enc not in ("plain_text", "starttls", "ssl"):
+            raise ValidationError("Invalid encryption type selected.")
+        return enc
+
+    def clean_email_port(self):
+        """Validates the email port number is within the valid range."""
+        port = self.cleaned_data.get("email_port")
+        if port is not None and (port <= 0 or port > 65535):
+            raise ValidationError("Enter a valid port number (1-65535).")
+        return port
+
+    def clean(self):
+        """
+        Cross-field validation for email settings.
+
+        Ensures port is provided if host is set, and suggests standard ports.
+        """
+        cleaned_data = super().clean()
+        host = cleaned_data.get("email_host")
+        port = cleaned_data.get("email_port")
+        enc = cleaned_data.get("email_encryption")
+
+        if host and port is None:
+            self.add_error("email_port", "Email port is required when a host is provided.")
+
+        if host and port and enc:
+            if enc == "ssl" and port != 465:
+                self.add_error("email_port", f"Port for SSL is typically 465 (you entered {port}).")
+            elif enc == "starttls" and port != 587:
+                self.add_error("email_port", f"Port for STARTTLS is typically 587 (you entered {port}).")
+            elif enc == "plain_text" and port not in [25,
+                                                      587]:
+                self.add_error("email_port",
+                               f"Port for Plain Text/Submission is typically 25 or 587 (you entered {port}).")
+
+        logger.debug(f"SiteSettingsForm cleaned_data: {cleaned_data}")
+        return cleaned_data
+

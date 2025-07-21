@@ -58,6 +58,15 @@
             <small>Number of Web Apps</small>
           </div>
         </div>
+        {% if user.is_superuser %}
+        <div class="x_panel">
+          <calcite-button scale="s" kind="inverse"
+            data-modal-trigger="notify-modal"
+                      >Notify
+          </calcite-button>
+        {% include "portals/portal_notify.html" with change_item_name=item %}
+        </div>
+        {% endif %}
       </div>
     </div>
     <div class="row">

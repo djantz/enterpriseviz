@@ -31,6 +31,7 @@ from django.contrib.auth import login, logout, authenticate
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
 from django.core.exceptions import FieldError
+from django.core.mail import get_connection, EmailMessage, EmailMultiAlternatives
 from django.db import transaction, DatabaseError
 from django.db.models import Q
 from django.http import Http404
@@ -46,7 +47,7 @@ from django_tables2.export.views import ExportMixin
 
 from app import utils
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
-from .forms import ScheduleForm
+from .forms import ScheduleForm, SiteSettingsForm
 from .models import PortalCreateForm, UserProfile, LogEntry
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *
@@ -658,7 +659,7 @@ def refresh_portal_view(request):
         username = request.POST.get("username", None)
         password = request.POST.get("password", None)
         if username and password:
-            auth = webmaps.try_connection(request.POST)
+            auth = utils.try_connection(request.POST)
             if auth.get("authenticated", False):
                 if portal.portal_type is None:
                     portal.portal_type = "agol" if auth.get("is_agol") else "portal"
@@ -1375,15 +1376,13 @@ def webhook_view(request):
     - `404 Not Found` if the portal is unknown.
     """
     logger.debug("Received webhook request.")
-
-    # Read and verify request body
-    body = request.body
-    computed_signature = hmac.new(
-        key=settings.WEBHOOK_SECRET.encode(),
-        msg=body,
-        digestmod=hashlib.sha256
-    ).hexdigest()
-
+    signature = request.headers.get("Secret", "")
+    if not signature:
+        logger.warning("Received webhook request without signature.")
+        return HttpResponse(status=403)
+    if not signature == settings.WEBHOOK_SECRET:
+        logger.warning("Webhook signature mismatch.")
+        return HttpResponseForbidden()
     try:
         payload = json.loads(request.body)
     except json.JSONDecodeError:
@@ -1509,3 +1508,186 @@ def log_settings_view(request):
         'log_levels': LOG_LEVEL_NAMES,
     }
     return render(request, 'partials/log_settings.html', context)
+
+
+@staff_member_required
+def email_settings(request):
+    """
+    Manages application-wide email configuration settings.
+
+    On GET, displays the SiteSettingsForm with current email settings.
+    On POST, handles two actions:
+        - 'save': Validates and saves the email configuration from the form.
+        - 'test_email': Sends a test email using the (potentially unsaved)
+          configuration data in the form to a specified test email address.
+
+    Expected POST parameters for 'test_email' action:
+        - 'test_email': The email address to send the test email to.
+    All other POST data is expected to match SiteSettingsForm fields.
+
+    :param request: The HTTP request object.
+    :type request: django.http.HttpRequest
+    :return: Rendered HTML response, typically the email settings form or a partial.
+    :rtype: django.http.HttpResponse
+    """
+    logger.debug(f"Method={request.method}, user={request.user.username}")
+    settings_instance, _ = SiteSettings.objects.get_or_create(pk=1)
+
+    if request.method == "POST":
+        form = SiteSettingsForm(request.POST, instance=settings_instance)
+        action = request.POST.get("action")
+        logger.debug(f"POST action='{action}'")
+
+        if form.is_valid():
+            logger.debug("Form valid.")
+            if action == "save":
+                try:
+                    form.save()
+                    logger.info("Email configuration saved successfully.")
+                    response = render(request, "partials/portal_email_form.html", {"form": form})
+                    response["HX-Trigger-After-Settle"] = json.dumps(
+                        {"showSuccessAlert": "Email configuration saved.", "closeModal": True}
+                    )
+                    return response
+                except Exception as e:
+                    logger.error(f"Error saving config: {e}", exc_info=True)
+                    response = render(request, "partials/portal_email_form.html", {"form": form})
+                    response["HX-Trigger-After-Settle"] = json.dumps(
+                        {"showDangerAlert": f"Failed to save: {str(e)}"})
+                    return response
+
+            elif action == "test_email":
+                test_email_addr = request.POST.get("test_email", "").strip()
+                if not test_email_addr:
+                    logger.warning("Test email address missing.")
+                    return HttpResponse(status=400, headers={
+                        "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Test email address required."})})
+
+                config = form.cleaned_data
+                if not config.get("email_host") or not config.get("email_port"):
+                    return HttpResponse(status=400, headers={
+                        "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Host and Port required."})})
+
+                try:
+                    logger.debug(
+                        f"Sending test email to {test_email_addr} using host {config['email_host']}.")
+                    connection_kwargs = {
+                        "host": config["email_host"], "port": config["email_port"],
+                        "username": config.get("email_username") or None,
+                        "password": config.get("email_password") or None,
+                        "use_tls": (config.get("email_encryption") == "starttls"),
+                        "use_ssl": (config.get("email_encryption") == "ssl"),
+                        "fail_silently": False,
+                    }
+                    with get_connection(**connection_kwargs) as connection:
+                        email = EmailMessage(
+                            subject="Enterpriseviz Test Email",
+                            body="This is a test email from Enterpriseviz. Your email configuration appears to be working.",
+                            from_email=config["from_email"],
+                            to=[test_email_addr],
+                            reply_to=[config.get("reply_to") or config["from_email"]],
+                            connection=connection
+                        )
+                        email.send()
+                    logger.info(f"Test email sent successfully to {test_email_addr}.")
+                    return HttpResponse(headers={"HX-Trigger-After-Settle": json.dumps(
+                        {"showSuccessAlert": f"Test email sent to {test_email_addr}."})})
+                except Exception as e:
+                    logger.error(f"Failed to send test email: {e}", exc_info=True)
+                    return HttpResponse(status=500, headers={
+                        "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Test email failed: {str(e)}"})})
+            else:
+                logger.warning(f"Unknown POST action '{action}'.")
+        else:
+            logger.warning(f"Form invalid. Errors: {form.errors}")
+            return render(request, "partials/portal_email_form.html", {"form": form}, status=400)
+
+    else:
+        form = SiteSettingsForm(instance=settings_instance)
+
+    template_to_render = "portals/portal_email.html" if request.method == "GET" else "partials/portal_email_form.html"
+    return render(request, template_to_render, {"form": form})
+
+
+@require_POST
+def notify_view(request):
+    """
+    Sends email notifications to owners of selected maps and apps about an upcoming change.
+
+    Accepts a POST request with the description of the change and comma-separated
+    IDs of selected maps and apps. Groups items by owner and sends one email per owner.
+    Requires email settings to be configured in SiteSettings.
+
+    Expected POST parameters:
+        - 'change': Description of the upcoming change.
+        - 'selected_maps': Comma-separated string of Webmap IDs.
+        - 'selected_apps': Comma-separated string of App IDs.
+
+    :param request: The HTTP request object.
+    :type request: django.http.HttpRequest
+    :return: HTTP response, typically empty with HTMX triggers for alerts/modal closure.
+    :rtype: django.http.HttpResponse
+    """
+    logger.debug(f"user={request.user.username}")
+    change_item_description = request.POST.get("change", "related GIS resources")
+    map_ids_str = request.POST.get("selected_maps", "")
+    app_ids_str = request.POST.get("selected_apps", "")
+
+    logger.debug(f"Change='{change_item_description}', Maps='{map_ids_str}', Apps='{app_ids_str}'")
+
+    site_settings = SiteSettings.objects.first()
+    if not site_settings or not site_settings.email_host:
+        logger.error("Email settings not configured.")
+        return HttpResponse(status=200, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Email settings not configured."})})
+
+    selected_maps_qs = Webmap.objects.none()
+    if map_ids_str:
+        map_ids_list = [map_id.strip() for map_id in map_ids_str.split(',') if map_id.strip()]
+        if map_ids_list:
+            selected_maps_qs = Webmap.objects.filter(webmap_id__in=map_ids_list).select_related("webmap_owner")
+
+    selected_apps_qs = App.objects.none()
+    if app_ids_str:
+        app_ids_list = [app_id.strip() for app_id in app_ids_str.split(',') if app_id.strip()]
+        if app_ids_list:
+            selected_apps_qs = App.objects.filter(app_id__in=app_ids_list).select_related("app_owner")
+
+    if not selected_maps_qs.exists() and not selected_apps_qs.exists():
+        logger.debug("No maps or apps selected for notification.")
+        messages.info(request, "No items were selected for notification.")
+        response = HttpResponse("")
+        response["HX-Trigger"] = json.dumps({"closeModal": True})
+        return response
+
+    owner_items_map = defaultdict(lambda: {"maps": [], "apps": []})
+    for webmap_obj in selected_maps_qs:
+        if webmap_obj.webmap_owner and webmap_obj.webmap_owner.user_email:
+            owner_items_map[webmap_obj.webmap_owner]["maps"].append(webmap_obj)
+    for app_obj in selected_apps_qs:
+        if app_obj.app_owner and app_obj.app_owner.user_email:
+            owner_items_map[app_obj.app_owner]["apps"].append(app_obj)
+
+    logger.info(f"Preparing to send notifications to {len(owner_items_map)} owners.")
+    emails_sent_count = 0
+    emails_failed_count = 0
+
+    for owner_obj, items_for_owner in owner_items_map.items():
+        try:
+            if utils.prepare_and_send_notification(owner_obj, items_for_owner, change_item_description, site_settings):
+                emails_sent_count += 1
+        except Exception as e:
+            logger.error(f"Error sending email to {owner_obj.user_email}: {e}", exc_info=True)
+            emails_failed_count += 1
+
+    if emails_sent_count > 0:
+        messages.success(request, f"{emails_sent_count} notification emails sent successfully.")
+    if emails_failed_count > 0:
+        messages.warning(request, f"{emails_failed_count} notification emails failed to send. Check logs.")
+    if emails_sent_count == 0 and emails_failed_count == 0 and (
+        selected_maps_qs.exists() or selected_apps_qs.exists()):
+        messages.info(request, "No notifications were sent (e.g., selected items had no valid owners with emails).")
+
+    response = HttpResponse("")
+    response["HX-Trigger"] = json.dumps({"closeModal": True})
+    return response
