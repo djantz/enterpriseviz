@@ -46,6 +46,8 @@ urlpatterns = [
     path(r"/logs/", logs_page, name="log"),
     path(r"/logs/table/", LogTable.as_view(), name="log_table"),
     path(r"/notify/", notify_view, name="notify"),
+    path(r"/portal/tools/<instance>/", tool_settings, name="tool_settings"),
+    path(r"/portal/tools/<instance>/<tool_name>/", tool_run, name="tools_run"),
 
     # The home page
     path(r"/", index_view, name="index"),

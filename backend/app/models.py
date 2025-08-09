@@ -571,3 +571,64 @@ class PortalToolSettings(models.Model):
     class Meta:
         verbose_name = "Portal Tool Settings"
         verbose_name_plural = "Portal Tool Settings"
+
+
+class WebhookNotificationLog(models.Model):
+    """
+    Tracks webhook notifications sent to users to implement grace periods
+    and prevent notification spam.
+    """
+    portal = models.ForeignKey(
+        Portal,
+        on_delete=models.CASCADE,
+        related_name='webhook_notifications',
+        help_text="The Portal this notification belongs to."
+    )
+
+    item_id = models.CharField(
+        max_length=100,
+        help_text="ID of the item that triggered the notification."
+    )
+
+    owner = models.CharField(
+        max_length=100,
+        help_text="Username of the item owner who received the notification."
+    )
+
+    notification_type = models.CharField(
+        max_length=50,
+        choices=[
+            ('public_unshare_webhook', 'Public Item Unshare Webhook'),
+            # Add other notification types as needed
+        ],
+        help_text="Type of notification sent."
+    )
+
+    sent_at = models.DateTimeField(
+        auto_now_add=True,
+        help_text="When the notification was sent."
+    )
+
+    item_title = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="Title of the item (for reference)."
+    )
+
+    item_type = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Type of the item (for reference)."
+    )
+
+    class Meta:
+        verbose_name = "Webhook Notification Log"
+        verbose_name_plural = "Webhook Notification Logs"
+        indexes = [
+            models.Index(fields=['portal', 'item_id', 'sent_at']),
+            models.Index(fields=['portal', 'owner', 'sent_at']),
+            models.Index(fields=['sent_at']),  # For cleanup tasks
+        ]
+
+    def __str__(self):
+        return f"{self.notification_type} - {self.owner} - {self.item_title} ({self.sent_at})"
