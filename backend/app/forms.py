@@ -7,7 +7,7 @@ from django import forms
 from django.core.exceptions import ValidationError
 from django_celery_beat.models import PeriodicTask, IntervalSchedule, CrontabSchedule
 
-from .models import Portal, SiteSettings
+from .models import Portal, SiteSettings, PortalToolSettings
 
 logger = logging.getLogger('enterpriseviz')
 
@@ -301,4 +301,160 @@ class SiteSettingsForm(forms.ModelForm):
 
         logger.debug(f"SiteSettingsForm cleaned_data: {cleaned_data}")
         return cleaned_data
+
+
+class ToolsForm(forms.ModelForm):
+    """
+    Form for configuring portal automation tools, based on `PortalToolSettings`.
+
+    Handles enabling/disabling various tools and their specific parameters.
+    The `save` method saves the `PortalToolSettings` instance and then creates or
+    updates separate Celery Beat tasks for each enabled tool.
+    """
+
+    class Meta:
+        model = PortalToolSettings
+        fields = [
+            'tool_pro_license_enabled', 'tool_pro_duration', 'tool_pro_warning',
+            'tool_public_unshare_enabled', 'tool_public_unshare_score',
+            'tool_public_unshare_trigger',
+            'tool_public_unshare_grace_period',
+            'tool_inactive_user_enabled', 'tool_inactive_user_duration',
+            'tool_inactive_user_warning', 'tool_inactive_user_action',
+        ]
+
+    def clean(self):
+        """Validates tool-specific fields based on whether the tool is enabled."""
+        cleaned_data = super().clean()
+
+        tool_configs = [
+            ('tool_pro_enabled', ['tool_pro_duration', 'tool_pro_warning']),
+            ('tool_public_unshare_enabled',
+             ['tool_public_unshare_score', 'tool_public_unshare_grace_period', 'tool_public_unshare_trigger']),
+            ('tool_inactive_user_enabled',
+             ['tool_inactive_user_duration', 'tool_inactive_user_warning', 'tool_inactive_user_action']),
+        ]
+
+        for enabled_field, dependent_fields in tool_configs:
+            if cleaned_data.get(enabled_field):
+                for dep_field in dependent_fields:
+                    if not cleaned_data.get(dep_field) and cleaned_data.get(dep_field) != 0:
+                        self.add_error(dep_field,
+                                       f"This field is required when '{self.fields[enabled_field].label}' is enabled.")
+
+        return cleaned_data
+
+    def save(self, commit=True, portal=None):
+        """
+        Saves the PortalToolSettings model instance and then creates/updates the
+        associated periodic tasks for each enabled automation tool.
+
+        :param commit: If True, saves the instance to the database.
+        :type commit: bool
+        :param portal: The Portal model instance associated with these tool settings.
+                       If not provided, it's derived from the form's instance.
+        :type portal: enterpriseviz.models.Portal, optional
+        :return: The saved PortalToolSettings instance.
+        :rtype: enterpriseviz.models.PortalToolSettings
+        """
+        settings_instance = super().save(commit=commit)
+
+        # Handle the periodic task creation/update for each tool
+        target_portal = portal or settings_instance.portal
+        if not target_portal:
+            logger.error(f"Portal not available for tool settings {settings_instance.pk}.")
+            return settings_instance
+
+        # Create daily schedule (midnight)
+        daily_schedule, _ = CrontabSchedule.objects.get_or_create(
+            minute='0', hour='0', day_of_week='*', day_of_month='*', month_of_year='*',
+        )
+
+        # Tool configurations for creating separate tasks
+        tool_configs = [
+            {
+                'enabled': settings_instance.tool_pro_license_enabled,
+                'task_name': f'process-pro-license-{target_portal.alias}',
+                'task_function': 'process_pro_license',
+                'description': f'Pro License Management for {target_portal.alias}',
+                'kwargs': {
+                    'portal_alias': target_portal.alias,
+                    'duration_days': settings_instance.tool_pro_duration,
+                    'warning_days': settings_instance.tool_pro_warning,
+                }
+            },
+            {
+                'enabled': settings_instance.tool_inactive_user_enabled,
+                'task_name': f'process-inactive-user-{target_portal.alias}',
+                'task_function': 'process_inactive_user',
+                'description': f'Inactive User Management for {target_portal.alias}',
+                'kwargs': {
+                    'portal_alias': target_portal.alias,
+                    'duration_days': settings_instance.tool_inactive_user_duration,
+                    'warning_days': settings_instance.tool_inactive_user_warning,
+                    'action': settings_instance.tool_inactive_user_action,
+                }
+            },
+        ]
+
+        # Handle public unshare tool (only for daily trigger)
+        if (settings_instance.tool_public_unshare_enabled and
+            settings_instance.tool_public_unshare_trigger == 'daily'):
+            tool_configs.append({
+                'enabled': True,
+                'task_name': f'process-public-unshare-{target_portal.alias}',
+                'task_function': 'process_public_unshare',
+                'description': f'Public Item Unshare Management for {target_portal.alias}',
+                'kwargs': {
+                    'portal_alias': target_portal.alias,
+                    'score_threshold': settings_instance.tool_public_unshare_score,
+                }
+            })
+
+        # Create or update/delete tasks for each tool
+        for config in tool_configs:
+            self._manage_tool_task(config, daily_schedule)
+
+        # Clean up old combined task if it exists (backwards compatibility)
+        old_task_name = f'portal-tools-automation-{target_portal.alias}'
+        try:
+            old_task = PeriodicTask.objects.get(name=old_task_name)
+            old_task.delete()
+            logger.info(f"Removed old combined tools task: {old_task_name}")
+        except PeriodicTask.DoesNotExist:
+            pass
+
+        return settings_instance
+
+    def _manage_tool_task(self, config, schedule):
+        """Create, update, or delete a periodic task for a specific tool."""
+        task_name = config['task_name']
+
+        if config['enabled']:
+            # Create or update the task
+            task_defaults = {
+                'task': config['task_function'],
+                'crontab': schedule,
+                'kwargs': json.dumps(config['kwargs']),
+                'enabled': True,
+                'description': config['description'],
+            }
+
+            try:
+                periodic_task, created = PeriodicTask.objects.update_or_create(
+                    name=task_name, defaults=task_defaults
+                )
+                status_msg = "created" if created else "updated"
+                logger.info(f"Periodic task '{task_name}' {status_msg} successfully.")
+            except Exception as e:
+                logger.error(f"Failed to save periodic task '{task_name}': {e}", exc_info=True)
+        else:
+            # Delete the task if it exists
+            try:
+                existing_task = PeriodicTask.objects.get(name=task_name)
+                existing_task.delete()
+                logger.info(f"Disabled and removed periodic task: {task_name}")
+            except PeriodicTask.DoesNotExist:
+                # Task doesn't exist, nothing to do
+                pass
 
