@@ -475,3 +475,99 @@ class LogEntry(models.Model):
         verbose_name = "Log Entry"
         verbose_name_plural = "Log Entries"
         ordering = ['-timestamp']
+
+
+class PortalToolSettings(models.Model):
+    """Stores configuration settings for automation tools related to a specific Portal."""
+    portal = models.OneToOneField(
+        Portal,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name='tool_settings',
+        help_text="The Portal these tool settings apply to."
+    )
+
+    tool_pro_license_enabled = models.BooleanField(default=False, help_text="Enable ArcGIS Pro license removal tool.")
+    TOOL_DURATION_CHOICES = [
+        (30, '30 days'), (60, '60 days'), (90, '90 days'), (180, '180 days')
+    ]
+    tool_pro_duration = models.PositiveIntegerField(
+        choices=TOOL_DURATION_CHOICES,
+        default=30,
+        help_text="Duration of inactivity before Pro license is considered for removal."
+    )
+    TOOL_WARNING_CHOICES = [
+        (3, '3 days'), (5, '5 days'), (7, '7 days'), (14, '14 days')
+    ]
+    tool_pro_warning = models.PositiveIntegerField(
+        choices=TOOL_WARNING_CHOICES,
+        default=3,
+        help_text="Days before removal to send a warning notification."
+    )
+
+    tool_public_unshare_enabled = models.BooleanField(default=False, help_text="Enable public item unsharing tool.")
+    TOOL_SCORE_CHOICES = [
+        (50, '50%'), (75, '75%'), (90, '90%'), (100, '100%')
+    ]
+    tool_public_unshare_score = models.PositiveIntegerField(
+        choices=TOOL_SCORE_CHOICES,
+        default=50,
+        help_text="Minimum metadata score required for items to remain public."
+    )
+    tool_public_unshare_grace_period = models.PositiveIntegerField(
+        default=24,
+        help_text="Hours to wait before sending another notification email for public item unsharing (prevents spam)."
+    )
+
+    TOOL_PUBLIC_UNSHARE_TRIGGER_CHOICES = [
+        ('webhook', 'Webhook'),
+        ('daily', 'Daily Schedule')
+    ]
+
+    tool_public_unshare_trigger = models.CharField(
+        max_length=10,
+        choices=TOOL_PUBLIC_UNSHARE_TRIGGER_CHOICES,
+        default='daily',
+        verbose_name="Public Item Unsharing Trigger",
+        help_text="Choose how the unsharing process is triggered."
+    )
+
+    tool_inactive_user_enabled = models.BooleanField(default=False, help_text="Enable inactive user management tool.")
+    TOOL_USER_DURATION_CHOICES = [
+        (30, '30 days'), (60, '60 days'), (90, '90 days'),
+        (180, '180 days'), (365, '365 days')
+    ]
+    tool_inactive_user_duration = models.PositiveIntegerField(
+        choices=TOOL_USER_DURATION_CHOICES,
+        default=30,
+        help_text="Duration of inactivity before user is considered for action."
+    )
+    TOOL_USER_WARNING_CHOICES = [
+        (3, '3 days'), (5, '5 days'), (7, '7 days'),
+        (14, '14 days'), (30, '30 days')
+    ]
+    tool_inactive_user_warning = models.PositiveIntegerField(
+        choices=TOOL_USER_WARNING_CHOICES,
+        default=3,
+        help_text="Days before action to send a warning notification."
+    )
+    TOOL_USER_ACTION_CHOICES = [
+        ('notify', 'Notify Only'),
+        ('disable', 'Disable User'),
+        ('delete', 'Delete User'),
+        ('transfer', 'Transfer User Content')
+    ]
+    tool_inactive_user_action = models.CharField(
+        max_length=10,
+        default='disable',
+        choices=TOOL_USER_ACTION_CHOICES,
+        help_text="Action to take for inactive users."
+    )
+
+
+    def __str__(self):
+        return f"Tool Settings for Portal: {self.portal.alias}"
+
+    class Meta:
+        verbose_name = "Portal Tool Settings"
+        verbose_name_plural = "Portal Tool Settings"
