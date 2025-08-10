@@ -1,0 +1,62 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<calcite-dialog id="tool-modal" modal heading="Configure Tools" scale="m" open
+                {% if form.errors %}kind="danger"{% endif %}>
+  <calcite-label>
+    Portal Alias
+    <calcite-input type="text" name="alias" read-only="true"
+                   autocomplete="off" value="{{ instance_alias }}"></calcite-input>
+    <calcite-input-message {% if not form.instance.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+                           status="invalid">
+      {{ form.instance.errors|join:" " }}
+    </calcite-input-message>
+  </calcite-label>
+  <calcite-tabs>
+    <calcite-tab-nav slot="title-group">
+      <calcite-tab-title selected>
+        Tools
+      </calcite-tab-title>
+      <calcite-tab-title>Results</calcite-tab-title>
+    </calcite-tab-nav>
+    <calcite-tab selected>
+      <div id="tools-form-container">
+        {% include "partials/portal_tools_form.html" %}
+      </div>
+
+    </calcite-tab>
+    <calcite-tab>
+      <calcite-label>Run History (last 24 hours)</calcite-label>
+      <calcite-table caption="Run History (last 24 hours)" bordered striped>
+        <calcite-table-row slot="table-header">
+          <calcite-table-header heading="Task Name"></calcite-table-header>
+          <calcite-table-header heading="Status"></calcite-table-header>
+          <calcite-table-header heading="Result"></calcite-table-header>
+          <calcite-table-header heading="Start Time"></calcite-table-header>
+          <calcite-table-header heading="End Time"></calcite-table-header>
+        </calcite-table-row>
+        {% for item in results %}
+          <calcite-table-row>
+            <calcite-table-cell>{{ item.task_name }}</calcite-table-cell>
+            <calcite-table-cell>{{ item.status }}</calcite-table-cell>
+            <calcite-table-cell>{{ item.result }}</calcite-table-cell>
+            <calcite-table-cell>{{ item.date_created|date:'M j, Y h:i A' }}</calcite-table-cell>
+            <calcite-table-cell>{{ item.date_done|date:'M j, Y h:i A' }}</calcite-table-cell>
+          </calcite-table-row>
+        {% endfor %}
+      </calcite-table>
+    </calcite-tab>
+  </calcite-tabs>
+
+  <calcite-button id="tools-portal-cancel" data-action="close-modal" slot="footer-end" appearance="outline"
+                  icon-start="circle-disallowed">
+    Cancel
+  </calcite-button>
+
+  <calcite-button id="tools-portal-save" slot="footer-end"
+                  hx-post="{% url 'enterpriseviz:tool_settings' instance=form.instance.portal.alias %}"
+                  hx-target="#tools-form-container"
+                  hx-include="#tools-form-container form"
+                  icon-start="save" value="save">
+    Save
+  </calcite-button>
+</calcite-dialog>
+

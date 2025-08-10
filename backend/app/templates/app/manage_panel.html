@@ -13,6 +13,9 @@
       <calcite-action id="manage-modal-schedule" slot="header-menu-actions" text="Schedule" text-enabled
                       icon="date-time" hx-get="{% url 'enterpriseviz:schedule' instance=item.0 %}"
                       hx-target="#schedule_portal_modal"></calcite-action>
+      <calcite-action id="manage-modal-tools" slot="header-menu-actions" text="Tools" text-enabled
+                      icon="hammer" hx-get="{% url 'enterpriseviz:tool_settings' instance=item.0 %}"
+                      hx-target="#tool_settings_modal"></calcite-action>
 
     </calcite-block>
   {% endfor %}
