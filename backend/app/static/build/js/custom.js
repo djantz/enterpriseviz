@@ -605,6 +605,7 @@ htmx.on('htmx:afterRequest', (e) => {
         init_Charts();
         initD3();
         initPortalNotification();
+        initPortalTools();
         content = document.getElementById('mainbodycontent');
         content.hidden = false;
         if (document.getElementById('log-form') && document.getElementById('log_initial_visible_cols_data')) {
@@ -616,6 +617,9 @@ htmx.on('htmx:afterRequest', (e) => {
                  console.warn("Log table URL not found for re-init after HTMX swap.");
             }
         }
+    }
+    if (e.detail.target.id === 'tool_settings_modal') {
+        initPortalTools();
     }
     if (e.detail.target.id === 'service-table') {
         initializeSparklines();
@@ -1098,3 +1102,19 @@ blocks?.forEach((el) => {
         });
     });
 });
+
+function initPortalTools() {
+    const switches = document.querySelectorAll('calcite-switch');
+    switches.forEach(async calciteSwitch => {
+        if (calciteSwitch.componentOnReady) await calciteSwitch.componentOnReady(); // Wait for switch itself
+        const hiddenInput = calciteSwitch.nextElementSibling;
+        if (hiddenInput && hiddenInput.tagName === 'INPUT' && hiddenInput.type === 'hidden') {
+            // Set initial value of hidden input based on switch state
+            hiddenInput.value = calciteSwitch.checked ? 'True' : 'False';
+
+            calciteSwitch.addEventListener('calciteSwitchChange', (event) => {
+                hiddenInput.value = event.target.checked ? 'True' : 'False';
+            });
+        }
+    });
+}
