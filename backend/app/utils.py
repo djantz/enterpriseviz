@@ -38,7 +38,7 @@ from fuzzywuzzy import fuzz
 from tabulate import tabulate
 
 
-from .models import Webmap, Service, Layer, App, Portal
+from .models import Webmap, Service, Layer, App, Portal, SiteSettings
 
 logger = logging.getLogger('enterpriseviz.utils')
 
@@ -96,6 +96,107 @@ class UpdateResult:
         :return: Dictionary representation of the UpdateResult.
         :rtype: dict
         """
+        return asdict(self)
+
+
+@dataclass
+class ToolResult:
+    """
+    Tracks and summarizes the results of a tool.
+    """
+    success: bool = False
+    processed: int = 0
+    actions_taken: int = 0
+    warnings_sent: int = 0
+    errors: int = 0
+    error_messages: list = field(default_factory=list)
+    execution_time: float = 0.0
+    portal_alias: str = ""
+    tool_name: str = ""
+
+    # Tool-specific metrics
+    extra_metrics: dict = field(default_factory=dict)
+
+    def set_success(self, status: bool = True):
+        """Marks the tool execution as successful or unsuccessful."""
+        self.success = status
+
+    def add_error(self, error_message: str):
+        """
+        Logs an error message and increments the error count.
+
+        :param error_message: The error message to log
+        """
+        self.errors += 1
+        self.error_messages.append(error_message)
+        self.success = False
+
+    def add_extra_metric(self, key: str, value):
+        """
+        Adds a tool-specific metric (e.g., 'inactive_found', 'unshared').
+
+        :param key: The metric name
+        :param value: The metric value
+        """
+        self.extra_metrics[key] = value
+
+    def get_summary(self):
+        """Returns a summary of tool execution results for admin reporting."""
+        return {
+            'portal_alias': self.portal_alias,
+            'tool_name': self.tool_name,
+            'success': self.success,
+            'execution_time_seconds': self.execution_time,
+            'processed': self.processed,
+            'actions_taken': self.actions_taken,
+            'warnings_sent': self.warnings_sent,
+            'errors': self.errors,
+            'has_errors': self.errors > 0,
+            'extra_metrics': self.extra_metrics
+        }
+
+    def get_detailed_results(self):
+        """Returns detailed results including error messages for comprehensive logging."""
+        return {
+            'summary': self.get_summary(),
+            'error_messages': self.error_messages
+        }
+
+    def format_for_email(self):
+        """Formats the results for inclusion in admin notification emails."""
+        email_content = f"""
+Tool Execution Summary for {self.portal_alias}:
+
+Tool: {self.tool_name.replace('_', ' ').title()}
+Status: {'SUCCESS' if self.success else 'FAILED'}
+Execution Time: {self.execution_time:.2f} seconds
+
+Statistics:
+- Items Processed: {self.processed}
+- Actions Taken: {self.actions_taken}
+- Warnings Sent: {self.warnings_sent}
+- Errors: {self.errors}
+"""
+
+        # Add extra metrics if any
+        if self.extra_metrics:
+            email_content += "\nAdditional Metrics:\n"
+            for key, value in self.extra_metrics.items():
+                formatted_key = key.replace('_', ' ').title()
+                email_content += f"- {formatted_key}: {value}\n"
+
+        # Add error details if any
+        if self.error_messages:
+            email_content += f"\nErrors Encountered ({len(self.error_messages)}):\n"
+            for i, error in enumerate(self.error_messages[:10], 1):  # Limit to first 10 errors
+                email_content += f"{i}. {error}\n"
+            if len(self.error_messages) > 10:
+                email_content += f"... and {len(self.error_messages) - 10} more errors\n"
+
+        return email_content
+
+    def to_json(self):
+        """Converts the instance to a JSON-serializable dictionary."""
         return asdict(self)
 
 
@@ -943,8 +1044,6 @@ TARGET_LOGGER_NAMES = [
     'app.tasks',
     __name__,
 ]
-
-from .models import SiteSettings
 
 
 def apply_global_log_level(level_name=None, logger_name=None):
