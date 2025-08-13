@@ -27,11 +27,11 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.admin.utils import unquote
 from django.contrib.admin.views.decorators import staff_member_required
-from django.contrib.auth import login, logout, authenticate
+from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
 from django.core.exceptions import FieldError
-from django.core.mail import get_connection, EmailMessage, EmailMultiAlternatives
+from django.core.mail import get_connection, EmailMessage
 from django.db import transaction, DatabaseError
 from django.db.models import Q
 from django.http import Http404
@@ -47,12 +47,10 @@ from django_tables2.export.views import ExportMixin
 
 from app import utils
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
-from .forms import ScheduleForm, SiteSettingsForm
+from .forms import ScheduleForm, SiteSettingsForm, ToolsForm
 from .models import PortalCreateForm, UserProfile, LogEntry
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *
-
-from .request_context import get_django_request_context
 
 logger = logging.getLogger('enterpriseviz')
 
@@ -757,19 +755,21 @@ def progress_view(request, instance, task_id):
     try:
         result = AsyncResult(task_id)
         progress_info = Progress(result).get_info()
+        task_name = result._get_task_meta().get('task_name')
 
         if not progress_info or "progress" not in progress_info:
             logger.warning(
                 f"Invalid or missing progress data for task '{task_id}'. State: {result.state}")
             progress_percentage = 100 if result.successful() or result.failed() else 0
             task_state = result.state
-            response_data = {"instance": instance, "task_id": task_id,
+            response_data = {"instance": instance, "task_id": task_id, "task_name": task_name,
                              "progress": {"percent": progress_percentage, "description": "Fetching status..."},
                              "value": progress_percentage, "state": task_state}
         else:
             progress_percentage = progress_info["progress"].get("percent", 0)
             task_state = progress_info.get("state", result.state)
-            response_data = {"instance": instance, "task_id": task_id, "progress": progress_info,
+            response_data = {"instance": instance, "task_id": task_id, "task_name": task_name,
+                             "progress": progress_info,
                              "value": progress_percentage}
 
         logger.debug(f"Task '{task_id}' state '{task_state}', progress {progress_percentage}%.")
@@ -777,25 +777,63 @@ def progress_view(request, instance, task_id):
 
         htmx_trigger = {}
         task_result = result.info
-        task_name = result._get_task_meta().get('task_name', 'Task')
-
         if task_state == "SUCCESS":
+            has_errors = False
+
             logger.info(
                 f"Task '{task_id}' ({task_name}) for {instance} completed successfully.")
             success_details = "Completed."
             if isinstance(task_result, dict):
-                success_details = (f"{task_result.get('num_updates', 0)} updates, "
-                                   f"{task_result.get('num_inserts', 0)} inserts, "
-                                   f"{task_result.get('num_deletes', 0)} deletes, "
-                                   f"{task_result.get('num_errors', 0)} errors.")
-            htmx_trigger = {
-                "showSuccessAlert": f"{task_name} for {instance} completed. <br> <b>{success_details}</b>",
-                "updateComplete": "true"}
+                # Handle data refresh task results
+                if 'num_updates' in task_result or 'num_inserts' in task_result:
+                    success_details = (f"{task_result.get('num_updates', 0)} updates, "
+                                       f"{task_result.get('num_inserts', 0)} inserts, "
+                                       f"{task_result.get('num_deletes', 0)} deletes, "
+                                       f"{task_result.get('num_errors', 0)} errors.")
+                # Handle tool task results
+                elif 'tool_name' in task_result:
+                    details_parts = [f"Processed: {task_result.get('processed', 0)}"]
+
+                    # Add actions taken
+                    actions_taken = task_result.get('actions_taken', 0)
+                    if actions_taken > 0:
+                        details_parts.append(f"Actions Taken: {actions_taken}")
+
+                    # Add warnings sent
+                    warnings_sent = task_result.get('warnings_sent', 0)
+                    if warnings_sent > 0:
+                        details_parts.append(f"Warnings Sent: {warnings_sent}")
+
+                    # Add tool-specific metrics from extra_metrics
+                    extra_metrics = task_result.get('extra_metrics', {})
+                    if 'inactive_found' in extra_metrics:
+                        details_parts.append(f"Inactive Found: {extra_metrics['inactive_found']}")
+                    if 'unshared' in extra_metrics:
+                        details_parts.append(f"Items Unshared: {extra_metrics['unshared']}")
+
+                    # Add errors last
+                    errors = task_result.get('errors', 0)
+                    details_parts.append(f"Errors: {errors}")
+
+                    success_details = ", ".join(details_parts)
+                if 'errors' in task_result and task_result['errors'] > 0:
+                    has_errors = True
+            if has_errors:
+                htmx_trigger = {
+                    "showWarningAlert": f"{task_name} for {instance} completed with errors. <br> <b>{success_details}</b>",
+                    "updateComplete": "true"
+                }
+            else:
+                htmx_trigger = {
+                    "showSuccessAlert": f"{task_name} for {instance} completed. <br> <b>{success_details}</b>",
+                    "updateComplete": "true"}
         elif task_state == "FAILURE":
             logger.warning(
                 f"Task '{task_id}' ({task_name}) for {instance} failed. Info: {task_result}")
+            error_message = str(task_result) if not isinstance(task_result, dict) else task_result.get('error',
+                                                                                                       str(task_result))
             htmx_trigger = {
-                "showDangerAlert": f"{task_name} for {instance} failed. See logs or results table for details. Error: {str(task_result)[:100]}...",
+                "showDangerAlert": f"{task_name} for {instance} failed. See logs or results table for details. Error: {error_message[:100]}...",
                 "updateComplete": "true"}
 
         if htmx_trigger:
