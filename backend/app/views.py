@@ -1598,12 +1598,12 @@ def email_settings(request):
                 test_email_addr = request.POST.get("test_email", "").strip()
                 if not test_email_addr:
                     logger.warning("Test email address missing.")
-                    return HttpResponse(status=400, headers={
+                    return HttpResponse(status=200, headers={
                         "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Test email address required."})})
 
                 config = form.cleaned_data
                 if not config.get("email_host") or not config.get("email_port"):
-                    return HttpResponse(status=400, headers={
+                    return HttpResponse(status=200, headers={
                         "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Host and Port required."})})
 
                 try:
@@ -1632,13 +1632,13 @@ def email_settings(request):
                         {"showSuccessAlert": f"Test email sent to {test_email_addr}."})})
                 except Exception as e:
                     logger.error(f"Failed to send test email: {e}", exc_info=True)
-                    return HttpResponse(status=500, headers={
+                    return HttpResponse(status=200, headers={
                         "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Test email failed: {str(e)}"})})
             else:
                 logger.warning(f"Unknown POST action '{action}'.")
         else:
             logger.warning(f"Form invalid. Errors: {form.errors}")
-            return render(request, "partials/portal_email_form.html", {"form": form}, status=400)
+            return render(request, "partials/portal_email_form.html", {"form": form})
 
     else:
         form = SiteSettingsForm(instance=settings_instance)
