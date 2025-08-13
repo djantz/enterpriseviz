@@ -31,10 +31,9 @@ from django.conf import settings as django_settings
 from django.core.exceptions import MultipleObjectsReturned
 from celery.utils.log import get_task_logger
 
-from .models import Webmap, Service, Layer, App, User, Map_Service, Layer_Service, App_Map, App_Service, Portal, SiteSettings
-from .utils import (connect, epoch_to_datetime, epoch_to_date, UpdateResult, extract_storymap,
-                    extract_dashboard, extract_experiencebuilder, extract_webappbuilder, get_missing_item_attrs,
-                    apply_global_log_level)
+from .models import Webmap, Service, Layer, App, User, Map_Service, Layer_Service, App_Map, App_Service, Portal, \
+    SiteSettings, WebhookNotificationLog, PortalToolSettings
+from . import utils
 from .request_context import celery_logging_context
 
 logger = logging.getLogger('enterpriseviz.tasks')
@@ -42,7 +41,7 @@ logger = logging.getLogger('enterpriseviz.tasks')
 
 @shared_task(name="apply_site_log_level_in_worker")
 def apply_site_log_level_in_worker():
-    apply_global_log_level()
+    utils.apply_global_log_level()
 
 
 @shared_task(bind=True)
@@ -84,11 +83,11 @@ def update_webmaps(self, instance_alias, overwrite=False, username=None, passwor
 
     # Initialize progress recorder and result container for tracking task progress and outcome
     progress_recorder = ProgressRecorder(self)
-    result = UpdateResult()
+    result = utils.UpdateResult()
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = connect(instance_item, username, password)
+        target = utils.connect(instance_item, username, password)
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
@@ -171,7 +170,7 @@ def update_webmaps(self, instance_alias, overwrite=False, username=None, passwor
         failure_count = 0
 
         for batch in batch_results.get(disable_sync_subtasks=False):
-            batch_result = UpdateResult(**batch["result"])
+            batch_result = utils.UpdateResult(**batch["result"])
 
             if batch_result.success is False:
                 failure_count += 1
@@ -224,12 +223,12 @@ def update_webmaps(self, instance_alias, overwrite=False, username=None, passwor
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
 def process_batch_maps(self, instance_alias, username, password, batch, batch_size, update_time):
-    result = UpdateResult()
+    result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = connect(instance_item, username, password)
+        target = utils.connect(instance_item, username, password)
 
     except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -328,8 +327,8 @@ def extract_webmap_data(item, instance_item, update_time):
         "webmap_title": item.title,
         "webmap_url": item.homepage,
         "webmap_owner": get_owner(instance_item, item.owner),
-        "webmap_created": epoch_to_datetime(item.created),
-        "webmap_modified": epoch_to_datetime(item.modified),
+        "webmap_created": utils.epoch_to_datetime(item.created),
+        "webmap_modified": utils.epoch_to_datetime(item.modified),
         "webmap_access": access,
         "webmap_extent": item.extent,
         "webmap_description": description,
@@ -338,7 +337,7 @@ def extract_webmap_data(item, instance_item, update_time):
         "webmap_services": services,
         "webmap_usage": usage,
         "updated_date": update_time,
-        "webmap_last_viewed": epoch_to_datetime(item.lastViewed) if instance_item.portal_type == "agol" else None
+        "webmap_last_viewed": utils.epoch_to_datetime(item.lastViewed) if instance_item.portal_type == "agol" else None
     }
 
 
@@ -601,7 +600,7 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
     """
     logger.debug(f"Starting update_services task for instance_alias={instance_alias}, overwrite={overwrite}")
 
-    result = UpdateResult()
+    result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
     update_time = datetime.now()  # Timestamp for the current update cycle
 
@@ -611,7 +610,7 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
                                                  queries=query_list,
                                                  metrics="RequestCount")
 
-        dates = [epoch_to_date(ts) for ts in quick_report["report"]["time-slices"]]
+        dates = [utils.epoch_to_date(ts) for ts in quick_report["report"]["time-slices"]]
 
         for s in quick_report["report"]["report-data"][0]:
             name = s["resourceURI"].replace("services/", "").split(".")[0]
@@ -678,7 +677,7 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = connect(instance_item, username, password)
+        target = utils.connect(instance_item, username, password)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -786,7 +785,7 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
                                   "service_access": access,
                                   "service_usage": usage,
                                   "service_usage_trend": trend,
-                                  "service_last_viewed": epoch_to_datetime(service.lastViewed)}
+                                  "service_last_viewed": utils.epoch_to_datetime(service.lastViewed)}
                     )
 
                     if created:
@@ -988,7 +987,7 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
                 failure_count = 0
 
                 for batch in batch_results.get(disable_sync_subtasks=False):
-                    batch_result = UpdateResult(**batch["result"])
+                    batch_result = utils.UpdateResult(**batch["result"])
 
                     if batch_result.success is False:
                         failure_count += 1
@@ -1062,7 +1061,7 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
 def process_batch_services(self, instance_alias, username, password, folder, update_time):
-    result = UpdateResult()
+    result = utils.UpdateResult()
     service_usage_list = []
 
     try:
@@ -1071,7 +1070,7 @@ def process_batch_services(self, instance_alias, username, password, folder, upd
 
         try:
             instance_item = Portal.objects.get(alias=instance_alias)
-            target = connect(instance_item, username, password)
+            target = utils.connect(instance_item, username, password)
 
             logger.debug("Retrieving GIS servers list")
             gis_servers = target.admin.servers.list()
@@ -1392,12 +1391,12 @@ def update_webapps(self, instance_alias, overwrite=False, username=None, passwor
     """
     logger.debug(f"Starting update_webapps task for instance_alias={instance_alias}, overwrite={overwrite}")
 
-    result = UpdateResult()
+    result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = connect(instance_item, username, password)
+        target = utils.connect(instance_item, username, password)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -1495,7 +1494,7 @@ def update_webapps(self, instance_alias, overwrite=False, username=None, passwor
         failure_count = 0
 
         for batch in batch_results.get(disable_sync_subtasks=False):
-            batch_result = UpdateResult(**batch["result"])
+            batch_result = utils.UpdateResult(**batch["result"])
 
             if batch_result.success is False:
                 failure_count += 1
@@ -1547,13 +1546,13 @@ def update_webapps(self, instance_alias, overwrite=False, username=None, passwor
 @shared_task(bind=True)
 @celery_logging_context
 def process_batch_apps(self, instance_alias, username, password, batch, batch_size, update_time):
-    result = UpdateResult()
+    result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
 
     try:
         try:
             instance_item = Portal.objects.get(alias=instance_alias)
-            target = connect(instance_item, username, password)
+            target = utils.connect(instance_item, username, password)
 
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -1626,7 +1625,7 @@ def process_batch_apps(self, instance_alias, username, password, batch, batch_si
 
 def process_single_app(item, target, instance_item, update_time, result):
     if result is None:
-        result = UpdateResult()
+        result = utils.UpdateResult()
 
     app_id = getattr(item, 'id', 'unknown')
     app_title = getattr(item, 'title', 'unknown')
@@ -1651,15 +1650,15 @@ def process_single_app(item, target, instance_item, update_time, result):
             "app_url": item.homepage,
             "app_type": item.type,
             "app_owner": owner,
-            "app_created": epoch_to_datetime(item.created),
-            "app_modified": epoch_to_datetime(item.modified),
+            "app_created": utils.epoch_to_datetime(item.created),
+            "app_modified": utils.epoch_to_datetime(item.modified),
             "app_access": access,
             "app_extent": item.extent,
             "app_description": item.description,
             "app_views": item.numViews,
             "app_usage": usage,
             "updated_date": update_time,
-            "app_last_viewed": epoch_to_datetime(item.lastViewed) if instance_item.portal_type == "agol" else None
+            "app_last_viewed": utils.epoch_to_datetime(item.lastViewed) if instance_item.portal_type == "agol" else None
         }
         logger.debug(f"Application data prepared for: {app_id}")
 
@@ -1722,7 +1721,7 @@ def process_single_app(item, target, instance_item, update_time, result):
                     logger.error(f"Error processing map reference in application {app_id}: {e}", exc_info=True)
                     result.add_error(f"Error processing map reference in application {app_id}")
             logger.debug(f"Extracting web app builder resources for application: {app_id}")
-            resources = extract_webappbuilder(data)
+            resources = utils.extract_webappbuilder(data)
             resource_count = len(resources)
             logger.debug(f"Found {resource_count} resources in web app builder")
 
@@ -1802,7 +1801,7 @@ def process_single_app(item, target, instance_item, update_time, result):
 
             if data.get("resources", None):
                 logger.debug(f"Extracting StoryMap resources for application: {app_id}")
-                resources = extract_storymap(data["resources"])
+                resources = utils.extract_storymap(data["resources"])
                 resource_count = len(resources)
                 logger.debug(f"Found {resource_count} resources in StoryMap")
 
@@ -1848,7 +1847,7 @@ def process_single_app(item, target, instance_item, update_time, result):
             logger.debug(f"Processing Dashboard application: {app_id}")
 
             logger.debug(f"Extracting Dashboard resources for application: {app_id}")
-            resources = extract_dashboard(data)
+            resources = utils.extract_dashboard(data)
             resource_count = len(resources)
             logger.debug(f"Found {resource_count} resources in Dashboard")
 
@@ -2008,7 +2007,7 @@ def process_single_app(item, target, instance_item, update_time, result):
             logger.debug(f"Processing Web Experience (Experience Builder) application: {app_id}")
 
             logger.debug(f"Extracting Experience Builder resources for application: {app_id}")
-            resources = extract_experiencebuilder(data)
+            resources = utils.extract_experiencebuilder(data)
             resource_count = len(resources)
             logger.debug(f"Found {resource_count} resources in Experience Builder")
 
@@ -2166,13 +2165,13 @@ def update_users(self, instance_alias, overwrite=False, username=None, password=
              deletions, and any error messages.
     :rtype: str
     """
-    result = UpdateResult()
+    result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
     update_time = datetime.now()  # Mark the update timestamp for the current run
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = connect(instance_item, username, password)
+        target = utils.connect(instance_item, username, password)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -2261,7 +2260,7 @@ def update_users(self, instance_alias, overwrite=False, username=None, password=
         failure_count = 0
 
         for batch in batch_results.get(disable_sync_subtasks=False):
-            batch_result = UpdateResult(**batch["result"])
+            batch_result = utils.UpdateResult(**batch["result"])
 
             if batch_result.success is False:
                 failure_count += 1
@@ -2446,13 +2445,13 @@ def update_users(self, instance_alias, overwrite=False, username=None, password=
 @shared_task(bind=True)
 @celery_logging_context
 def process_batch_users(self, instance_alias, username, password, batch, batch_size, roles, update_time):
-    result = UpdateResult()
+    result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
 
     try:
         try:
             instance_item = Portal.objects.get(alias=instance_alias)
-            target = connect(instance_item, username, password)
+            target = utils.connect(instance_item, username, password)
 
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -2517,8 +2516,8 @@ def process_batch_users(self, instance_alias, username, password, batch, batch_s
                         "user_first_name": first_name,
                         "user_last_name": last_name,
                         "user_email": user.email,
-                        "user_created": epoch_to_datetime(user.created),
-                        "user_last_login": epoch_to_datetime(user.lastLogin),
+                        "user_created": utils.epoch_to_datetime(user.created),
+                        "user_last_login": utils.epoch_to_datetime(user.lastLogin),
                         "user_role": role,
                         "user_level": user.userLicenseTypeId,
                         "user_disabled": user.disabled,
@@ -2566,10 +2565,10 @@ def process_user(self, instance_alias, username, operation):
         f"Starting process_user for instance_alias={instance_alias}, username={username}, operation={operation}")
 
     update_time = datetime.now()
-    result = UpdateResult()
+    result = utils.UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = connect(instance_item)
+        target = utils.connect(instance_item)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -2642,8 +2641,8 @@ def process_user(self, instance_alias, username, operation):
                     'user_first_name': first_name,
                     'user_last_name': last_name,
                     'user_email': user.email,
-                    'user_created': epoch_to_datetime(user.created),
-                    'user_last_login': epoch_to_datetime(user.lastLogin),
+                    'user_created': utils.epoch_to_datetime(user.created),
+                    'user_last_login': utils.epoch_to_datetime(user.lastLogin),
                     'user_role': roles.get(user.roleId, user.roleId),
                     'user_level': user.userLicenseTypeId,
                     'user_disabled': user.disabled,
@@ -2679,10 +2678,10 @@ def process_webmap(self, instance_alias, item_id, operation):
         f"Starting process_webmap for instance_alias={instance_alias}, item_id={item_id}, operation={operation}")
 
     update_time = datetime.now()
-    result = UpdateResult()
+    result = utils.UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = connect(instance_item)
+        target = utils.connect(instance_item)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -2746,7 +2745,7 @@ def process_service(self, instance_alias, item, operation):
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = connect(instance_item)
+        target = utils.connect(instance_item)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -2977,10 +2976,10 @@ def process_webapp(self, instance_alias, item_id, operation):
         f"Starting process_webapp for instance_alias={instance_alias}, item_id={item_id}, operation={operation}")
 
     update_time = datetime.now()
-    result = UpdateResult()
+    result = utils.UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = connect(instance_item)
+        target = utils.connect(instance_item)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -3001,7 +3000,7 @@ def process_webapp(self, instance_alias, item_id, operation):
         logger.debug(f"Web application type: {item.type}, Owner: {item.owner}")
 
         logger.debug(f"Processing web application details for: {item_id}")
-        process_single_app(item, target, instance_item, update_time)
+        process_single_app(item, target, instance_item, update_time, result)
 
         instance_item.webapp_updated = update_time
         instance_item.save()
