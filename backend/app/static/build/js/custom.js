@@ -998,8 +998,16 @@ htmx.on("showSuccessAlert", (e) => {
     alert.setAttribute("icon", "");
 
     alert.innerHTML = `<div slot="message">${e.detail.value}</div>`;
+    (async () => {
+        await customElements.whenDefined("calcite-dialog");
 
-    document.querySelector("#alert-container").appendChild(alert);
+        // Now safely access the components
+        let modal = await document.querySelector("calcite-dialog[open], dialog[open]")?.componentOnReady();
+        if (modal) {
+            alert.setAttribute("slot", "alerts");
+            modal.appendChild(alert);
+        }
+    })();
 });
 htmx.on("showInfoAlert", (e) => {
     const alert = document.createElement("calcite-alert");
@@ -1012,6 +1020,27 @@ htmx.on("showInfoAlert", (e) => {
     alert.innerHTML = `<div slot="message">${e.detail.value}</div>`;
 
     document.querySelector("#alert-container").appendChild(alert);
+});
+
+htmx.on("showWarningAlert", (e) => {
+    const alert = document.createElement("calcite-alert");
+    alert.setAttribute("kind", "warning");
+    alert.setAttribute("open", "");
+    alert.setAttribute("autoClose", "true");
+    alert.setAttribute("label", "Warning alert");
+    alert.setAttribute("icon", "");
+
+    alert.innerHTML = `<div slot="message">${e.detail.value}</div>`;
+    (async () => {
+        await customElements.whenDefined("calcite-dialog");
+
+        // Now safely access the components
+        let modal = await document.querySelector("calcite-dialog[open], dialog[open]")?.componentOnReady();
+        if (modal) {
+            alert.setAttribute("slot", "alerts");
+            modal.appendChild(alert);
+        }
+    })();
 });
 
 document.addEventListener('DOMContentLoaded', function () {
