@@ -1647,7 +1647,7 @@ def email_settings(request):
     return render(request, template_to_render, {"form": form})
 
 
-@require_POST
+@staff_member_required
 def notify_view(request):
     """
     Sends email notifications to owners of selected maps and apps about an upcoming change.
@@ -1710,9 +1710,12 @@ def notify_view(request):
     emails_sent_count = 0
     emails_failed_count = 0
 
-    for owner_obj, items_for_owner in owner_items_map.items():
+    for owner_obj, owner_items in owner_items_map.items():
         try:
-            if utils.prepare_and_send_notification(owner_obj, items_for_owner, change_item_description, site_settings):
+            owner_maps = owner_items["maps"]
+            owner_apps = owner_items["apps"]
+            message, html, subject = utils.format_notification_email(owner_obj,change_item_description,owner_maps,owner_apps)
+            if utils.send_email(owner_obj.user_email, subject, message, html):
                 emails_sent_count += 1
         except Exception as e:
             logger.error(f"Error sending email to {owner_obj.user_email}: {e}", exc_info=True)
