@@ -1732,3 +1732,152 @@ def notify_view(request):
     response = HttpResponse("")
     response["HX-Trigger"] = json.dumps({"closeModal": True})
     return response
+
+
+@staff_member_required
+def tool_settings(request, instance):
+    """
+    Manages Portal Tools settings for a specific portal instance.
+
+    These settings might control scheduled maintenance tasks or other utilities
+    related to a portal.
+    On GET, displays the ToolsForm with current settings for the instance.
+    On POST, validates and saves the tool settings using the form's `save` method.
+
+    :param request: The HTTP request object.
+                    POST data expected to match ToolsForm fields.
+    :type request: django.http.HttpRequest
+    :param instance: The alias of the portal instance for which to manage tool settings.
+    :type instance: str
+    :return: Rendered HTML response, typically the tools settings form or a partial.
+    :rtype: django.http.HttpResponse
+    """
+    logger.debug(f"instance={instance}, method={request.method}, user={request.user.username}")
+    try:
+        portal_instance_obj = get_object_or_404(Portal, alias=instance)
+        tool_settings_obj, _ = PortalToolSettings.objects.get_or_create(portal=portal_instance_obj)
+    except Http404:
+        logger.warning(f"Portal '{instance}' not found.")
+        return HttpResponse(status=404,
+                            headers={
+                                "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Portal not found."})})
+    except Exception as e:
+        logger.error(f"Error getting/creating settings for '{instance}': {e}", exc_info=True)
+        return HttpResponse(status=500, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error loading tool settings."})})
+    results = TaskResult.objects.filter(task_kwargs__icontains=f"'{instance}'", task_name__icontains="tool").order_by(
+        '-date_done')[:10]
+    if request.method == "POST":
+        form = ToolsForm(request.POST, instance=tool_settings_obj)
+        if form.is_valid():
+            try:
+                form.save(portal=portal_instance_obj)
+
+                logger.info(f"Tool settings updated for portal '{instance}'.")
+                context = {'form': form, 'instance_alias': instance}
+                response = render(request, "partials/portal_tools_form.html", context)
+                response["HX-Trigger-After-Settle"] = json.dumps(
+                    {"showSuccessAlert": "Tool settings saved.", "closeModal": True})
+                return response
+            except Exception as e:
+                logger.error(f"Error saving tool settings for '{instance}': {e}", exc_info=True)
+                context = {'form': form, 'instance_alias': instance}
+                response = render(request, "partials/portal_tools_form.html", context, status=500)
+                response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": f"Error saving: {str(e)}"})
+                return response
+        else:
+            logger.warning(f"Form invalid for '{instance}'. Errors: {form.errors}")
+            return render(request, "partials/portal_tools_form.html", {"form": form, "instance_alias": instance},
+                          status=400)
+    else:
+        form = ToolsForm(instance=tool_settings_obj)
+
+    context = {"form": form, "instance_alias": instance, "results": results}
+    template_name = "portals/portal_tools.html"
+    return render(request, template_name, context)
+
+
+@staff_member_required
+@require_POST
+def tool_run(request, instance, tool_name):
+    """
+    Handles an on-demand request to run a single portal automation tool.
+
+    Validates the submitted tool parameters from the ToolsForm and queues a
+    Celery task to execute the specified tool, returning a progress bar to
+    monitor the execution.
+    """
+    logger.debug(f"Received request to run tool '{tool_name}' for instance '{instance}'.")
+
+    portal = get_object_or_404(Portal, alias=instance)
+    tool_settings_obj, _ = PortalToolSettings.objects.get_or_create(portal=portal)
+
+    form = ToolsForm(request.POST, instance=tool_settings_obj)
+    if not form.is_valid():
+        error_msg = ". ".join([f"{field}: {', '.join(errors)}" for field, errors in form.errors.items()])
+        logger.warning(f"Invalid parameters for tool '{tool_name}': {form.errors.as_json()}")
+        return HttpResponse(status=400, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Invalid tool parameters: {error_msg}"})
+        })
+
+    TOOL_CONFIG_MAP = {
+        'pro_license': {
+            'task': process_pro_license_task,
+            'params': {
+                'duration_days': 'tool_pro_duration',
+                'warning_days': 'tool_pro_warning'
+            },
+            'name': 'ArcGIS Pro License'
+        },
+        'public_unshare': {
+            'task': process_public_unshare_task,
+            'params': {
+                'score_threshold': 'tool_public_unshare_score'
+            },
+            'name': 'Public Item Unsharing'
+        },
+        'inactive_user': {
+            'task': process_inactive_user_task,
+            'params': {
+                'duration_days': 'tool_inactive_user_duration',
+                'warning_days': 'tool_inactive_user_warning',
+                'action': 'tool_inactive_user_action'
+            },
+            'name': 'Inactive User'
+        }
+    }
+
+    if tool_name not in TOOL_CONFIG_MAP:
+        logger.error(f"Attempted to run unknown tool: '{tool_name}'")
+        return HttpResponse(status=200, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Unknown tool specified: {tool_name}"})
+        })
+
+    config = TOOL_CONFIG_MAP[tool_name]
+    tool_display_name = config.get('name', tool_name.replace('_', ' ').title())
+
+    # Build task parameters
+    task_params = {'portal_alias': instance}
+    for param_name, form_field in config['params'].items():
+        task_params[param_name] = form.cleaned_data[form_field]
+
+    try:
+        # Call the specific task for this tool
+        task = config['task'].delay(**task_params)
+        logger.info(f"Successfully queued tool '{tool_display_name}' for instance '{instance}'. Task ID: {task.id}")
+
+        response_data = {
+            "instance": instance,
+            "task_id": task.id,
+            "progress": 0,
+        }
+
+        response = render(request, "partials/progress_bar.html", context=response_data)
+        return response
+
+    except Exception as e:
+        logger.error(f"Failed to queue tool '{tool_name}' for '{instance}': {e}", exc_info=True)
+        return HttpResponse(status=200, headers={
+            "HX-Trigger-After-Settle": json.dumps(
+                {"showDangerAlert": "Failed to queue the tool. See logs for details."})
+        })
