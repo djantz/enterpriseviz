@@ -3012,3 +3012,701 @@ def process_webapp(self, instance_alias, item_id, operation):
         logger.error(f"Unable to process web application {item_id} for portal '{instance_alias}': {e}", exc_info=True)
         self.update_state(state="FAILURE")
         raise Ignore()
+
+
+def _validate_params(params, required, tool_result):
+    """Validate required parameters."""
+    missing = [p for p in required if not params.get(p)]
+    if missing:
+        err = f"Missing parameters: {', '.join(missing)}"
+        tool_result.add_error(err)
+        return False
+    return True
+
+
+def _get_portal_info(target):
+    """Get portal name and URL for emails."""
+    info = target.properties
+    name = info.get("name", "your ArcGIS organization")
+    return name, target.url
+
+
+def _get_all_users(target, tool_result):
+    """Retrieve all users with error tracking."""
+    try:
+        users = target.users.search(query="*", max_users=10000)
+        logger.info(f"Retrieved {len(users)} users")
+        return users
+    except Exception as e:
+        tool_result.add_error("Failed to retrieve users from portal")
+        logger.error(f"Failed to retrieve users from portal: {e}", exc_info=True)
+        return None
+
+
+def _calc_cutoffs(duration_days, warning_days):
+    """Calculate cutoff dates."""
+    now = datetime.now(timezone.utc)
+    action_cutoff = now - timedelta(days=duration_days)
+    warning_cutoff = action_cutoff + timedelta(days=warning_days)
+    return action_cutoff, warning_cutoff
+
+
+def _check_skip_user(user, admin_username=None, check_email=True):
+    """Check if user should be skipped."""
+    if user.role == "org_admin":
+        return True
+    if admin_username and user.username == admin_username:
+        return True
+    if check_email and not user.email:
+        return True
+    return False
+
+
+def _get_last_activity(user):
+    """Get user's last activity date."""
+    try:
+        # Try lastLogin first (if it exists and is valid)
+        last_login = utils.epoch_to_datetime(getattr(user, 'lastLogin', None))
+        if last_login:
+            return last_login
+
+        # Fallback to creation date
+        created = utils.epoch_to_datetime(getattr(user, 'created', None))
+        if created:
+            return created
+
+        # If both are invalid, log warning and return None
+        logger.warning(f"No valid timestamp found for user '{user.username}' - both lastLogin and created are invalid")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error getting last activity for user '{user.username}': {e}", exc_info=True)
+        return None
+
+
+def _log_completion(tool_result):
+    """Log tool completion summary."""
+    summary = tool_result.get_summary()
+    logger.info(f"Tool completed: Processed={summary.get('processed', 0)}, "
+                f"Actions={summary.get('actions_taken', 0)}, "
+                f"Errors={summary.get('errors', 0)}")
+
+
+def _build_warning_email(user, portal_name, portal_url, warning_text):
+    """Build standard warning email."""
+    return f"""Hello {user.firstName or user.fullName or user.username},
+
+{warning_text}
+
+Please take action to maintain your account access in {portal_name}.
+
+Portal: {portal_url}
+
+If you have questions, contact your portal administrator.
+"""
+
+
+def _verify_privileges(user):
+    """Verify user has admin privileges."""
+    required = ["portal:admin:viewUsers", "portal:admin:deleteUsers",
+                "portal:admin:disableUsers", "portal:admin:manageLicenses",
+                "portal:admin:reassignItems"]
+    return all(priv in user.privileges for priv in required)
+
+
+def _connect_portal(portal_alias, tool_result):
+    """Establish portal connection with error tracking."""
+    try:
+        portal_instance = Portal.objects.get(alias=portal_alias)
+        target = utils.connect(portal_instance)
+        if not target:
+            tool_result.add_error(f"Failed to connect to portal '{portal_alias}'")
+            logger.error(f"Failed to connect to portal '{portal_alias}'")
+            return portal_instance, None
+
+        if not _verify_privileges(target.users.me):
+            tool_result.add_error(f"User '{target.users.me.username}' lacks required admin privileges")
+            logger.error(f"User '{target.users.me.username}' lacks required admin privileges")
+            return portal_instance, None
+
+        return portal_instance, target
+
+    except Portal.DoesNotExist:
+        tool_result.add_error(f"Portal '{portal_alias}' not found in database")
+        logger.error(f"Portal '{portal_alias}' not found in database")
+        return None, None
+    except Exception as e:
+        tool_result.add_error(f"Unexpected error connecting to portal '{portal_alias}'")
+        logger.error(f"Unexpected error connecting to portal '{portal_alias}': {e}", exc_info=True)
+        return None, None
+
+
+def _get_admin_email_list(portal_instance):
+    """Get list of admin email addresses for notifications."""
+    try:
+        # Check if notifications are enabled for this portal
+        if not getattr(portal_instance, 'enable_admin_notifications', True):
+            logger.info(f"Admin notifications disabled for portal '{portal_instance.alias}'")
+            return []
+
+        # Get admin emails from portal configuration
+        admin_emails = getattr(portal_instance, 'admin_emails', '')
+        if admin_emails:
+            emails = [email.strip() for email in admin_emails.split(',') if email.strip()]
+            if emails:
+                return emails
+
+        logger.warning(f"No admin emails configured for portal '{portal_instance.alias}'")
+        return []
+
+    except Exception as e:
+        logger.error(f"Error retrieving admin emails for portal '{portal_instance.alias}': {e}")
+        return []
+
+
+def _send_admin_notification(tool_result, portal_instance):
+    """Send admin notification email with tool execution summary."""
+    try:
+        admin_emails = _get_admin_email_list(portal_instance)
+        if not admin_emails:
+            logger.warning(f"No admin emails configured for portal '{portal_instance.alias}' - skipping notification")
+            return False
+
+        # Format subject based on tool result
+        status_indicator = "SUCCESS" if tool_result.success else "FAILURE"
+        subject = f"ArcGIS Tool Report: {tool_result.tool_name.replace('_', ' ').title()} - {status_indicator}"
+
+        # Use the ToolResult's built-in email formatting
+        message = tool_result.format_for_email()
+        print(message)
+
+        # Add timestamp and portal info
+        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        header = f"ArcGIS Enterprise Tool Execution Report\nGenerated: {timestamp}\n" + "=" * 50 + "\n"
+        message = header + message
+
+        # Send to all admin emails
+        notification_sent = False
+        for admin_email in admin_emails:
+            try:
+                success, status_msg = utils.send_email(admin_email, subject, message)
+                if success:
+                    logger.info(f"Admin notification sent to {admin_email} for tool '{tool_result.tool_name}'")
+                    notification_sent = True
+                else:
+                    logger.error(f"Failed to send admin notification to {admin_email}: {status_msg}")
+            except Exception as e:
+                logger.error(f"Error sending admin notification to {admin_email}: {e}")
+
+        return notification_sent
+
+    except Exception as e:
+        logger.error(f"Error in admin notification process: {e}")
+        return False
+
+
+@shared_task(bind=True, name="Pro License Tool")
+def process_pro_license_task(self, portal_alias: str, duration_days: int, warning_days: int):
+    """Process Pro License management."""
+    start_time = time.time()
+    progress_recorder = ProgressRecorder(self)
+    tool_result = utils.ToolResult(
+        portal_alias=portal_alias,
+        tool_name="pro_license"
+    )
+    portal_instance = None
+
+    try:
+        progress_recorder.set_progress(0, 100, "Connecting to portal...")
+        portal_instance, target = _connect_portal(portal_alias, tool_result)
+        if not target:
+            progress_recorder.set_progress(100, 100, "Connection failed")
+        else:
+            logger.info(f"[{portal_alias}] Starting Pro License Tool")
+            progress_recorder.set_progress(10, 100, "Connected")
+
+            progress_recorder.set_progress(15, 100, "Getting users...")
+            users = _get_all_users(target, tool_result)
+            if users is None:
+                progress_recorder.set_progress(100, 100, "Failed to get users")
+            else:
+                progress_recorder.set_progress(20, 100, f"Processing {len(users)} users")
+                _run_pro_license(target, duration_days, warning_days, users, progress_recorder, tool_result)
+
+                tool_result.set_success(tool_result.errors == 0)
+                progress_recorder.set_progress(100, 100, f"Completed: {tool_result.actions_taken} actions")
+                logger.info(f"[{portal_alias}] Pro License Tool completed in {tool_result.execution_time:.2f}s")
+
+    except Exception as e:
+        logger.error(f"Pro License Tool failed: {e}")
+        tool_result.add_error("Pro License Tool failed")
+        progress_recorder.set_progress(100, 100, "Failed")
+        self.update_state(state="FAILURE")
+
+    finally:
+        tool_result.execution_time = time.time() - start_time
+        _send_admin_notification(tool_result, portal_instance)
+
+    return tool_result.to_json()
+
+
+@shared_task(bind=True, name="Inactive User Tool")
+def process_inactive_user_task(self, portal_alias: str, duration_days: int, warning_days: int, action: str):
+    """Process inactive user management."""
+    start_time = time.time()
+    progress_recorder = ProgressRecorder(self)
+    tool_result = utils.ToolResult(
+        portal_alias=portal_alias,
+        tool_name="inactive_user"
+    )
+    portal_instance = None
+
+    try:
+        progress_recorder.set_progress(0, 100, "Connecting to portal...")
+        portal_instance, target = _connect_portal(portal_alias, tool_result)
+        if not target:
+            progress_recorder.set_progress(100, 100, "Connection failed")
+        else:
+            logger.info(f"[{portal_alias}] Starting Inactive User Tool")
+            progress_recorder.set_progress(10, 100, "Connected")
+
+            progress_recorder.set_progress(15, 100, "Getting users...")
+            users = _get_all_users(target, tool_result)
+            if users is None:
+                progress_recorder.set_progress(100, 100, "Failed to get users")
+            else:
+                progress_recorder.set_progress(20, 100, f"Processing {len(users)} users")
+                _run_inactive_user(target, duration_days, warning_days, action,
+                                   portal_instance.username, users, progress_recorder, tool_result)
+
+                tool_result.set_success(tool_result.errors == 0)
+                progress_recorder.set_progress(100, 100, f"Completed: {tool_result.actions_taken} actions")
+                logger.info(f"[{portal_alias}] Inactive User Tool completed in {tool_result.execution_time:.2f}s")
+
+    except Exception as e:
+        err = f"Inactive User Tool failed: {e}"
+        logger.error(f"[{portal_alias}] {err}")
+        tool_result.add_error(err)
+        progress_recorder.set_progress(100, 100, f"Failed: {err}")
+        self.update_state(state="FAILURE", meta={"error": err})
+
+    finally:
+        tool_result.execution_time = time.time() - start_time
+        _send_admin_notification(tool_result, portal_instance)
+
+    return tool_result.to_json()
+
+
+@shared_task(bind=True, name="Public Sharing Tool")
+def process_public_unshare_task(self, portal_alias: str, score_threshold: int, item_id: str = None):
+    """Process public item unsharing."""
+    start_time = time.time()
+    progress_recorder = ProgressRecorder(self)
+    tool_result = utils.ToolResult(
+        portal_alias=portal_alias,
+        tool_name="public_unshare" if not item_id else "public_unshare_webhook"
+    )
+    portal_instance = None
+
+    try:
+        progress_recorder.set_progress(0, 100, "Connecting to portal...")
+        portal_instance, target = _connect_portal(portal_alias, tool_result)
+        if not target:
+            progress_recorder.set_progress(100, 100, "Connection failed")
+        else:
+            if item_id:
+                # Webhook mode
+                progress_recorder.set_progress(20, 100, f"Processing item: {item_id}")
+                logger.info(f"[{portal_alias}] Public Unshare (webhook) for item {item_id}")
+                _handle_webhook_item(target, item_id, portal_instance, tool_result)
+            else:
+                # Scheduled mode
+                logger.info(f"[{portal_alias}] Public Unshare (scheduled)")
+                progress_recorder.set_progress(10, 100, "Connected")
+
+                progress_recorder.set_progress(15, 100, "Getting public items...")
+                items = _get_public_items(target, tool_result)
+                if items is None:
+                    progress_recorder.set_progress(100, 100, "Failed to get items")
+                else:
+                    progress_recorder.set_progress(20, 100, f"Processing {len(items)} items")
+                    _run_public_unshare(target, score_threshold, items, progress_recorder, tool_result)
+
+            tool_result.set_success(tool_result.errors == 0)
+            mode = f"(webhook - {item_id})" if item_id else "(scheduled)"
+            progress_recorder.set_progress(100, 100, f"Completed: {tool_result.actions_taken} actions")
+            logger.info(f"[{portal_alias}] Public Unshare {mode} completed in {tool_result.execution_time:.2f}s")
+
+    except Exception as e:
+        err = f"Public Unshare Tool failed: {e}"
+        logger.error(f"[{portal_alias}] {err}")
+        tool_result.add_error(err)
+        progress_recorder.set_progress(100, 100, f"Failed: {err}")
+        self.update_state(state="FAILURE", meta={"error": err})
+
+    finally:
+        tool_result.execution_time = time.time() - start_time
+        _send_admin_notification(tool_result, portal_instance)
+
+    return tool_result.to_json()
+
+
+def _run_pro_license(target, duration_days, warning_days, users, recorder, tool_result):
+    """Pro License tool implementation."""
+    params = {"duration_days": duration_days, "warning_days": warning_days}
+    if not _validate_params(params, ["duration_days", "warning_days"], tool_result):
+        return
+
+    cutoffs = _calc_cutoffs(duration_days, warning_days)
+    portal_info = _get_portal_info(target)
+
+    _process_pro_users(target, users, cutoffs, portal_info, tool_result, recorder)
+    _log_completion(tool_result)
+
+
+def _process_pro_users(target, users, cutoffs, portal_info, tool_result, recorder):
+    """Process users for Pro License management."""
+    action_cutoff, warning_cutoff = cutoffs
+    portal_name, portal_url = portal_info
+    total = len(users)
+
+    for i, user in enumerate(users):
+        progress = 20 + int((i / total) * 75)
+        recorder.set_progress(progress, 100, f"Checking: {user.username}")
+
+        tool_result.processed += 1
+
+        if _check_skip_user(user):
+            continue
+
+        license_info = _get_pro_license(target, user.username, tool_result)
+        if not license_info:
+            continue
+
+        effective_date = _get_effective_date(user, license_info, tool_result)
+        if not effective_date:
+            continue
+
+        if effective_date < action_cutoff:
+            if _revoke_pro_license(user, license_info, effective_date, portal_name, portal_url, tool_result):
+                tool_result.actions_taken += 1
+                tool_result.add_extra_metric("licenses_revoked",
+                                             tool_result.extra_metrics.get("licenses_revoked", 0) + 1)
+        elif action_cutoff <= effective_date < warning_cutoff:
+            success, status_msg = _send_pro_warning(user, effective_date, portal_name, portal_url)
+            if success:
+                tool_result.warnings_sent += 1
+            else:
+                tool_result.add_error(f"Failed to send warning email to {user.email}: {status_msg}")
+                logger.error(f"Failed to send warning email to {user.email}: {status_msg}")
+
+    recorder.set_progress(95, 100, "Finalizing...")
+
+
+def _get_pro_license(target, username, tool_result):
+    """Get Pro license for user."""
+    try:
+        license_info = target.admin.license.get("ArcGIS Pro").user_entitlement(username)
+        if not license_info:
+            return None
+        entitlements = ["desktopAdvN", "desktopStdN", "desktopBasicN"]
+        has_pro = next((e for e in entitlements if e in license_info.get("entitlements", None)), None)
+        return license_info if has_pro else None
+    except Exception as e:
+        tool_result.add_error(f"Failed to check Pro license for user '{username}'")
+        logger.error(f"Failed to check Pro license for user '{username}': {e}", exc_info=True)
+        return None
+
+
+def _get_effective_date(user, license_info, tool_result):
+    """Get effective date for inactivity check."""
+    try:
+        pro_login = license_info.get("lastLogin", None)
+        # User last login or created date if never logged in
+        user_login = _get_last_activity(user)
+        return pro_login or user_login
+    except Exception as e:
+        tool_result.add_error(f"Failed to calculate effective date for user '{user.username}'")
+        logger.error(f"Failed to calculate effective date for user '{user.username}': {e}", exc_info=True)
+        return None
+
+
+def _revoke_pro_license(user, license_info, effective_date, portal_name, portal_url, tool_result):
+    """Revoke Pro license for inactive user."""
+    logger.warning(f"Revoking Pro license for inactive user '{user.username}' (inactive since {effective_date})")
+
+    try:
+        logger.info(f"Revoking Pro license for user '{user.username}'")
+        revoked = license_info.revoke(username=user.username, entitlements='*', suppress_email=True)
+
+        if revoked:
+            logger.info(f"Successfully revoked Pro license for user '{user.username}'")
+            subject = f"ArcGIS Pro License Revoked for {user.username}"
+            message = f"""Hello {user.firstName or user.fullName},
+
+Your ArcGIS Pro license in {portal_name} has been revoked due to inactivity (last activity: {effective_date.strftime('%Y-%m-%d')}).
+
+If you need access restored, contact your portal administrator.
+
+Portal: {portal_url}"""
+
+            success, status_msg = utils.send_email(user.email, subject, message)
+            if success:
+                tool_result.warnings_sent += 1
+                logger.info(f"Warning email sent to {user.email}")
+            else:
+                tool_result.add_error(f"Failed to send warning email to {user.email}: {status_msg}")
+                logger.error(f"Failed to send warning email to {user.email}: {status_msg}")
+            return True
+        else:
+            tool_result.add_error(f"Failed to revoke Pro license for user '{user.username}'")
+            logger.error(f"Failed to revoke Pro license for user '{user.username}' - API returned failure")
+            return False
+    except Exception as e:
+        tool_result.add_error(f"Error revoking Pro license for user '{user.username}'")
+        logger.error(f"Error revoking Pro license for user '{user.username}': {e}", exc_info=True)
+        return False
+
+
+def _send_pro_warning(user, effective_date, portal_name, portal_url):
+    """Send Pro license warning - FIXED VERSION."""
+    subject = "ArcGIS Pro License Inactivity Warning"
+    warning_text = f"""Your ArcGIS Pro license in {portal_name} may be revoked due to inactivity.
+Last activity: {effective_date.strftime('%Y-%m-%d')}
+
+To keep your license, log in to {portal_name} or use ArcGIS Pro."""
+
+    message = _build_warning_email(user, portal_name, portal_url, warning_text)
+
+    success, status_msg = utils.send_email(user.email, subject, message)
+    return success, status_msg
+
+
+def _run_public_unshare(target, score_threshold, items, recorder, tool_result):
+    """Public Unshare tool implementation."""
+    params = {"score_threshold": score_threshold}
+    if not _validate_params(params, ["score_threshold"], tool_result):
+        return
+
+    portal_info = _get_portal_info(target)
+    user_items = _process_items(items, score_threshold, tool_result, recorder)
+
+    recorder.set_progress(90, 100, "Sending notifications...")
+    _send_unshare_notifications(user_items, target, portal_info, score_threshold, tool_result)
+
+    _log_completion(tool_result)
+
+
+def _get_public_items(target, tool_result):
+    """Get public items."""
+    try:
+        items = target.content.search(query="access:public", max_items=10000)
+        logger.info(f"Found {len(items)} public items")
+        return items
+    except Exception as e:
+        tool_result.add_error("Failed to retrieve public items from portal")
+        logger.error(f"Failed to retrieve public items from portal: {e}", exc_info=True)
+        return None
+
+
+def _process_items(items, threshold, tool_result, recorder):
+    """Process public items."""
+    user_items = {}
+    total = len(items)
+
+    for i, item in enumerate(items):
+        progress = 20 + int((i / total) * 65)
+        recorder.set_progress(progress, 100, f"Checking: {item.title[:30]}...")
+
+        try:
+            tool_result.processed += 1
+            score = getattr(item, "scoreCompleteness", 0)
+
+            if score < threshold:
+                logger.info(f"Unsharing item '{item.id}' (score: {score}%)")
+
+                # Organize by user
+                owner = item.owner
+                if owner not in user_items:
+                    user_items[owner] = {"user": None, "items": []}
+
+                user_items[owner]["items"].append({
+                    "id": item.id, "title": item.title, "score": score, "type": item.type
+                })
+
+                # Unshare item
+                try:
+                    logger.debug(f"Unsharing item '{item.id}'")
+                    success = item.share(everyone=False)
+                    if success:
+                        logger.info(f"Successfully unshared item '{item.id}'")
+                        tool_result.actions_taken += 1
+                        tool_result.add_extra_metric("unshared",
+                                                     tool_result.extra_metrics.get("unshared", 0) + 1)
+                    else:
+                        tool_result.add_error(f"Failed to unshare item '{item.id}'")
+                        logger.error(f"Failed to unshare item '{item.id}' - API returned failure")
+                except Exception as e:
+                    tool_result.add_error(f"Error unsharing item '{item.id}'")
+                    logger.error(f"Error unsharing item '{item.id}': {e}", exc_info=True)
+
+        except Exception as e:
+            tool_result.add_error(f"Error processing item '{item.id}'")
+            logger.error(f"Error processing item '{item.id}': {e}", exc_info=True)
+
+    recorder.set_progress(85, 100, "Items processed")
+    return user_items
+
+
+def _send_unshare_notifications(user_items, target, portal_info, threshold, tool_result):
+    """Send notifications to users about unshared items - FIXED VERSION."""
+    portal_name, portal_url = portal_info
+
+    for username, data in user_items.items():
+        items = data["items"]
+        if not items:
+            continue
+
+        # Get user if not cached
+        if not data["user"]:
+            try:
+                data["user"] = target.users.get(username)
+            except Exception:
+                continue
+
+        user = data["user"]
+        if not user or not user.email:
+            continue
+
+        avg_score = sum(item["score"] for item in items) / len(items)
+        items_list = "\n".join([f"• {item['title']} ({item['type']}) - {item['score']}%"
+                                for item in items[:10]])
+        if len(items) > 10:
+            items_list += f"\n... and {len(items) - 10} more"
+
+        subject = "Public Items Unshared - Metadata Required"
+        message = f"""Hello {user.firstName or user.fullName or user.username},
+
+Your public items in {portal_name} were unshared due to low metadata completeness (below {threshold}%).
+
+Items ({len(items)} total):
+{items_list}
+
+Average completeness: {avg_score:.1f}%
+
+To improve and reshare:
+1. Complete all metadata sections
+2. Add detailed descriptions and tags
+3. Include credits and limitations
+4. Add thumbnail images
+
+Portal: {portal_url}"""
+
+        success, status_msg = utils.send_email(user.email, subject, message)
+        if success:
+            tool_result.warnings_sent += 1
+        else:
+            tool_result.add_error(f"Failed to send warning email to {user.email}: {status_msg}")
+            logger.error(f"Failed to send warning email to {user.email}: {status_msg}")
+
+
+def _run_inactive_user(target, duration_days, warning_days, action, admin_username, users, recorder, tool_result):
+    """Inactive User tool implementation."""
+    params = {"duration_days": duration_days, "warning_days": warning_days, "action": action}
+    if not _validate_params(params, ["duration_days", "warning_days", "action"], tool_result):
+        return
+
+    cutoffs = _calc_cutoffs(duration_days, warning_days)
+    _process_inactive_users(target, users, cutoffs, action, admin_username, tool_result, recorder)
+    _log_completion(tool_result)
+
+
+def _process_inactive_users(target, users, cutoffs, action, admin_username, tool_result, recorder):
+    """Process users for inactivity."""
+    action_cutoff, warning_cutoff = cutoffs
+    portal_info = _get_portal_info(target)
+    total = len(users)
+
+    for i, user in enumerate(users):
+        progress = 20 + int((i / total) * 75)
+        recorder.set_progress(progress, 100, f"Checking: {user.username}")
+
+        if _check_skip_user(user, admin_username):
+            continue
+
+        tool_result.processed += 1
+        last_activity = _get_last_activity(user)
+        if not last_activity:
+            continue
+
+        if last_activity < action_cutoff:
+            success, msg = _take_inactive_action(user, last_activity, action, tool_result)
+            if success:
+                tool_result.actions_taken += 1
+                tool_result.add_extra_metric("inactive_found",
+                                             tool_result.extra_metrics.get("inactive_found", 0) + 1)
+            else:
+                tool_result.add_error(f"Failed to take action for user '{user.username}': {msg}")
+                logger.error(f"Failed to take action for user '{user.username}': {msg}")
+        elif action_cutoff <= last_activity < warning_cutoff:
+            success, msg = _send_inactive_warning(user, last_activity, portal_info)
+            if success:
+                tool_result.warnings_sent += 1
+            else:
+                tool_result.add_error(f"Failed to send warning email to {user.email}: {msg}")
+                logger.error(f"Failed to send warning email to {user.email}: {msg}")
+
+    recorder.set_progress(95, 100, "Finalizing...")
+
+
+def _take_inactive_action(user, last_activity, action, tool_result):
+    """Take action on inactive user - FIXED VERSION."""
+    username = user.username
+    logger.info(f"Taking action '{action}' for inactive user '{username}' (last activity: {last_activity})")
+
+    try:
+        if action == "disable":
+            logger.info(f"Disabling user '{username}'")
+            user.disable()
+            logger.info(f"Successfully disabled user '{username}'")
+            tool_result.add_extra_metric("users_disabled",
+                                         tool_result.extra_metrics.get("users_disabled", 0) + 1)
+            return True, "User disabled successfully"
+
+        elif action == "remove_role":
+            logger.info(f"Removing role from user '{username}'")
+            user.update_role("viewer")
+            logger.info(f"Successfully removed role from user '{username}'")
+            tool_result.add_extra_metric("roles_removed",
+                                         tool_result.extra_metrics.get("roles_removed", 0) + 1)
+            return True, "User role removed successfully"
+
+        elif action == "notify":
+            logger.info(f"Sending admin notification for user '{username}'")
+            subject = f"Inactive User: {username}"
+            message = f"User {username} has been inactive since {last_activity.strftime('%Y-%m-%d')}."
+            success, status_msg = utils.send_email(user.email, subject, message)
+            if success:
+                tool_result.add_extra_metric("admin_notifications_sent",
+                                             tool_result.extra_metrics.get("admin_notifications_sent", 0) + 1)
+            return success, status_msg
+
+        else:
+            return False, f"Unknown action: {action}"
+
+    except Exception as e:
+        error_msg = f"Failed to execute action '{action}' for user '{username}': {e}"
+        tool_result.add_error(error_msg)
+        logger.error(error_msg, exc_info=True)
+        return False, str(e)
+
+
+def _send_inactive_warning(user, last_activity, portal_info):
+    """Send inactivity warning - FIXED VERSION."""
+    portal_name, portal_url = portal_info
+    subject = "Account Inactivity Warning"
+    warning_text = f"""Your account has been inactive since {last_activity.strftime('%Y-%m-%d')}.
+If you remain inactive, your account may be subject to administrative action."""
+
+    message = _build_warning_email(user, portal_name, portal_url, warning_text)
+    return utils.send_email(user.email, subject, message)
