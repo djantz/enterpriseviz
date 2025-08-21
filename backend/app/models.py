@@ -55,6 +55,14 @@ class Portal(models.Model):
         PeriodicTask, null=True, blank=True, on_delete=models.SET_NULL
     )
     org_id = models.CharField(verbose_name="Org Id", max_length=50, blank=True, null=True)
+    admin_emails = models.TextField(
+        blank=True,
+        help_text="Comma-separated list of admin email addresses for tool notifications"
+    )
+    enable_admin_notifications = models.BooleanField(
+        default=True,
+        help_text="Enable/disable admin notifications for this portal"
+    )
 
     def __str__(self):
         return self.alias
