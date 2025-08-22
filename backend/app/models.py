@@ -202,7 +202,8 @@ class Layer(models.Model):
 class PortalCreateForm(forms.ModelForm):
     class Meta:
         model = Portal
-        fields = ("alias", "url", "portal_type", "store_password", "username", "password")
+        fields = ("alias", "url", "portal_type", "store_password", "username", "password", "admin_emails",
+                  "enable_admin_notifications")
         widgets = {"password": forms.PasswordInput(render_value=False), }
 
     def clean_url(self):
