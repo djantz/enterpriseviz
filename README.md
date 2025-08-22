@@ -131,11 +131,33 @@ Once you've configured the `.env` files, you can deploy EnterpriseViz using Dock
     *   **Settings**
 
         *   **Logging:** Application logs can be viewed through the Settings panel.
-             *   Logging levels may be changed here
+             *   Logging levels may be changed here (INFO, WARNING, ERROR, DEBUG, CRITICAL)
+             *   Log entries include timestamp, level, message, and other contextual information
+        *   **Email Configuration:** Configure email settings for notifications.
+             *   SMTP server settings (host, port, encryption type)
+             *   Authentication credentials
+             *   Default From and Reply-To addresses
         *   **Theme:** Change between light and dark mode.
              *   Preferences are saved to your user
-        *   **Service Usage** Enable or disable real-time service usage graphs in detail pages
+        *   **Service Usage:** Enable or disable real-time service usage graphs in detail pages.
              *   Sometimes usage graphs can take a while to retrieve from ArcGIS Server
+
+    *   **Portal Tools**
+
+        EnterpriseViz includes several administrative tools to help manage your ArcGIS Portal.
+        Schedule automatic runs or execute on-demand.
+
+        *   **ArcGIS Pro License Removal:** Automatically manage ArcGIS Pro licenses.
+             *   Remove licenses from inactive users based on configurable inactivity duration
+             *   Send warning notifications before license removal
+        *   **Inactive User Management:** Manage inactive portal users.
+             *   Identify users based on configurable inactivity duration
+             *   Choose actions: notify only, disable user, delete user, or transfer content
+             *   Send warning notifications before taking action
+        *   **Public Item Unsharing:** Enforce metadata quality standards.
+             *   Unshare publicly shared items that don't meet metadata score requirements
+             *   Configure minimum metadata score threshold (50%, 75%, 90%, 100%)
+             *   Choose between immediate (webhook) or daily processing
 
 
 ## Screenshots
@@ -145,6 +167,8 @@ Once you've configured the `.env` files, you can deploy EnterpriseViz using Dock
 ![Layer Details](images/layer_details.png)
 ![Layer Details Cont](images/layer_details2.png)
 ![Schedule Refresh](images/schedule.png)
+![Logs](images/logs.png)
+![Portal Tools](images/portal_tools.png)
 
 
 ## ERD (Entity-Relationship Diagram)
