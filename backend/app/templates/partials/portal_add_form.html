@@ -86,6 +86,8 @@
       {{ form.enable_admin_notifications.errors|join:" " }}
     </calcite-input-message>
   </calcite-label>
+<div id="admin-emails-container" {% if form.enable_admin_notifications.value == False %}hidden{% endif %}>
+
   <calcite-label>
     Admin Emails
     <calcite-input name="{{ form.admin_emails.name }}" placeholder="Enter email address (comma separated)" required
@@ -96,7 +98,7 @@
       {{ form.admin_emails.errors|join:" " }}
     </calcite-input-message>
   </calcite-label>
-
+</div>
 
   <calcite-input-message {% if not form.non_field_errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
                          status="invalid">

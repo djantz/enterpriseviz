@@ -18,10 +18,10 @@
 
       <div slot="actions-end" class="accordion-actions-end">
         <calcite-switch id="tool-pro-license-enabled" data-tool-toggle="1"
-                        {% if form.tool_pro_enabled.value %}checked{% endif %}
+                        {% if form.tool_pro_license_enabled.value %}checked{% endif %}
                         scale="s"></calcite-switch>
         <input type="hidden" name="tool_pro_license_enabled"
-               value="{{ form.tool_pro_enabled.value|yesno:'True,False' }}">
+               value="{{ form.tool_pro_license_enabled.value|yesno:'True,False' }}">
       </div>
 
       <div class="tool-settings">

@@ -34,9 +34,9 @@
       <calcite-option value="starttls">StartTLS</calcite-option>
       <calcite-option value="ssl">SSL</calcite-option>
     </calcite-select>
-    <calcite-input-message {% if not form.repeat_type.errors %}hidden{% endif %}
+    <calcite-input-message {% if not form.email_encryption.errors %}hidden{% endif %}
                            icon="exclamation-mark-triangle-f" status="invalid">
-      {{ form.repeat_type.errors|join:" " }}
+      {{ form.email_encryption.errors|join:" " }}
     </calcite-input-message>
   </calcite-label>
 
@@ -76,7 +76,7 @@
     Password (optional)
     <calcite-input type="password" id="{{ form.email_password.name }}" name="{{ form.email_password.name }}"
                    autocomplete="off" value="{{ form.email_password.value|default_if_none:"" }}"></calcite-input>
-    <calcite-input-message {% if not form.email_host.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+    <calcite-input-message {% if not form.email_password.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
                            status="invalid">
       {{ form.email_password.errors|join:" " }}
     </calcite-input-message>
@@ -87,7 +87,7 @@
   <calcite-label>
     Send Test Email
     <calcite-input type="email" id="test-email" name="test_email" placeholder="Enter an email address">
-      <calcite-button slot="action" name="action" value="test_email" id="email-portal-test"
+      <calcite-button slot="action" id="email-portal-test"
                   hx-post="{% url 'enterpriseviz:email_settings' %}"
                   hx-include="#email-site-form" hx-vals='{"action": "test"}'
                   hx-target="#email-site-form">

@@ -328,7 +328,7 @@ class ToolsForm(forms.ModelForm):
         cleaned_data = super().clean()
 
         tool_configs = [
-            ('tool_pro_enabled', ['tool_pro_duration', 'tool_pro_warning']),
+            ('tool_pro_license_enabled', ['tool_pro_duration', 'tool_pro_warning']),
             ('tool_public_unshare_enabled',
              ['tool_public_unshare_score', 'tool_public_unshare_grace_period', 'tool_public_unshare_trigger']),
             ('tool_inactive_user_enabled',

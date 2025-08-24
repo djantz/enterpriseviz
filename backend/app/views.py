@@ -18,6 +18,8 @@
 import hashlib
 import hmac
 from collections import defaultdict
+import json
+import logging
 
 from celery import current_app as celery_app  # For signaling Celery
 from celery.result import AsyncResult
@@ -48,7 +50,7 @@ from django_tables2.export.views import ExportMixin
 from app import utils
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
 from .forms import ScheduleForm, SiteSettingsForm, ToolsForm
-from .models import PortalCreateForm, UserProfile, LogEntry
+from .models import Portal, User, Webmap, Service, Layer, App, PortalCreateForm, UserProfile, LogEntry
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *
 
@@ -522,8 +524,8 @@ def portal_create_view(request):
                         context = {"portal": Portal.objects.values_list("alias", "portal_type", "url")}
                         response = render(request, "partials/portal_updates.html", context)
                         response["HX-Trigger-After-Settle"] = json.dumps(
-                            {"showSuccessAlert": f"Successfully added {url} as {alias} and authenticated.",
-                             "closeModal": True}
+                            {"closeModal": True,
+                             "showSuccessAlert": f"Successfully added {url} as {alias} and authenticated."}
                         )
                         return response
                     else:
@@ -1715,8 +1717,12 @@ def notify_view(request):
             owner_maps = owner_items["maps"]
             owner_apps = owner_items["apps"]
             message, html, subject = utils.format_notification_email(owner_obj,change_item_description,owner_maps,owner_apps)
-            if utils.send_email(owner_obj.user_email, subject, message, html):
+            success, status_msg = utils.send_email(owner_obj.user_email, subject, message, html)
+            if success:
                 emails_sent_count += 1
+            else:
+                emails_failed_count += 1
+                logger.error(f"Failed to send email to {owner_obj.user_email}: {status_msg}")
         except Exception as e:
             logger.error(f"Error sending email to {owner_obj.user_email}: {e}", exc_info=True)
             emails_failed_count += 1
@@ -1870,6 +1876,7 @@ def tool_run(request, instance, tool_name):
             "instance": instance,
             "task_id": task.id,
             "progress": 0,
+            "task_name": tool_display_name,
         }
 
         response = render(request, "partials/progress_bar.html", context=response_data)

@@ -22,7 +22,7 @@ import json
 from django import forms
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.validators import URLValidator
+from django.core.validators import URLValidator, validate_email
 from django.db import models
 from django_celery_beat.models import PeriodicTask
 from django_celery_results.models import TaskResult
@@ -215,6 +215,29 @@ class PortalCreateForm(forms.ModelForm):
         except ValidationError:
             raise ValidationError("Enter a valid URL.")
         return url
+
+    def clean_admin_emails(self):
+        """Validate admin email addresses."""
+        admin_emails = self.cleaned_data.get("admin_emails")
+
+        if not admin_emails:
+            return admin_emails
+
+        # Split emails by comma and strip whitespace
+        email_list = [email.strip() for email in admin_emails.split(',')]
+
+        # Remove empty strings
+        email_list = [email for email in email_list if email]
+
+        # Validate each email address
+        for email in email_list:
+            try:
+                validate_email(email)
+            except ValidationError:
+                raise ValidationError(f"'{email}' is not a valid email address.")
+
+        # Return cleaned emails (comma-separated, no extra whitespace)
+        return ', '.join(email_list)
 
     def clean(self):
         """Ensure store_password requires username and password."""

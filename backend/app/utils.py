@@ -21,22 +21,18 @@ import re
 from dataclasses import dataclass, field, asdict
 from itertools import combinations, groupby
 from operator import itemgetter
-import os
-import time
-import hashlib
-from cryptography.fernet import Fernet
-from django.conf import settings
-from django.core.cache import cache
 
 import requests
 from arcgis import gis
 from arcgis.mapping import WebMap
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import get_connection, EmailMultiAlternatives, EmailMessage
+from django.core.validators import validate_email
 from django.db.models import F, QuerySet, Q
 from django.utils import timezone
+from django.utils.html import escape
 from fuzzywuzzy import fuzz
 from tabulate import tabulate
-
 
 from .models import Webmap, Service, Layer, App, Portal, SiteSettings
 
@@ -1007,7 +1003,7 @@ def combine_apps(app_queryset):
 
     if isinstance(app_queryset, QuerySet) and not app_queryset._result_cache:
         app_list = list(app_queryset.values(
-            "app_id", "portal_instance_id", "app_title", "app_url","app_type", "app_owner__user_username",
+            "app_id", "portal_instance_id", "app_title", "app_url", "app_type", "app_owner__user_username",
             "app_created", "app_modified", "app_access", "app_views", "usage_type"
         ))
     else:
@@ -1136,10 +1132,10 @@ def generate_notification_tables(maps_qs, apps_qs):
     """
     # Extract data for tables - select only needed fields for efficiency
     map_rows = [(m.webmap_title, m.webmap_url, m.webmap_access,
-                 epoch_to_date(m.webmap_created), epoch_to_date(m.webmap_modified), m.webmap_views)
+                 m.webmap_created.strftime("%Y-%m-%d"), m.webmap_modified.strftime("%Y-%m-%d"), m.webmap_views)
                 for m in maps_qs]
     app_rows = [(a.app_title, a.app_url, a.app_type, a.app_access,
-                 epoch_to_date(a.app_created), epoch_to_date(a.app_modified), a.app_views)
+                 a.app_created.strftime("%Y-%m-%d"), a.app_modified.strftime("%Y-%m-%d"), a.app_views)
                 for a in apps_qs]
 
     plain_map_table = ""
@@ -1184,8 +1180,6 @@ def send_email(recipient_email, subject, message, html_message=None, bcc_emails=
     :type html_message: str or None
     :param bcc_emails: Optional list of BCC email addresses
     :type bcc_emails: list or None
-    :param reply_to: Optional reply-to email address (overrides site settings)
-    :type reply_to: str or None
     :return: Tuple containing success status (bool) and status message (str)
     :rtype: tuple(bool, str)
     """
@@ -1195,7 +1189,11 @@ def send_email(recipient_email, subject, message, html_message=None, bcc_emails=
     if not recipient_email:
         logger.warning("Email failed: Recipient email address is missing")
         return False, "Recipient email address is missing."
-
+    try:
+        validate_email(recipient_email)
+    except DjangoValidationError:
+        logger.warning("Email failed: Invalid recipient email address")
+        return False, "Invalid recipient email address."
     try:
         # Fetch email settings from SiteSettings
         logger.debug("Retrieving email configuration from SiteSettings")
@@ -1294,14 +1292,18 @@ def format_notification_email(owner, change_item_desc, maps_for_owner, apps_for_
     """
     subject = "Impacting GIS Changes Notification"
 
-    plain_body = (
-        f"Hello {owner.user_first_name or owner.user_username} {owner.user_last_name or ''},\n\n"
-        f"{change_item_desc}\n\n"
-    )
+    greeting = f"Hello {owner.user_first_name or owner.user_username} {owner.user_last_name or ''}".strip()
+    plain_body = f"{greeting},\n\n{change_item_desc}\n\n"
 
     # Generate email tables (assuming this function exists)
     email_tables = generate_notification_tables(maps_for_owner, apps_for_owner)
     plain_body += email_tables["plain"]
-    html_body = plain_body.replace('\n', '<br>\n') + email_tables["html"]
+
+    # Build structured HTML and escape dynamic segments
+    html_body = (
+        f"<p>{escape(greeting)},</p>"
+        f"<p>{escape(change_item_desc)}</p>"
+        f"{email_tables['html']}"
+    )
 
     return plain_body, html_body, subject

@@ -24,12 +24,11 @@ import time
 import arcgis.gis.server
 import requests
 from bs4 import BeautifulSoup
-from celery import shared_task, group, chord, current_app
+from celery import shared_task, group, current_app
 from celery.exceptions import Ignore
 from celery_progress.backend import ProgressRecorder, Progress
 from django.conf import settings as django_settings
 from django.core.exceptions import MultipleObjectsReturned
-from celery.utils.log import get_task_logger
 
 from .models import Webmap, Service, Layer, App, User, Map_Service, Layer_Service, App_Map, App_Service, Portal, \
     SiteSettings, WebhookNotificationLog, PortalToolSettings
@@ -3178,7 +3177,6 @@ def _send_admin_notification(tool_result, portal_instance):
 
         # Use the ToolResult's built-in email formatting
         message = tool_result.format_for_email()
-        print(message)
 
         # Add timestamp and portal info
         timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
@@ -3690,6 +3688,17 @@ def _take_inactive_action(user, last_activity, action, tool_result):
                 tool_result.add_extra_metric("admin_notifications_sent",
                                              tool_result.extra_metrics.get("admin_notifications_sent", 0) + 1)
             return success, status_msg
+
+        elif action == "delete":
+            logger.info(f"Deleting user '{username}'")
+            user.delete()
+            logger.info(f"Successfully deleted user '{username}'")
+            tool_result.add_extra_metric("users_deleted", tool_result.extra_metrics.get("users_deleted", 0) + 1)
+
+            return True, "User deleted successfully"
+
+        elif action == "transfer":
+            return False, "Transfer action requires destination parameters and is not implemented yet"
 
         else:
             return False, f"Unknown action: {action}"
