@@ -30,23 +30,27 @@
     <calcite-label>Run History (last 24 hours)</calcite-label>
     <calcite-table caption="Run History (last 24 hours)" bordered striped>
       <calcite-table-row slot="table-header">
-{#        <calcite-table-header heading="Task ID"></calcite-table-header>#}
         <calcite-table-header heading="Task Name"></calcite-table-header>
         <calcite-table-header heading="Status"></calcite-table-header>
         <calcite-table-header heading="Result"></calcite-table-header>
         <calcite-table-header heading="Start Time"></calcite-table-header>
         <calcite-table-header heading="End Time"></calcite-table-header>
       </calcite-table-row>
-      {% for item in results %}
+      {% if results %}
+        {% for item in results %}
+          <calcite-table-row>
+            <calcite-table-cell>{{ item.task_name }}</calcite-table-cell>
+            <calcite-table-cell>{{ item.status }}</calcite-table-cell>
+            <calcite-table-cell>{% for key, val in item.result_as_dict.items %}<strong>{{ key }}:</strong> {{ val }}, {% endfor %}</calcite-table-cell>
+            <calcite-table-cell>{{ item.date_created|date:'M j, Y h:i A' }}</calcite-table-cell>
+            <calcite-table-cell>{{ item.date_done|date:'M j, Y h:i A' }}</calcite-table-cell>
+          </calcite-table-row>
+        {% endfor %}
+      {% else %}
         <calcite-table-row>
-{#          <calcite-table-cell>{{ item.task_id }}</calcite-table-cell>#}
-          <calcite-table-cell>{{ item.task_name }}</calcite-table-cell>
-          <calcite-table-cell>{{ item.status }}</calcite-table-cell>
-          <calcite-table-cell>{% for key, val in item.result_as_dict.items %}<strong>{{ key }}:</strong> {{ val }}, {% endfor %}</calcite-table-cell>
-          <calcite-table-cell>{{ item.date_created|date:'M j, Y h:i A' }}</calcite-table-cell>
-          <calcite-table-cell>{{ item.date_done|date:'M j, Y h:i A' }}</calcite-table-cell>
+          <calcite-table-cell colspan="5">No runs in the last 24 hours.</calcite-table-cell>
         </calcite-table-row>
-      {% endfor %}
+      {% endif %}
     </calcite-table>
   </div>
 
@@ -57,7 +61,8 @@
     Delete
   </calcite-button>
 
-  <calcite-button id="schedule-portal-cancel" data-action="close-modal" slot="footer-end" appearance="outline" icon-start="circle-disallowed">
+  <calcite-button id="schedule-portal-cancel" data-action="close-modal" slot="footer-end" appearance="outline"
+                  icon-start="circle-disallowed">
     Cancel
   </calcite-button>
 

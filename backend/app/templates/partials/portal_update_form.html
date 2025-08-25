@@ -68,6 +68,33 @@
   </calcite-label>
 </div>
 
+<calcite-label>
+    Enable Admin Email Notifications
+    <calcite-segmented-control id="enable-email" name="{{ form.enable_admin_notifications.name }}">
+      <calcite-segmented-control-item value="False"
+                                      {% if form.enable_admin_notifications.value == False %}checked{% endif %}>No
+      </calcite-segmented-control-item>
+      <calcite-segmented-control-item value="True"
+                                      {% if form.enable_admin_notifications.value == True %}checked{% endif %}>Yes
+      </calcite-segmented-control-item>
+    </calcite-segmented-control>
+    <calcite-input-message {% if not form.enable_admin_notifications.errors %}hidden{% endif %}
+                           icon="exclamation-mark-triangle-f"
+                           status="invalid">
+      {{ form.enable_admin_notifications.errors|join:" " }}
+    </calcite-input-message>
+  </calcite-label>
+  <calcite-label>
+    Admin Emails
+    <calcite-input name="{{ form.admin_emails.name }}" placeholder="Enter email address (comma separated)" required
+                   type="email"
+                   value="{{ form.admin_emails.value|default:'' }}" autocomplete="off" multiple></calcite-input>
+    <calcite-input-message {% if not form.admin_emails.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+                           status="invalid">
+      {{ form.admin_emails.errors|join:" " }}
+    </calcite-input-message>
+  </calcite-label>
+
   <calcite-input-message {% if not form.non_field_errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
                          status="invalid">
     {{ form.non_field_errors.as_text }}

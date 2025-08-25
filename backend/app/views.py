@@ -18,6 +18,8 @@
 import hashlib
 import hmac
 from collections import defaultdict
+import json
+import logging
 
 from celery import current_app as celery_app  # For signaling Celery
 from celery.result import AsyncResult
@@ -27,11 +29,11 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.admin.utils import unquote
 from django.contrib.admin.views.decorators import staff_member_required
-from django.contrib.auth import login, logout, authenticate
+from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
 from django.core.exceptions import FieldError
-from django.core.mail import get_connection, EmailMessage, EmailMultiAlternatives
+from django.core.mail import get_connection, EmailMessage
 from django.db import transaction, DatabaseError
 from django.db.models import Q
 from django.http import Http404
@@ -47,12 +49,10 @@ from django_tables2.export.views import ExportMixin
 
 from app import utils
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
-from .forms import ScheduleForm, SiteSettingsForm
-from .models import PortalCreateForm, UserProfile, LogEntry
+from .forms import ScheduleForm, SiteSettingsForm, ToolsForm
+from .models import Portal, User, Webmap, Service, Layer, App, PortalCreateForm, UserProfile, LogEntry
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *
-
-from .request_context import get_django_request_context
 
 logger = logging.getLogger('enterpriseviz')
 
@@ -524,8 +524,8 @@ def portal_create_view(request):
                         context = {"portal": Portal.objects.values_list("alias", "portal_type", "url")}
                         response = render(request, "partials/portal_updates.html", context)
                         response["HX-Trigger-After-Settle"] = json.dumps(
-                            {"showSuccessAlert": f"Successfully added {url} as {alias} and authenticated.",
-                             "closeModal": True}
+                            {"closeModal": True,
+                             "showSuccessAlert": f"Successfully added {url} as {alias} and authenticated."}
                         )
                         return response
                     else:
@@ -757,19 +757,21 @@ def progress_view(request, instance, task_id):
     try:
         result = AsyncResult(task_id)
         progress_info = Progress(result).get_info()
+        task_name = result._get_task_meta().get('task_name')
 
         if not progress_info or "progress" not in progress_info:
             logger.warning(
                 f"Invalid or missing progress data for task '{task_id}'. State: {result.state}")
             progress_percentage = 100 if result.successful() or result.failed() else 0
             task_state = result.state
-            response_data = {"instance": instance, "task_id": task_id,
+            response_data = {"instance": instance, "task_id": task_id, "task_name": task_name,
                              "progress": {"percent": progress_percentage, "description": "Fetching status..."},
                              "value": progress_percentage, "state": task_state}
         else:
             progress_percentage = progress_info["progress"].get("percent", 0)
             task_state = progress_info.get("state", result.state)
-            response_data = {"instance": instance, "task_id": task_id, "progress": progress_info,
+            response_data = {"instance": instance, "task_id": task_id, "task_name": task_name,
+                             "progress": progress_info,
                              "value": progress_percentage}
 
         logger.debug(f"Task '{task_id}' state '{task_state}', progress {progress_percentage}%.")
@@ -777,25 +779,63 @@ def progress_view(request, instance, task_id):
 
         htmx_trigger = {}
         task_result = result.info
-        task_name = result._get_task_meta().get('task_name', 'Task')
-
         if task_state == "SUCCESS":
+            has_errors = False
+
             logger.info(
                 f"Task '{task_id}' ({task_name}) for {instance} completed successfully.")
             success_details = "Completed."
             if isinstance(task_result, dict):
-                success_details = (f"{task_result.get('num_updates', 0)} updates, "
-                                   f"{task_result.get('num_inserts', 0)} inserts, "
-                                   f"{task_result.get('num_deletes', 0)} deletes, "
-                                   f"{task_result.get('num_errors', 0)} errors.")
-            htmx_trigger = {
-                "showSuccessAlert": f"{task_name} for {instance} completed. <br> <b>{success_details}</b>",
-                "updateComplete": "true"}
+                # Handle data refresh task results
+                if 'num_updates' in task_result or 'num_inserts' in task_result:
+                    success_details = (f"{task_result.get('num_updates', 0)} updates, "
+                                       f"{task_result.get('num_inserts', 0)} inserts, "
+                                       f"{task_result.get('num_deletes', 0)} deletes, "
+                                       f"{task_result.get('num_errors', 0)} errors.")
+                # Handle tool task results
+                elif 'tool_name' in task_result:
+                    details_parts = [f"Processed: {task_result.get('processed', 0)}"]
+
+                    # Add actions taken
+                    actions_taken = task_result.get('actions_taken', 0)
+                    if actions_taken > 0:
+                        details_parts.append(f"Actions Taken: {actions_taken}")
+
+                    # Add warnings sent
+                    warnings_sent = task_result.get('warnings_sent', 0)
+                    if warnings_sent > 0:
+                        details_parts.append(f"Warnings Sent: {warnings_sent}")
+
+                    # Add tool-specific metrics from extra_metrics
+                    extra_metrics = task_result.get('extra_metrics', {})
+                    if 'inactive_found' in extra_metrics:
+                        details_parts.append(f"Inactive Found: {extra_metrics['inactive_found']}")
+                    if 'unshared' in extra_metrics:
+                        details_parts.append(f"Items Unshared: {extra_metrics['unshared']}")
+
+                    # Add errors last
+                    errors = task_result.get('errors', 0)
+                    details_parts.append(f"Errors: {errors}")
+
+                    success_details = ", ".join(details_parts)
+                if 'errors' in task_result and task_result['errors'] > 0:
+                    has_errors = True
+            if has_errors:
+                htmx_trigger = {
+                    "showWarningAlert": f"{task_name} for {instance} completed with errors. <br> <b>{success_details}</b>",
+                    "updateComplete": "true"
+                }
+            else:
+                htmx_trigger = {
+                    "showSuccessAlert": f"{task_name} for {instance} completed. <br> <b>{success_details}</b>",
+                    "updateComplete": "true"}
         elif task_state == "FAILURE":
             logger.warning(
                 f"Task '{task_id}' ({task_name}) for {instance} failed. Info: {task_result}")
+            error_message = str(task_result) if not isinstance(task_result, dict) else task_result.get('error',
+                                                                                                       str(task_result))
             htmx_trigger = {
-                "showDangerAlert": f"{task_name} for {instance} failed. See logs or results table for details. Error: {str(task_result)[:100]}...",
+                "showDangerAlert": f"{task_name} for {instance} failed. See logs or results table for details. Error: {error_message[:100]}...",
                 "updateComplete": "true"}
 
         if htmx_trigger:
@@ -1560,12 +1600,12 @@ def email_settings(request):
                 test_email_addr = request.POST.get("test_email", "").strip()
                 if not test_email_addr:
                     logger.warning("Test email address missing.")
-                    return HttpResponse(status=400, headers={
+                    return HttpResponse(status=200, headers={
                         "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Test email address required."})})
 
                 config = form.cleaned_data
                 if not config.get("email_host") or not config.get("email_port"):
-                    return HttpResponse(status=400, headers={
+                    return HttpResponse(status=200, headers={
                         "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Host and Port required."})})
 
                 try:
@@ -1594,13 +1634,13 @@ def email_settings(request):
                         {"showSuccessAlert": f"Test email sent to {test_email_addr}."})})
                 except Exception as e:
                     logger.error(f"Failed to send test email: {e}", exc_info=True)
-                    return HttpResponse(status=500, headers={
+                    return HttpResponse(status=200, headers={
                         "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Test email failed: {str(e)}"})})
             else:
                 logger.warning(f"Unknown POST action '{action}'.")
         else:
             logger.warning(f"Form invalid. Errors: {form.errors}")
-            return render(request, "partials/portal_email_form.html", {"form": form}, status=400)
+            return render(request, "partials/portal_email_form.html", {"form": form})
 
     else:
         form = SiteSettingsForm(instance=settings_instance)
@@ -1609,7 +1649,7 @@ def email_settings(request):
     return render(request, template_to_render, {"form": form})
 
 
-@require_POST
+@staff_member_required
 def notify_view(request):
     """
     Sends email notifications to owners of selected maps and apps about an upcoming change.
@@ -1672,10 +1712,17 @@ def notify_view(request):
     emails_sent_count = 0
     emails_failed_count = 0
 
-    for owner_obj, items_for_owner in owner_items_map.items():
+    for owner_obj, owner_items in owner_items_map.items():
         try:
-            if utils.prepare_and_send_notification(owner_obj, items_for_owner, change_item_description, site_settings):
+            owner_maps = owner_items["maps"]
+            owner_apps = owner_items["apps"]
+            message, html, subject = utils.format_notification_email(owner_obj,change_item_description,owner_maps,owner_apps)
+            success, status_msg = utils.send_email(owner_obj.user_email, subject, message, html)
+            if success:
                 emails_sent_count += 1
+            else:
+                emails_failed_count += 1
+                logger.error(f"Failed to send email to {owner_obj.user_email}: {status_msg}")
         except Exception as e:
             logger.error(f"Error sending email to {owner_obj.user_email}: {e}", exc_info=True)
             emails_failed_count += 1
@@ -1691,3 +1738,153 @@ def notify_view(request):
     response = HttpResponse("")
     response["HX-Trigger"] = json.dumps({"closeModal": True})
     return response
+
+
+@staff_member_required
+def tool_settings(request, instance):
+    """
+    Manages Portal Tools settings for a specific portal instance.
+
+    These settings might control scheduled maintenance tasks or other utilities
+    related to a portal.
+    On GET, displays the ToolsForm with current settings for the instance.
+    On POST, validates and saves the tool settings using the form's `save` method.
+
+    :param request: The HTTP request object.
+                    POST data expected to match ToolsForm fields.
+    :type request: django.http.HttpRequest
+    :param instance: The alias of the portal instance for which to manage tool settings.
+    :type instance: str
+    :return: Rendered HTML response, typically the tools settings form or a partial.
+    :rtype: django.http.HttpResponse
+    """
+    logger.debug(f"instance={instance}, method={request.method}, user={request.user.username}")
+    try:
+        portal_instance_obj = get_object_or_404(Portal, alias=instance)
+        tool_settings_obj, _ = PortalToolSettings.objects.get_or_create(portal=portal_instance_obj)
+    except Http404:
+        logger.warning(f"Portal '{instance}' not found.")
+        return HttpResponse(status=404,
+                            headers={
+                                "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Portal not found."})})
+    except Exception as e:
+        logger.error(f"Error getting/creating settings for '{instance}': {e}", exc_info=True)
+        return HttpResponse(status=500, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error loading tool settings."})})
+    results = TaskResult.objects.filter(task_kwargs__icontains=f"'{instance}'", task_name__icontains="tool").order_by(
+        '-date_done')[:10]
+    if request.method == "POST":
+        form = ToolsForm(request.POST, instance=tool_settings_obj)
+        if form.is_valid():
+            try:
+                form.save(portal=portal_instance_obj)
+
+                logger.info(f"Tool settings updated for portal '{instance}'.")
+                context = {'form': form, 'instance_alias': instance}
+                response = render(request, "partials/portal_tools_form.html", context)
+                response["HX-Trigger-After-Settle"] = json.dumps(
+                    {"showSuccessAlert": "Tool settings saved.", "closeModal": True})
+                return response
+            except Exception as e:
+                logger.error(f"Error saving tool settings for '{instance}': {e}", exc_info=True)
+                context = {'form': form, 'instance_alias': instance}
+                response = render(request, "partials/portal_tools_form.html", context, status=500)
+                response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": f"Error saving: {str(e)}"})
+                return response
+        else:
+            logger.warning(f"Form invalid for '{instance}'. Errors: {form.errors}")
+            return render(request, "partials/portal_tools_form.html", {"form": form, "instance_alias": instance},
+                          status=400)
+    else:
+        form = ToolsForm(instance=tool_settings_obj)
+
+    context = {"form": form, "instance_alias": instance, "results": results}
+    template_name = "portals/portal_tools.html"
+    return render(request, template_name, context)
+
+
+@staff_member_required
+@require_POST
+def tool_run(request, instance, tool_name):
+    """
+    Handles an on-demand request to run a single portal automation tool.
+
+    Validates the submitted tool parameters from the ToolsForm and queues a
+    Celery task to execute the specified tool, returning a progress bar to
+    monitor the execution.
+    """
+    logger.debug(f"Received request to run tool '{tool_name}' for instance '{instance}'.")
+
+    portal = get_object_or_404(Portal, alias=instance)
+    tool_settings_obj, _ = PortalToolSettings.objects.get_or_create(portal=portal)
+
+    form = ToolsForm(request.POST, instance=tool_settings_obj)
+    if not form.is_valid():
+        error_msg = ". ".join([f"{field}: {', '.join(errors)}" for field, errors in form.errors.items()])
+        logger.warning(f"Invalid parameters for tool '{tool_name}': {form.errors.as_json()}")
+        return HttpResponse(status=400, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Invalid tool parameters: {error_msg}"})
+        })
+
+    TOOL_CONFIG_MAP = {
+        'pro_license': {
+            'task': process_pro_license_task,
+            'params': {
+                'duration_days': 'tool_pro_duration',
+                'warning_days': 'tool_pro_warning'
+            },
+            'name': 'ArcGIS Pro License'
+        },
+        'public_unshare': {
+            'task': process_public_unshare_task,
+            'params': {
+                'score_threshold': 'tool_public_unshare_score'
+            },
+            'name': 'Public Item Unsharing'
+        },
+        'inactive_user': {
+            'task': process_inactive_user_task,
+            'params': {
+                'duration_days': 'tool_inactive_user_duration',
+                'warning_days': 'tool_inactive_user_warning',
+                'action': 'tool_inactive_user_action'
+            },
+            'name': 'Inactive User'
+        }
+    }
+
+    if tool_name not in TOOL_CONFIG_MAP:
+        logger.error(f"Attempted to run unknown tool: '{tool_name}'")
+        return HttpResponse(status=200, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Unknown tool specified: {tool_name}"})
+        })
+
+    config = TOOL_CONFIG_MAP[tool_name]
+    tool_display_name = config.get('name', tool_name.replace('_', ' ').title())
+
+    # Build task parameters
+    task_params = {'portal_alias': instance}
+    for param_name, form_field in config['params'].items():
+        task_params[param_name] = form.cleaned_data[form_field]
+
+    try:
+        # Call the specific task for this tool
+        task = config['task'].delay(**task_params)
+        logger.info(f"Successfully queued tool '{tool_display_name}' for instance '{instance}'. Task ID: {task.id}")
+
+        response_data = {
+            "instance": instance,
+            "task_id": task.id,
+            "progress": 0,
+            "task_name": tool_display_name,
+        }
+
+        response = render(request, "partials/progress_bar.html", context=response_data)
+        return response
+
+    except Exception as e:
+        logger.error(f"Failed to queue tool '{tool_name}' for '{instance}': {e}", exc_info=True)
+        return HttpResponse(status=200, headers={
+            "HX-Trigger-After-Settle": json.dumps(
+                {"showDangerAlert": "Failed to queue the tool. See logs for details."})
+        })

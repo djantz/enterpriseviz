@@ -2,14 +2,14 @@
 <calcite-dialog id="email-modal" modal heading="Configure Email Settings" scale="m" open
                 {% if form.errors %}kind="danger"{% endif %}>
 
-  <div>
+  <div id="email-form-container">
     {% include "partials/portal_email_form.html" %}
   </div>
 
   <calcite-button id="email-portal-delete" slot="footer-start" appearance="solid" kind="danger" icon-start="trash"
                   {% if not description %}disabled{% endif %}
                   hx-delete="{% url 'enterpriseviz:email_settings' %}"
-                  hx-target="#email-portal-form" hx-include="#email-portal-form">
+                  hx-target="#email-site-form" hx-include="#email-site-form">
     Delete
   </calcite-button>
 
@@ -17,11 +17,11 @@
     Cancel
   </calcite-button>
 
-  <calcite-button id="email-portal-save" slot="footer-end"
+  <calcite-button type="submit" id="email-portal-save" slot="footer-end"
                   hx-post="{% url 'enterpriseviz:email_settings' %}"
-                  target="#email-portal-form"
-                  hx-include="#email-portal-form"
-                  icon-start="save" value="save">
+                  hx-target="#email-site-form" hx-swap="innerHTML"
+                  hx-include="#email-site-form" hx-vals='{"action": "save"}'
+                  icon-start="save">
     Register
   </calcite-button>
 

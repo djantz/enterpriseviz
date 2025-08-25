@@ -9,7 +9,7 @@ $('.collapse-link').on('click', function () {
         } else {
             $BOX_PANEL.removeClass('panel-height-auto');
         }
-        });
+    });
 
     var currentIcon = $ICON.attr('icon');
     var newIcon = (currentIcon === 'chevron-up') ? 'chevron-down' : 'chevron-up';
@@ -401,19 +401,19 @@ function init_LogFilters(logTableUrl) {
         resetButton.addEventListener('click', async function () {
             if (logForm) {
                 logForm.querySelectorAll('input[type="text"], calcite-input-text').forEach(input => {
-                   if (input.name !== 'visible_cols_hidden' && input.name !== 'level' && input.name !== 'time_range') {
-                       if (input.tagName === 'CALCITE-INPUT-TEXT' && input.value) {
-                           input.value = '';
-                       } else if (input.tagName === 'INPUT') {
-                           input.value = '';
-                       }
-                   }
+                    if (input.name !== 'visible_cols_hidden' && input.name !== 'level' && input.name !== 'time_range') {
+                        if (input.tagName === 'CALCITE-INPUT-TEXT' && input.value) {
+                            input.value = '';
+                        } else if (input.tagName === 'INPUT') {
+                            input.value = '';
+                        }
+                    }
                 });
 
                 const colsToResetTo = getInitialLogVisibleColumns(); // Get fresh initial columns for reset
 
                 if (columnVisibilityDropdown) {
-                    if(columnVisibilityDropdown.componentOnReady) await columnVisibilityDropdown.componentOnReady();
+                    if (columnVisibilityDropdown.componentOnReady) await columnVisibilityDropdown.componentOnReady();
                     const allColumnItems = columnVisibilityDropdown.querySelectorAll('calcite-dropdown-item');
                     let resetVisibleColsForInput = [];
                     allColumnItems.forEach(item => {
@@ -421,21 +421,21 @@ function init_LogFilters(logTableUrl) {
                         const isSelected = colsToResetTo.includes(itemValue); // Reset to initial state
                         item.selected = isSelected;
                         if (isSelected) {
-                           resetVisibleColsForInput.push(itemValue);
+                            resetVisibleColsForInput.push(itemValue);
                         }
                     });
                     if (visibleColsHiddenInput) visibleColsHiddenInput.value = resetVisibleColsForInput.join(',');
                     columnVisibilityDropdown.removeAttribute('data-interacted');
                 }
                 if (levelDropdown) {
-                    if(levelDropdown.componentOnReady) await levelDropdown.componentOnReady();
+                    if (levelDropdown.componentOnReady) await levelDropdown.componentOnReady();
                     Array.from(levelDropdown.selectedItems || []).forEach(item => item.selected = false);
                     if (levelHiddenInput) levelHiddenInput.value = '';
                     const levelButtonText = document.getElementById('level-dropdown-button-text');
                     if (levelButtonText) levelButtonText.textContent = 'Level';
                 }
                 if (timeRangeDropdown) {
-                    if(timeRangeDropdown.componentOnReady) await timeRangeDropdown.componentOnReady();
+                    if (timeRangeDropdown.componentOnReady) await timeRangeDropdown.componentOnReady();
                     const timeRangeItems = timeRangeDropdown.querySelectorAll('calcite-dropdown-item');
                     let anyTimeSelected = false;
                     timeRangeItems.forEach(item => {
@@ -585,7 +585,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (document.getElementById('log-form') && document.getElementById('log_initial_visible_cols_data')) {
         const logTableUrl = logTableContainer?.dataset.logTableUrl;
         if (logTableUrl) {
-             init_LogFilters(logTableUrl);
+            init_LogFilters(logTableUrl);
         } else if (logTableContainer) { // Log table container exists, but URL missing
             console.warn("Log table URL not found on #log-table-container for init_LogFilters.");
         }
@@ -605,6 +605,7 @@ htmx.on('htmx:afterRequest', (e) => {
         init_Charts();
         initD3();
         initPortalNotification();
+        initPortalTools();
         content = document.getElementById('mainbodycontent');
         content.hidden = false;
         if (document.getElementById('log-form') && document.getElementById('log_initial_visible_cols_data')) {
@@ -613,9 +614,12 @@ htmx.on('htmx:afterRequest', (e) => {
             if (logTableUrl) {
                 init_LogFilters(logTableUrl);
             } else if (logTableContainer) {
-                 console.warn("Log table URL not found for re-init after HTMX swap.");
+                console.warn("Log table URL not found for re-init after HTMX swap.");
             }
         }
+    }
+    if (e.detail.target.id === 'tool_settings_modal') {
+        initPortalTools();
     }
     if (e.detail.target.id === 'service-table') {
         initializeSparklines();
@@ -882,6 +886,15 @@ async function setupPortalFormLogic(modal) {
 
     storePasswordControl.addEventListener("calciteSegmentedControlChange", toggleCredentials);
     toggleCredentials();
+    const enableEmailControl = modal.querySelector("#enable-email");
+    const adminEmailsContainer = modal.querySelector("#admin-emails-container");
+
+    if (enableEmailControl && adminEmailsContainer) {
+        enableEmailControl.addEventListener("calciteSegmentedControlChange", () => {
+            const enabledItem = enableEmailControl.querySelector("calcite-segmented-control-item[value='False']");
+            adminEmailsContainer.hidden = enabledItem.checked;
+        });
+    }
 
 }
 
@@ -962,52 +975,47 @@ if (modeSwitch) {
 }
 
 
+async function showAlert(kind, label, message, autoClose = true) {
+    const alert = document.createElement("calcite-alert");
+    alert.setAttribute("kind", kind);
+    alert.setAttribute("open", "");
+    alert.setAttribute("autoClose", autoClose ? "true" : "false");
+    alert.setAttribute("label", label);
+    alert.setAttribute("icon", "");
+
+    alert.innerHTML = `<div slot="message">${message}</div>`;
+
+    await new Promise(resolve => setTimeout(resolve, 150));
+
+    await customElements.whenDefined("calcite-dialog");
+
+    let modal = document.querySelector("calcite-dialog[open], dialog[open]");
+    if (modal?.componentOnReady) {
+        await modal.componentOnReady();
+    }
+    if (modal) {
+        alert.setAttribute("slot", "alerts");
+        modal.appendChild(alert);
+    }
+    else {
+        document.querySelector("#alert-container").appendChild(alert);
+    }
+}
+
 htmx.on("showDangerAlert", (e) => {
-    const alert = document.createElement("calcite-alert");
-    alert.setAttribute("kind", "danger");
-    alert.setAttribute("open", "");
-    alert.setAttribute("autoClose", "false");
-    alert.setAttribute("label", "Danger alert");
-    alert.setAttribute("icon", "");
-
-    // Correctly interpolate e.detail.value
-    alert.innerHTML = `<div slot="message">${e.detail.value}</div>`;
-    (async () => {
-        await customElements.whenDefined("calcite-dialog");
-
-        // Now safely access the components
-        let modal = await document.querySelector("calcite-dialog[open], dialog[open]")?.componentOnReady();
-        if (modal) {
-            alert.setAttribute("slot", "alerts");
-            modal.appendChild(alert);
-        }
-    })();
-
-    document.querySelector("#alert-container").appendChild(alert);
+    showAlert("danger", "Danger alert", e.detail.value, false).catch(console.error);
 });
+
 htmx.on("showSuccessAlert", (e) => {
-    const alert = document.createElement("calcite-alert");
-    alert.setAttribute("kind", "success");
-    alert.setAttribute("open", "");
-    alert.setAttribute("autoClose", "true");
-    alert.setAttribute("label", "Success alert");
-    alert.setAttribute("icon", "");
-
-    alert.innerHTML = `<div slot="message">${e.detail.value}</div>`;
-
-    document.querySelector("#alert-container").appendChild(alert);
+    showAlert("success", "Success alert", e.detail.value, true).catch(console.error);
 });
+
 htmx.on("showInfoAlert", (e) => {
-    const alert = document.createElement("calcite-alert");
-    alert.setAttribute("kind", "brand");
-    alert.setAttribute("open", "");
-    alert.setAttribute("autoClose", "true");
-    alert.setAttribute("label", "Info alert");
-    alert.setAttribute("icon", "");
+    showAlert("info", "Info alert", e.detail.value, true).catch(console.error);
+});
 
-    alert.innerHTML = `<div slot="message">${e.detail.value}</div>`;
-
-    document.querySelector("#alert-container").appendChild(alert);
+htmx.on("showWarningAlert", (e) => {
+    showAlert("warning", "Warning alert", e.detail.value, true).catch(console.error);
 });
 
 document.addEventListener('DOMContentLoaded', function () {
@@ -1098,3 +1106,19 @@ blocks?.forEach((el) => {
         });
     });
 });
+
+function initPortalTools() {
+    const switches = document.querySelectorAll('calcite-switch');
+    switches.forEach(async calciteSwitch => {
+        if (calciteSwitch.componentOnReady) await calciteSwitch.componentOnReady(); // Wait for switch itself
+        const hiddenInput = calciteSwitch.nextElementSibling;
+        if (hiddenInput && hiddenInput.tagName === 'INPUT' && hiddenInput.type === 'hidden') {
+            // Set initial value of hidden input based on switch state
+            hiddenInput.value = calciteSwitch.checked ? 'True' : 'False';
+
+            calciteSwitch.addEventListener('calciteSwitchChange', (event) => {
+                hiddenInput.value = event.target.checked ? 'True' : 'False';
+            });
+        }
+    });
+}

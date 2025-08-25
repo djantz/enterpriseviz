@@ -21,24 +21,20 @@ import re
 from dataclasses import dataclass, field, asdict
 from itertools import combinations, groupby
 from operator import itemgetter
-import os
-import time
-import hashlib
-from cryptography.fernet import Fernet
-from django.conf import settings
-from django.core.cache import cache
 
 import requests
 from arcgis import gis
 from arcgis.mapping import WebMap
-from django.core.mail import get_connection, EmailMultiAlternatives
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.mail import get_connection, EmailMultiAlternatives, EmailMessage
+from django.core.validators import validate_email
 from django.db.models import F, QuerySet, Q
 from django.utils import timezone
+from django.utils.html import escape
 from fuzzywuzzy import fuzz
 from tabulate import tabulate
 
-
-from .models import Webmap, Service, Layer, App, Portal
+from .models import Webmap, Service, Layer, App, Portal, SiteSettings
 
 logger = logging.getLogger('enterpriseviz.utils')
 
@@ -96,6 +92,107 @@ class UpdateResult:
         :return: Dictionary representation of the UpdateResult.
         :rtype: dict
         """
+        return asdict(self)
+
+
+@dataclass
+class ToolResult:
+    """
+    Tracks and summarizes the results of a tool.
+    """
+    success: bool = False
+    processed: int = 0
+    actions_taken: int = 0
+    warnings_sent: int = 0
+    errors: int = 0
+    error_messages: list = field(default_factory=list)
+    execution_time: float = 0.0
+    portal_alias: str = ""
+    tool_name: str = ""
+
+    # Tool-specific metrics
+    extra_metrics: dict = field(default_factory=dict)
+
+    def set_success(self, status: bool = True):
+        """Marks the tool execution as successful or unsuccessful."""
+        self.success = status
+
+    def add_error(self, error_message: str):
+        """
+        Logs an error message and increments the error count.
+
+        :param error_message: The error message to log
+        """
+        self.errors += 1
+        self.error_messages.append(error_message)
+        self.success = False
+
+    def add_extra_metric(self, key: str, value):
+        """
+        Adds a tool-specific metric (e.g., 'inactive_found', 'unshared').
+
+        :param key: The metric name
+        :param value: The metric value
+        """
+        self.extra_metrics[key] = value
+
+    def get_summary(self):
+        """Returns a summary of tool execution results for admin reporting."""
+        return {
+            'portal_alias': self.portal_alias,
+            'tool_name': self.tool_name,
+            'success': self.success,
+            'execution_time_seconds': self.execution_time,
+            'processed': self.processed,
+            'actions_taken': self.actions_taken,
+            'warnings_sent': self.warnings_sent,
+            'errors': self.errors,
+            'has_errors': self.errors > 0,
+            'extra_metrics': self.extra_metrics
+        }
+
+    def get_detailed_results(self):
+        """Returns detailed results including error messages for comprehensive logging."""
+        return {
+            'summary': self.get_summary(),
+            'error_messages': self.error_messages
+        }
+
+    def format_for_email(self):
+        """Formats the results for inclusion in admin notification emails."""
+        email_content = f"""
+Tool Execution Summary for {self.portal_alias}:
+
+Tool: {self.tool_name.replace('_', ' ').title()}
+Status: {'SUCCESS' if self.success else 'FAILED'}
+Execution Time: {self.execution_time:.2f} seconds
+
+Statistics:
+- Items Processed: {self.processed}
+- Actions Taken: {self.actions_taken}
+- Warnings Sent: {self.warnings_sent}
+- Errors: {self.errors}
+"""
+
+        # Add extra metrics if any
+        if self.extra_metrics:
+            email_content += "\nAdditional Metrics:\n"
+            for key, value in self.extra_metrics.items():
+                formatted_key = key.replace('_', ' ').title()
+                email_content += f"- {formatted_key}: {value}\n"
+
+        # Add error details if any
+        if self.error_messages:
+            email_content += f"\nErrors Encountered ({len(self.error_messages)}):\n"
+            for i, error in enumerate(self.error_messages[:10], 1):  # Limit to first 10 errors
+                email_content += f"{i}. {error}\n"
+            if len(self.error_messages) > 10:
+                email_content += f"... and {len(self.error_messages) - 10} more errors\n"
+
+        return email_content
+
+    def to_json(self):
+        """Converts the instance to a JSON-serializable dictionary."""
         return asdict(self)
 
 
@@ -906,7 +1003,7 @@ def combine_apps(app_queryset):
 
     if isinstance(app_queryset, QuerySet) and not app_queryset._result_cache:
         app_list = list(app_queryset.values(
-            "app_id", "portal_instance_id", "app_title", "app_url","app_type", "app_owner__user_username",
+            "app_id", "portal_instance_id", "app_title", "app_url", "app_type", "app_owner__user_username",
             "app_created", "app_modified", "app_access", "app_views", "usage_type"
         ))
     else:
@@ -943,8 +1040,6 @@ TARGET_LOGGER_NAMES = [
     'app.tasks',
     __name__,
 ]
-
-from .models import SiteSettings
 
 
 def apply_global_log_level(level_name=None, logger_name=None):
@@ -1024,7 +1119,7 @@ def apply_global_log_level(level_name=None, logger_name=None):
         util_logger.debug(f"Log level {level_to_apply_str} was already effectively set or no target loggers changed.")
 
 
-def generate_email_tables(maps_qs, apps_qs):
+def generate_notification_tables(maps_qs, apps_qs):
     """
     Generates plain text and HTML table representations of maps and apps.
 
@@ -1037,10 +1132,10 @@ def generate_email_tables(maps_qs, apps_qs):
     """
     # Extract data for tables - select only needed fields for efficiency
     map_rows = [(m.webmap_title, m.webmap_url, m.webmap_access,
-                 epoch_to_date(m.webmap_created), epoch_to_date(m.webmap_modified), m.webmap_views)
+                 m.webmap_created.strftime("%Y-%m-%d"), m.webmap_modified.strftime("%Y-%m-%d"), m.webmap_views)
                 for m in maps_qs]
     app_rows = [(a.app_title, a.app_url, a.app_type, a.app_access,
-                 epoch_to_date(a.app_created), epoch_to_date(a.app_modified), a.app_views)
+                 a.app_created.strftime("%Y-%m-%d"), a.app_modified.strftime("%Y-%m-%d"), a.app_views)
                 for a in apps_qs]
 
     plain_map_table = ""
@@ -1071,57 +1166,144 @@ def generate_email_tables(maps_qs, apps_qs):
     }
 
 
-def prepare_and_send_notification(owner, items_by_owner, change_item_desc, site_settings_obj):
+def send_email(recipient_email, subject, message, html_message=None, bcc_emails=None):
     """
-    Prepares and sends an email notification to a single owner.
+    Core email sending function that handles all email delivery.
 
-    Helper function for `notify_view`.
-
-    :param owner: The User object of the item owner.
-    :type owner: enterpriseviz.models.User
-    :param items_by_owner: Dictionary of items owned by this user, keyed by 'maps' and 'apps'.
-    :type items_by_owner: dict
-    :param change_item_desc: Description of the item/change causing the notification.
-    :type change_item_desc: str
-    :param site_settings_obj: The SiteSettings model instance with email configuration.
-    :type site_settings_obj: enterpriseviz.models.SiteSettings
-    :return: True if email was sent, False otherwise.
-    :rtype: bool
+    :param recipient_email: Email address of the recipient
+    :type recipient_email: str
+    :param subject: Subject line of the email
+    :type subject: str
+    :param message: Plain text body content of the email
+    :type message: str
+    :param html_message: Optional HTML version of the email body
+    :type html_message: str or None
+    :param bcc_emails: Optional list of BCC email addresses
+    :type bcc_emails: list or None
+    :return: Tuple containing success status (bool) and status message (str)
+    :rtype: tuple(bool, str)
     """
-    logger.debug(f"Preparing email for owner: {owner.user_username} ({owner.user_email})")
-    email_body = (f"Hello {owner.user_first_name or owner.user_username} {owner.user_last_name or ''},\n\n"
-                  f"This email is to inform you about upcoming changes to: {change_item_desc}.\n"
-                  "Below is content you own that may be impacted by this change. "
-                  "For additional information, questions, or concerns, please contact "
-                  f"{settings.ADMINS[0][1] if settings.ADMINS and settings.ADMINS[0] else 'your GIS administrator'}.\n\n")
+    logger.debug(f"Starting send_email with recipient={recipient_email}, subject={subject}")
 
-    maps_for_owner = items_by_owner.get("maps", [])
-    apps_for_owner = items_by_owner.get("apps", [])
+    # Validate recipient email
+    if not recipient_email:
+        logger.warning("Email failed: Recipient email address is missing")
+        return False, "Recipient email address is missing."
+    try:
+        validate_email(recipient_email)
+    except DjangoValidationError:
+        logger.warning("Email failed: Invalid recipient email address")
+        return False, "Invalid recipient email address."
+    try:
+        # Fetch email settings from SiteSettings
+        logger.debug("Retrieving email configuration from SiteSettings")
+        site_settings = SiteSettings.objects.first()
 
-    if not maps_for_owner and not apps_for_owner:
-        logger.debug(f"No items for owner {owner.user_username}, skipping email.")
-        return False
+        # Check if email configuration is available
+        if not site_settings:
+            logger.warning("Email failed: No SiteSettings configuration found")
+            return False, "Email configuration not found in SiteSettings."
 
-    email_tables = generate_email_tables(maps_for_owner, apps_for_owner)
-    email_body += email_tables["plain"]
+        if not site_settings.from_email:
+            logger.warning("Email failed: No 'From' address configured in SiteSettings")
+            return False, "Email 'From' address not configured in SiteSettings."
 
-    connection_kwargs = {
-        "host": site_settings_obj.email_host, "port": site_settings_obj.email_port,
-        "username": site_settings_obj.email_username or None,
-        "password": site_settings_obj.email_password or None,
-        "use_tls": (site_settings_obj.email_encryption == "starttls"),
-        "use_ssl": (site_settings_obj.email_encryption == "ssl"),
-    }
-    with get_connection(**connection_kwargs) as connection:
-        msg = EmailMultiAlternatives(
-            subject="Impacting GIS Changes Notification",
-            body=email_body,
-            from_email=site_settings_obj.from_email,
-            to=[owner.user_email],
-            bcc=[site_settings_obj.admin_email] if site_settings_obj.admin_email else None,
-            connection=connection,
-        )
-        msg.attach_alternative(email_tables["html"], "text/html")
-        msg.send()
-    logger.info(f"Email sent successfully to {owner.user_email}.")
-    return True
+        # Check if email host is configured
+        if not site_settings.email_host:
+            logger.warning("Email failed: No email host configured")
+            return False, "Email host not configured in SiteSettings."
+
+        from_addr = site_settings.from_email
+        logger.debug(f"Using from address: {from_addr}")
+
+        # Set up connection parameters
+        connection_kwargs = {
+            "host": site_settings.email_host,
+            "port": site_settings.email_port,
+            "username": site_settings.email_username or None,
+            "password": site_settings.email_password or None,
+            "use_tls": (site_settings.email_encryption == "starttls"),
+            "use_ssl": (site_settings.email_encryption == "ssl"),
+        }
+
+        # Set up reply-to address
+        reply_to_list = None
+        if site_settings.reply_to:
+            reply_to_list = [site_settings.reply_to]
+
+        if reply_to_list:
+            logger.debug(f"Using reply-to address: {reply_to_list[0]}")
+
+        # Use connection context manager (like your original code)
+        logger.debug(f"Setting up email connection to {site_settings.email_host}:{site_settings.email_port}")
+        with get_connection(**connection_kwargs) as connection:
+            logger.debug("Email connection established successfully")
+
+            # Create email message
+            logger.debug(f"Creating email message to {recipient_email}")
+
+            if html_message:
+                # Use EmailMultiAlternatives for HTML emails
+                msg = EmailMultiAlternatives(
+                    subject=subject,
+                    body=message,
+                    from_email=from_addr,
+                    to=[recipient_email],
+                    bcc=bcc_emails,
+                    connection=connection,
+                    reply_to=reply_to_list,
+                )
+                msg.attach_alternative(html_message, "text/html")
+            else:
+                # Use EmailMessage for plain text emails
+                msg = EmailMessage(
+                    subject=subject,
+                    body=message,
+                    from_email=from_addr,
+                    to=[recipient_email],
+                    bcc=bcc_emails,
+                    connection=connection,
+                    reply_to=reply_to_list,
+                )
+
+            # Send the email
+            logger.debug(f"Sending email to {recipient_email}")
+            msg.send(fail_silently=False)
+
+        logger.info(f"Successfully sent email to {recipient_email}")
+        return True, "Email sent successfully."
+
+    except Exception as e:
+        error_msg = f"Failed to send email to {recipient_email}: {e}"
+        logger.error(error_msg, exc_info=True)
+        return False, str(e)
+
+
+def format_notification_email(owner, change_item_desc, maps_for_owner, apps_for_owner):
+    """
+    Format the email content for GIS change notifications.
+
+    :param owner: The User object of the item owner
+    :param change_item_desc: Description of the item/change causing the notification
+    :param maps_for_owner: List of maps owned by this user
+    :param apps_for_owner: List of apps owned by this user
+    :return: Tuple of (plain_text_body, html_body, subject)
+    :rtype: tuple(str, str, str)
+    """
+    subject = "Impacting GIS Changes Notification"
+
+    greeting = f"Hello {owner.user_first_name or owner.user_username} {owner.user_last_name or ''}".strip()
+    plain_body = f"{greeting},\n\n{change_item_desc}\n\n"
+
+    # Generate email tables (assuming this function exists)
+    email_tables = generate_notification_tables(maps_for_owner, apps_for_owner)
+    plain_body += email_tables["plain"]
+
+    # Build structured HTML and escape dynamic segments
+    html_body = (
+        f"<p>{escape(greeting)},</p>"
+        f"<p>{escape(change_item_desc)}</p>"
+        f"{email_tables['html']}"
+    )
+
+    return plain_body, html_body, subject

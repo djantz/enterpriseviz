@@ -2,7 +2,7 @@
 from django.contrib import admin
 
 from .models import Webmap, Portal, Service, Layer, App, User, Map_Service, Map_Layer, App_Service, App_Map, \
-    Layer_Service, UserProfile, SiteSettings, LogEntry
+    Layer_Service, UserProfile, SiteSettings, LogEntry, PortalToolSettings, WebhookNotificationLog
 
 
 # Register your models here.
@@ -38,3 +38,4 @@ admin.site.register(User)
 admin.site.register(UserProfile)
 admin.site.register(SiteSettings)
 admin.site.register(LogEntry)
+admin.site.register(PortalToolSettings)

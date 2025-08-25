@@ -1,9 +1,6 @@
-
 html, body {
-
   height: 100%;
   display: flex;
-
 }
 
 .flex-container {
@@ -26,12 +23,28 @@ html, body {
   justify-content: space-between;
 }
 
+.flex-justify-start {
+  justify-content: flex-start;
+}
+
+.flex-align-end {
+  align-items: flex-end;
+}
+
 .width-50 {
   width: 50%;
 }
 
 .width-300 {
   width: 300px;
+}
+
+.width-33 {
+  width: 33%;
+}
+
+.width-34 {
+  width: 34%;
 }
 
 .margin-top-075 {
@@ -60,6 +73,10 @@ html, body {
 
 .display-grid {
   display: grid;
+}
+
+.display-inline-flex {
+  display: inline-flex;
 }
 
 .cursor-pointer {
@@ -338,7 +355,6 @@ table.dataTable {
   border-collapse: collapse !important;
 }
 
-
 .dataTables_paginate a {
   padding: 6px 9px !important;
   background: var(--calcite-color-foreground-2) !important;
@@ -582,7 +598,6 @@ table.display thead td:active {
   margin-bottom: 20px;
   margin-top: 20px;
   width: 100%;
-
 }
 
 .tile_count .tile_stats_count {
@@ -1061,4 +1076,8 @@ calcite-dialog#login-modal calcite-block * {
 calcite-navigation-user {
   --calcite-avatar-background-color: var(--calcite-color-inverse);
   --calcite-navigation-user-avatar-color: var(--calcite-color-text-1);
+}
+
+.accordion-actions-end {
+  padding-right: 0.75rem;
 }
