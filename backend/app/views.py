@@ -1416,69 +1416,44 @@ def webhook_view(request):
     - `404 Not Found` if the portal is unknown.
     """
     logger.debug("Received webhook request.")
-    signature = request.headers.get("Secret", "")
-    if not signature:
-        logger.warning("Received webhook request without signature.")
-        return HttpResponse(status=403)
-    if not signature == settings.WEBHOOK_SECRET:
-        logger.warning("Webhook signature mismatch.")
+
+    # Validate webhook secret
+    if not utils._validate_webhook_secret(request):
         return HttpResponseForbidden()
+
+    # Parse and validate payload
     try:
         payload = json.loads(request.body)
+        portal_url = payload.get("info", {}).get("portalURL")
+        if not portal_url:
+            logger.warning("Missing 'portalURL' in payload.")
+            return JsonResponse({"error": "Missing portal URL"}, status=400)
     except json.JSONDecodeError:
         logger.warning("Invalid JSON payload.")
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
-    portal_url = payload.get("info", {}).get("portalURL")
-    if not portal_url:
-        logger.warning("Missing 'portalURL' in payload.")
-        return JsonResponse({"error": "Missing portal URL"}, status=400)
-
-    normalized_portal_url = portal_url.rstrip('/')
-    portal_qs = Portal.objects.filter(Q(url=normalized_portal_url) | Q(url=normalized_portal_url + '/'))
-    instance_item = portal_qs.first()
-
-    if not instance_item:
+    # Get portal instance
+    portal_instance = utils.get_portal_instance(portal_url)
+    if not portal_instance:
         logger.warning(f"Unknown portal URL received: {portal_url}")
         return JsonResponse({"error": "Unknown portal"}, status=404)
 
-    logger.debug(f"Processing for portal {instance_item.alias} ({portal_url}).")
-
+    # Connect to portal
     try:
-        target = utils.connect(instance_item)
+        target = utils.connect(portal_instance)
     except Exception as e:
-        logger.error(f"Connection failed for portal '{instance_item.alias}': {e}", exc_info=True)
+        logger.error(f"Connection failed for portal '{portal_instance.alias}': {e}", exc_info=True)
         return JsonResponse({"error": "Failed to connect to portal"}, status=500)
 
+    # Process events
     events = payload.get("events", [])
     logger.debug(f"Webhook: Processing {len(events)} events.")
-    for event in events:
-        source = event.get("source")
-        operation = event.get("operation")
-        event_id = event.get("id")
 
-        logger.info(f"Processing event - Source: {source}, Operation: {operation}, ID: {event_id}")
-
-        if source == "item":
-            item = target.content.get(event_id)
-            item_type = item.type if item else "Unknown"
-
-            if item_type in ["Feature Layer", "Map Image Layer"]:
-                process_service.delay(instance_item.id, event_id, operation)
-            elif item_type == "Web Map":
-                process_webmap.delay(instance_item.id, event_id, operation)
-            elif item_type in ["Web Mapping Application", "Dashboard", "Web AppBuilder Apps",
-                               "Experience Builder", "Form", "Story Map"]:
-                process_webapp.delay(instance_item.id, event_id, operation)
-            else:
-                logger.warning(f"Unknown item type received in webhook: {item_type}")
-        elif source == "user":
-            process_user.delay(instance_item.id, event_id, operation)
-        else:
-            logger.warning(f"Unhandled event source: {source}")
+    utils.process_webhook_events(events, target, portal_instance)
 
     logger.info(f"Successfully processed payload for {portal_url}.")
     return JsonResponse({"message": "Webhook received successfully"}, status=200)
+
 
 VALID_LOG_LEVELS = {
     "DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING,
