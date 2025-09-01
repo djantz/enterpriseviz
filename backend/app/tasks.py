@@ -3296,13 +3296,13 @@ def process_inactive_user_task(self, portal_alias: str, duration_days: int, warn
 
 
 @shared_task(bind=True, name="Public Sharing Tool")
-def process_public_unshare_task(self, portal_alias: str, score_threshold: int, item_id: str = None):
-    """Process public item unsharing."""
+def process_public_unshare_task(self, portal_alias: str, score_threshold: int = None, item_id: str = None):
+    """Process public unshare task - either for a specific item or all public items."""
     start_time = time.time()
     progress_recorder = ProgressRecorder(self)
     tool_result = utils.ToolResult(
         portal_alias=portal_alias,
-        tool_name="public_unshare" if not item_id else "public_unshare_webhook"
+        tool_name="public_unshare"
     )
     portal_instance = None
 
@@ -3311,33 +3311,60 @@ def process_public_unshare_task(self, portal_alias: str, score_threshold: int, i
         portal_instance, target = _connect_portal(portal_alias, tool_result)
         if not target:
             progress_recorder.set_progress(100, 100, "Connection failed")
-        else:
-            if item_id:
-                # Webhook mode
-                progress_recorder.set_progress(20, 100, f"Processing item: {item_id}")
-                logger.info(f"[{portal_alias}] Public Unshare (webhook) for item {item_id}")
-                _handle_webhook_item(target, item_id, portal_instance, tool_result)
-            else:
-                # Scheduled mode
-                logger.info(f"[{portal_alias}] Public Unshare (scheduled)")
-                progress_recorder.set_progress(10, 100, "Connected")
+            return tool_result.to_json()
 
-                progress_recorder.set_progress(15, 100, "Getting public items...")
-                items = _get_public_items(target, tool_result)
-                if items is None:
-                    progress_recorder.set_progress(100, 100, "Failed to get items")
-                else:
-                    progress_recorder.set_progress(20, 100, f"Processing {len(items)} items")
-                    _run_public_unshare(target, score_threshold, items, progress_recorder, tool_result)
+        # Determine if this is webhook or scheduled execution
+        is_webhook = item_id is not None
 
-            tool_result.set_success(tool_result.errors == 0)
-            mode = f"(webhook - {item_id})" if item_id else "(scheduled)"
-            progress_recorder.set_progress(100, 100, f"Completed: {tool_result.actions_taken} actions")
-            logger.info(f"[{portal_alias}] Public Unshare {mode} completed in {tool_result.execution_time:.2f}s")
+        # Get score threshold
+        if score_threshold is None:
+            try:
+                score_threshold = portal_instance.tool_settings.tool_public_unshare_score
+                if not score_threshold:
+                    tool_result.add_error("Score threshold not configured in portal settings")
+                    return tool_result.to_json()
+            except Exception as e:
+                tool_result.add_error("Failed to retrieve portal tool settings")
+                logger.error(f"Failed to retrieve portal tool settings: {e}", exc_info=True)
+                return tool_result.to_json()
+
+        progress_recorder.set_progress(10, 100, "Connected")
+        logger.info(f"[{portal_alias}] Starting Public Unshare Tool ({'webhook' if is_webhook else 'scheduled'})")
+
+        # Get items based on execution type
+        progress_recorder.set_progress(15, 100, "Getting items...")
+        items = _get_items_for_processing(target, item_id, tool_result)
+        if items is None:
+            progress_recorder.set_progress(100, 100, "Failed to get items")
+            return tool_result.to_json()
+
+        if not items:
+            logger.info("No items to process")
+            tool_result.set_success()
+            progress_recorder.set_progress(100, 100, "No items to process")
+            return tool_result.to_json()
+
+        progress_recorder.set_progress(20, 100, f"Processing {len(items)} items")
+
+        # Process items with different behavior for webhook vs scheduled
+        portal_info = _get_portal_info(target)
+        user_items = _process_public_items(
+            items, score_threshold, portal_info, target,
+            tool_result, progress_recorder, is_webhook, portal_instance
+        )
+
+        # Send notifications (scheduled only sends batch notifications)
+        if not is_webhook and user_items:
+            progress_recorder.set_progress(90, 100, "Sending notifications...")
+            _send_batch_notifications(user_items, target, portal_info, score_threshold, tool_result)
+
+        tool_result.set_success(tool_result.errors == 0)
+        progress_recorder.set_progress(100, 100, f"Completed: {tool_result.actions_taken} actions")
+        logger.info(f"[{portal_alias}] Public Unshare Tool completed in {tool_result.execution_time:.2f}s")
 
     except Exception as e:
         err = f"Public Unshare Tool failed: {e}"
-        logger.error(f"[{portal_alias}] {err}")
+        logger.error(f"[{portal_alias}] {err}", exc_info=True)
         tool_result.add_error(err)
         progress_recorder.set_progress(100, 100, f"Failed: {err}")
         self.update_state(state="FAILURE", meta={"error": err})
@@ -3467,7 +3494,7 @@ Portal: {portal_url}"""
 
 
 def _send_pro_warning(user, effective_date, portal_name, portal_url):
-    """Send Pro license warning - FIXED VERSION."""
+    """Send Pro license warning."""
     subject = "ArcGIS Pro License Inactivity Warning"
     warning_text = f"""Your ArcGIS Pro license in {portal_name} may be revoked due to inactivity.
 Last activity: {effective_date.strftime('%Y-%m-%d')}
@@ -3480,41 +3507,44 @@ To keep your license, log in to {portal_name} or use ArcGIS Pro."""
     return success, status_msg
 
 
-def _run_public_unshare(target, score_threshold, items, recorder, tool_result):
-    """Public Unshare tool implementation."""
-    params = {"score_threshold": score_threshold}
-    if not _validate_params(params, ["score_threshold"], tool_result):
-        return
+def _get_items_for_processing(target, item_id, tool_result):
+    """Get items for processing - either specific item or all public items."""
+    if item_id:
+        # Webhook - get specific item
+        try:
+            item = target.content.get(item_id)
+            if item and item.access == 'public':
+                logger.info(f"Processing specific public item: {item_id}")
+                return [item]
+            else:
+                logger.info(f"Item {item_id} is not public or not found, skipping")
+                return []
+        except Exception as e:
+            tool_result.add_error(f"Failed to retrieve item {item_id}")
+            logger.error(f"Failed to retrieve item {item_id}: {e}", exc_info=True)
+            return None
+    else:
+        # Scheduled - get all public items
+        try:
+            items = target.content.search(query="access:public", max_items=1000)
+            logger.info(f"Found {len(items)} public items")
+            return items
+        except Exception as e:
+            tool_result.add_error("Failed to retrieve public items from portal")
+            logger.error(f"Failed to retrieve public items from portal: {e}", exc_info=True)
+            return None
 
-    portal_info = _get_portal_info(target)
-    user_items = _process_items(items, score_threshold, tool_result, recorder)
 
-    recorder.set_progress(90, 100, "Sending notifications...")
-    _send_unshare_notifications(user_items, target, portal_info, score_threshold, tool_result)
-
-    _log_completion(tool_result)
-
-
-def _get_public_items(target, tool_result):
-    """Get public items."""
-    try:
-        items = target.content.search(query="access:public", max_items=10000)
-        logger.info(f"Found {len(items)} public items")
-        return items
-    except Exception as e:
-        tool_result.add_error("Failed to retrieve public items from portal")
-        logger.error(f"Failed to retrieve public items from portal: {e}", exc_info=True)
-        return None
-
-
-def _process_items(items, threshold, tool_result, recorder):
-    """Process public items."""
-    user_items = {}
+def _process_public_items(items, threshold, portal_info, target, tool_result,
+                          progress_recorder, is_webhook, portal_instance):
+    """Process public items with different behavior for webhook vs scheduled."""
+    user_items = {} if not is_webhook else None
     total = len(items)
+    portal_name, portal_url = portal_info
 
     for i, item in enumerate(items):
-        progress = 20 + int((i / total) * 65)
-        recorder.set_progress(progress, 100, f"Checking: {item.title[:30]}...")
+        progress = 20 + int((i / total) * (65 if not is_webhook else 75))
+        progress_recorder.set_progress(progress, 100, f"Checking: {item.title[:30]}...")
 
         try:
             tool_result.processed += 1
@@ -3523,41 +3553,71 @@ def _process_items(items, threshold, tool_result, recorder):
             if score < threshold:
                 logger.info(f"Unsharing item '{item.id}' (score: {score}%)")
 
-                # Organize by user
-                owner = item.owner
-                if owner not in user_items:
-                    user_items[owner] = {"user": None, "items": []}
+                # Unshare the item
+                success = _unshare_item(item, tool_result)
+                if success:
+                    tool_result.actions_taken += 1
+                    tool_result.add_extra_metric("unshared", tool_result.extra_metrics.get("unshared", 0) + 1)
 
-                user_items[owner]["items"].append({
-                    "id": item.id, "title": item.title, "score": score, "type": item.type
-                })
+                    if is_webhook:
+                        tool_result.add_extra_metric("validation_failed", 1)
 
-                # Unshare item
-                try:
-                    logger.debug(f"Unsharing item '{item.id}'")
-                    success = item.share(everyone=False)
-                    if success:
-                        logger.info(f"Successfully unshared item '{item.id}'")
-                        tool_result.actions_taken += 1
-                        tool_result.add_extra_metric("unshared",
-                                                     tool_result.extra_metrics.get("unshared", 0) + 1)
+                        # Send notification if no recent notification
+                        if _should_notify(item, portal_instance):
+                            if _send_webhook_notification(item, target, score, threshold, portal_name, portal_url,
+                                                          tool_result):
+                                tool_result.warnings_sent += 1
+                            _record_webhook_notification(item, portal_instance)
                     else:
-                        tool_result.add_error(f"Failed to unshare item '{item.id}'")
-                        logger.error(f"Failed to unshare item '{item.id}' - API returned failure")
-                except Exception as e:
-                    tool_result.add_error(f"Error unsharing item '{item.id}'")
-                    logger.error(f"Error unsharing item '{item.id}': {e}", exc_info=True)
+                        # For scheduled runs, collect items for batch notification
+                        _add_to_user_items(user_items, item, score)
+            else:
+                if is_webhook:
+                    tool_result.add_extra_metric("validation_passed", 1)
+                    logger.info(f"Item '{item.id}' passed validation: {score}% >= {threshold}%")
 
         except Exception as e:
             tool_result.add_error(f"Error processing item '{item.id}'")
             logger.error(f"Error processing item '{item.id}': {e}", exc_info=True)
 
-    recorder.set_progress(85, 100, "Items processed")
+    progress_recorder.set_progress(85, 100, "Items processed")
     return user_items
 
 
-def _send_unshare_notifications(user_items, target, portal_info, threshold, tool_result):
-    """Send notifications to users about unshared items - FIXED VERSION."""
+def _unshare_item(item, tool_result):
+    """Unshare a single item."""
+    try:
+        logger.debug(f"Unsharing item '{item.id}'")
+        success = item.share(everyone=False)
+        if success:
+            logger.info(f"Successfully unshared item '{item.id}'")
+            return True
+        else:
+            tool_result.add_error(f"Failed to unshare item '{item.id}'")
+            logger.error(f"Failed to unshare item '{item.id}' - API returned failure")
+            return False
+    except Exception as e:
+        tool_result.add_error(f"Error unsharing item '{item.id}'")
+        logger.error(f"Error unsharing item '{item.id}': {e}", exc_info=True)
+        return False
+
+
+def _add_to_user_items(user_items, item, score):
+    """Add item to user_items dictionary for batch notifications."""
+    owner = item.owner
+    if owner not in user_items:
+        user_items[owner] = {"user": None, "items": []}
+
+    user_items[owner]["items"].append({
+        "id": item.id,
+        "title": item.title,
+        "score": score,
+        "type": item.type
+    })
+
+
+def _send_batch_notifications(user_items, target, portal_info, threshold, tool_result):
+    """Send batch notifications to users about unshared items (scheduled runs only)."""
     portal_name, portal_url = portal_info
 
     for username, data in user_items.items():
@@ -3593,7 +3653,7 @@ Items ({len(items)} total):
 Average completeness: {avg_score:.1f}%
 
 To improve and reshare:
-1. Complete all metadata sections
+1. Complete item summaries
 2. Add detailed descriptions and tags
 3. Include credits and limitations
 4. Add thumbnail images
@@ -3658,7 +3718,7 @@ def _process_inactive_users(target, users, cutoffs, action, admin_username, tool
 
 
 def _take_inactive_action(user, last_activity, action, tool_result):
-    """Take action on inactive user - FIXED VERSION."""
+    """Take action on inactive user"""
     username = user.username
     logger.info(f"Taking action '{action}' for inactive user '{username}' (last activity: {last_activity})")
 
@@ -3711,7 +3771,7 @@ def _take_inactive_action(user, last_activity, action, tool_result):
 
 
 def _send_inactive_warning(user, last_activity, portal_info):
-    """Send inactivity warning - FIXED VERSION."""
+    """Send inactivity warning"""
     portal_name, portal_url = portal_info
     subject = "Account Inactivity Warning"
     warning_text = f"""Your account has been inactive since {last_activity.strftime('%Y-%m-%d')}.
@@ -3719,3 +3779,84 @@ If you remain inactive, your account may be subject to administrative action."""
 
     message = _build_warning_email(user, portal_name, portal_url, warning_text)
     return utils.send_email(user.email, subject, message)
+
+
+def _send_webhook_notification(item, target, score, threshold, portal_name, portal_url, tool_result):
+    """Send immediate notification to item owner (webhook only)."""
+    try:
+        user = target.users.get(item.owner)
+        if not user or not user.email:
+            logger.warning(f"Cannot send notification to item owner '{item.owner}': user not found or no email")
+            return False
+
+        subject = "Public Item Unshared - Metadata Required"
+        message = f"""Hello {user.firstName or user.fullName or user.username},
+
+Your attempt to share "{item.title}" publicly was blocked due to incomplete metadata.
+
+Item Details:
+• Title: {item.title}
+• Type: {item.type}
+• Completeness: {score}%
+• Required: {threshold}%
+
+To share publicly, complete missing metadata:
+1. Complete item summary
+2. Add detailed description and tags
+3. Include credits and limitations
+4. Add thumbnail image
+
+Portal: {portal_url}"""
+
+        success, status_msg = utils.send_email(user.email, subject, message)
+        if success:
+            logger.info(f"Sent validation notification to user '{user.username}' for item '{item.id}'")
+            tool_result.add_extra_metric("owner_notifications_sent",
+                                         tool_result.extra_metrics.get("owner_notifications_sent", 0) + 1)
+            return True
+        else:
+            tool_result.add_error(f"Failed to send validation notification to user '{user.username}': {status_msg}")
+            logger.warning(f"Failed to send validation notification to user '{user.username}': {status_msg}")
+            return False
+
+    except Exception as e:
+        error_msg = f"Error sending validation notification for item '{item.id}': {e}"
+        tool_result.add_error(error_msg)
+        logger.error(error_msg, exc_info=True)
+        return False
+
+
+def _should_notify(item, portal_instance):
+    """Check if notification should be sent (grace period check for webhooks)."""
+    try:
+        hours_limit = getattr(portal_instance.tool_settings, "tool_public_unshare_notify_limit", 24)
+    except:
+        hours_limit = 24
+
+    hours_cutoff = timezone.now() - timedelta(hours=hours_limit)
+
+    # Check recent notifications
+    recent = WebhookNotificationLog.objects.filter(
+        portal=portal_instance,
+        owner=item.owner,
+        notification_type="public_unshare_webhook",
+        sent_at__gte=hours_cutoff
+    ).exists()
+
+    return not recent
+
+
+def _record_webhook_notification(item, portal_instance):
+    """Record notification in log (webhook only)."""
+    try:
+        WebhookNotificationLog.objects.create(
+            portal=portal_instance,
+            item_id=item.id,
+            owner=item.owner,
+            notification_type="public_unshare_webhook",
+            sent_at=timezone.now(),
+            item_title=item.title[:200],
+            item_type=item.type
+        )
+    except Exception as e:
+        logger.error(f"Failed to log notification for {item.id}: {e}")
