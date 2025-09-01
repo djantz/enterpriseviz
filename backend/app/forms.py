@@ -253,6 +253,7 @@ class SiteSettingsForm(forms.ModelForm):
         fields = [
             "admin_email", "email_host", "email_port", "email_encryption",
             "email_username", "email_password", "from_email", "reply_to",
+            "webhook_secret"
         ]
         widgets = {
             'email_password': forms.PasswordInput(render_value=False),
@@ -330,7 +331,7 @@ class ToolsForm(forms.ModelForm):
         tool_configs = [
             ('tool_pro_license_enabled', ['tool_pro_duration', 'tool_pro_warning']),
             ('tool_public_unshare_enabled',
-             ['tool_public_unshare_score', 'tool_public_unshare_grace_period', 'tool_public_unshare_trigger']),
+             ['tool_public_unshare_score', 'tool_public_unshare_notify_limit', 'tool_public_unshare_trigger']),
             ('tool_inactive_user_enabled',
              ['tool_inactive_user_duration', 'tool_inactive_user_warning', 'tool_inactive_user_action']),
         ]
