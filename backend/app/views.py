@@ -1418,7 +1418,7 @@ def webhook_view(request):
     logger.debug("Received webhook request.")
 
     # Validate webhook secret
-    if not utils._validate_webhook_secret(request):
+    if not utils.validate_webhook_secret(request):
         return HttpResponseForbidden()
 
     # Parse and validate payload
