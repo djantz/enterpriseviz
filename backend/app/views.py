@@ -15,8 +15,6 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 # ----------------------------------------------------------------------
-import hashlib
-import hmac
 from collections import defaultdict
 import json
 import logging
@@ -1388,12 +1386,9 @@ def webhook_view(request):
     """
     Handle incoming webhook requests by validating signatures and processing events.
 
-    This view receives and verifies webhook payloads using HMAC authentication. If the
+    This view receives and verifies webhook payloads using ArcGIS configured secret. If the
     signature is valid, it parses the JSON payload and processes relevant events.
-
-    Security:
-    - Uses HMAC-SHA256 to validate the signature against `settings.WEBHOOK_SECRET`.
-    - Uses `hmac.compare_digest` for secure signature comparison.
+    https://enterprise.arcgis.com/en/portal/11.5/administer/windows/webhook-payloads.htm
 
     Expected Payload Structure:
     {

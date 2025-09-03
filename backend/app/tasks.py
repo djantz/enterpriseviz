@@ -15,7 +15,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 # ----------------------------------------------------------------------
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from django.utils import timezone
 import json
 import logging
 import re
@@ -109,7 +110,7 @@ def update_webmaps(self, instance_alias, overwrite=False, username=None, passwor
 
         logger.info(f"Found {total_webmaps} web maps to process in portal '{instance_alias}'")
 
-        update_time = datetime.now()
+        update_time = timezone.now()
         logger.debug(f"Update timestamp: {update_time}")
 
         if overwrite:
@@ -192,7 +193,7 @@ def update_webmaps(self, instance_alias, overwrite=False, username=None, passwor
         delete_outdated_records(instance_item, update_time, [Webmap, Map_Service], result)
         logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
-        instance_item.webmap_updated = datetime.now()
+        instance_item.webmap_updated = timezone.now()
         instance_item.save()
 
         if not result.error_messages:
@@ -392,7 +393,7 @@ def get_owner(instance_item, owner_username):
 
 def link_services_to_webmap(instance_item, webmap_obj, services):
     """Links web maps to services if they exist in the database."""
-    update_time = datetime.now()
+    update_time = timezone.now()
     for service_url in services:
         try:
             s_obj = Service.objects.get(service_url__overlap=[service_url])
@@ -601,7 +602,7 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
 
     result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
-    update_time = datetime.now()  # Timestamp for the current update cycle
+    update_time = timezone.now()  # Timestamp for the current update cycle
 
     def fetch_usage_report(server, service_list):
         query_list = ",".join(service_list)
@@ -777,7 +778,7 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
                                   "service_layers": service_layers,
                                   "service_mxd_server": service.get("sourceUrl", None),
                                   "service_mxd": None,
-                                  "portal_id": service.homepage,
+                                  "portal_id": {service.id},
                                   "service_type": service.type,
                                   "service_description": description,
                                   "service_owner": owner,
@@ -878,7 +879,7 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
 
             # Update the portal instance's timestamp for service updates
             logger.debug(f"Updating last updated timestamp for portal '{instance_alias}'")
-            instance_item.service_updated = datetime.now()
+            instance_item.service_updated = timezone.now()
             instance_item.save()
             logger.debug(f"Portal '{instance_alias}' last updated timestamp set to {instance_item.service_updated}")
 
@@ -1403,7 +1404,7 @@ def update_webapps(self, instance_alias, overwrite=False, username=None, passwor
         return {"result": result.to_json()}
 
     try:
-        update_time = datetime.now()
+        update_time = timezone.now()
         logger.debug(f"Update timestamp: {update_time}")
 
         # Retrieve web application items by combining multiple searches for various app types
@@ -1516,7 +1517,7 @@ def update_webapps(self, instance_alias, overwrite=False, username=None, passwor
         delete_outdated_records(instance_item, update_time, [App, App_Map, App_Service], result)
         logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
-        instance_item.webapp_updated = datetime.now()
+        instance_item.webapp_updated = timezone.now()
         instance_item.save()
 
         result.set_success()
@@ -2166,7 +2167,7 @@ def update_users(self, instance_alias, overwrite=False, username=None, password=
     """
     result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
-    update_time = datetime.now()  # Mark the update timestamp for the current run
+    update_time = timezone.now()  # Mark the update timestamp for the current run
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
@@ -2412,7 +2413,7 @@ def update_users(self, instance_alias, overwrite=False, username=None, password=
         delete_outdated_records(instance_item, update_time, [User], result)
         logger.info(f"Outdated user records cleanup completed with {result.num_deletes} deletions")
 
-        instance_item.user_updated = datetime.now()
+        instance_item.user_updated = timezone.now()
         instance_item.save()
 
         result.set_success()
@@ -2563,7 +2564,7 @@ def process_user(self, instance_alias, username, operation):
     logger.debug(
         f"Starting process_user for instance_alias={instance_alias}, username={username}, operation={operation}")
 
-    update_time = datetime.now()
+    update_time = timezone.now()
     result = utils.UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
@@ -2657,7 +2658,7 @@ def process_user(self, instance_alias, username, operation):
             else:
                 logger.info(f"Updated existing user record for '{username}'")
 
-            instance_item.user_updated = datetime.now()
+            instance_item.user_updated = timezone.now()
             instance_item.save()
 
             logger.info(f"User '{username}' {operation} operation completed successfully")
@@ -2676,7 +2677,7 @@ def process_webmap(self, instance_alias, item_id, operation):
     logger.debug(
         f"Starting process_webmap for instance_alias={instance_alias}, item_id={item_id}, operation={operation}")
 
-    update_time = datetime.now()
+    update_time = timezone.now()
     result = utils.UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
@@ -2740,7 +2741,7 @@ def process_service(self, instance_alias, item, operation):
     # Operation: add, delete, publish, share, unshare, update
     logger.info(f"Processing service {item} with operation: {operation}")
 
-    update_time = datetime.now()
+    update_time = timezone.now()
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
@@ -2974,7 +2975,7 @@ def process_webapp(self, instance_alias, item_id, operation):
     logger.debug(
         f"Starting process_webapp for instance_alias={instance_alias}, item_id={item_id}, operation={operation}")
 
-    update_time = datetime.now()
+    update_time = timezone.now()
     result = utils.UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
@@ -3044,7 +3045,7 @@ def _get_all_users(target, tool_result):
 
 def _calc_cutoffs(duration_days, warning_days):
     """Calculate cutoff dates."""
-    now = datetime.now(timezone.utc)
+    now = timezone.now()
     action_cutoff = now - timedelta(days=duration_days)
     warning_cutoff = action_cutoff + timedelta(days=warning_days)
     return action_cutoff, warning_cutoff
@@ -3179,7 +3180,7 @@ def _send_admin_notification(tool_result, portal_instance):
         message = tool_result.format_for_email()
 
         # Add timestamp and portal info
-        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        timestamp = timezone.now().strftime('%Y-%m-%d %H:%M:%S UTC')
         header = f"ArcGIS Enterprise Tool Execution Report\nGenerated: {timestamp}\n" + "=" * 50 + "\n"
         message = header + message
 

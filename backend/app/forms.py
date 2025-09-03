@@ -257,6 +257,7 @@ class SiteSettingsForm(forms.ModelForm):
         ]
         widgets = {
             'email_password': forms.PasswordInput(render_value=False),
+            'webhook_secret': forms.PasswordInput(render_value=False),
         }
 
     def __init__(self, *args, **kwargs):
@@ -300,7 +301,6 @@ class SiteSettingsForm(forms.ModelForm):
                 self.add_error("email_port",
                                f"Port for Plain Text/Submission is typically 25 or 587 (you entered {port}).")
 
-        logger.debug(f"SiteSettingsForm cleaned_data: {cleaned_data}")
         return cleaned_data
 
 
@@ -319,7 +319,7 @@ class ToolsForm(forms.ModelForm):
             'tool_pro_license_enabled', 'tool_pro_duration', 'tool_pro_warning',
             'tool_public_unshare_enabled', 'tool_public_unshare_score',
             'tool_public_unshare_trigger',
-            'tool_public_unshare_grace_period',
+            'tool_public_unshare_notify_limit',
             'tool_inactive_user_enabled', 'tool_inactive_user_duration',
             'tool_inactive_user_warning', 'tool_inactive_user_action',
         ]

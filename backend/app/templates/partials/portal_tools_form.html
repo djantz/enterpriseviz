@@ -99,16 +99,16 @@
         </calcite-label>
         <calcite-label>
           Notification Alert Frequency Limit
-          <calcite-select id="tool_public_unshare_grace_period" name="tool_public_unshare_grace_period"
-                          value="{{ form.tool_public_unshare_grace_period.value|default_if_none:'' }}">
+          <calcite-select id="tool_public_unshare_notify_limit" name="tool_public_unshare_notify_limit"
+                          value="{{ form.tool_public_unshare_notify_limit.value|default_if_none:'' }}">
             <calcite-option value="1">1 hour</calcite-option>
             <calcite-option value="4">4 hours</calcite-option>
             <calcite-option value="12">12 hours</calcite-option>
             <calcite-option value="24">24 hours</calcite-option>
           </calcite-select>
-          <calcite-input-message {% if not form.tool_public_unshare_grace_period.errors %}hidden{% endif %}
+          <calcite-input-message {% if not form.tool_public_unshare_notify_limit.errors %}hidden{% endif %}
                                  icon="exclamation-mark-triangle-f" status="invalid">
-            {{ form.tool_public_unshare_grace_period.errors|join:" " }}
+            {{ form.tool_public_unshare_notify_limit.errors|join:" " }}
           </calcite-input-message>
         </calcite-label>
         <calcite-label>

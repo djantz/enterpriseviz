@@ -447,7 +447,7 @@ class SiteSettings(models.Model):
         ('CRITICAL', 'Critical'),
     ]
     logging_level = models.CharField(max_length=255, choices=LOG_LEVEL_CHOICES, default='warning', null=False, blank=False)
-    webhook_secret = models.CharField(max_length=255, null=True, blank=True)
+    webhook_secret = encrypt(models.CharField(max_length=255, null=True, blank=True))
 
     def has_module_permission(self, request):
         return request.user.is_superuser
