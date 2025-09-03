@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 # ----------------------------------------------------------------------
-import datetime
+from datetime import datetime, timedelta, timezone as dt_timezone
 import logging
 import re
 from dataclasses import dataclass, field, asdict
@@ -35,6 +35,7 @@ from fuzzywuzzy import fuzz
 from tabulate import tabulate
 
 from .models import Webmap, Service, Layer, App, Portal, SiteSettings
+from . import tasks
 
 logger = logging.getLogger('enterpriseviz.utils')
 
@@ -304,7 +305,7 @@ def _update_portal_token_info(portal_model_instance, target_gis_connection):
             new_token = target_gis_connection._con.token
             minutes_to_expiry = getattr(target_gis_connection._con, '_expiration', 60)
             if isinstance(minutes_to_expiry, (int, float)):
-                new_expiration = timezone.now() + datetime.timedelta(minutes=minutes_to_expiry)
+                new_expiration = timezone.now() + timedelta(minutes=minutes_to_expiry)
             else:
                 new_expiration = None
                 logger.warning(
@@ -551,14 +552,14 @@ def epoch_to_datetime(epoch_ms):
     :param epoch_ms: Epoch timestamp in milliseconds.
     :type epoch_ms: int or float or None
     :return: Localized datetime object, or None if input is invalid.
-    :rtype: datetime.datetime or None
+    :rtype: datetime or None
     """
     if epoch_ms is None or epoch_ms == -1:  # Common ArcGIS placeholder for no date
         return None
     try:
         if not isinstance(epoch_ms, (int, float)):
             raise TypeError("Timestamp must be a number.")
-        dt_utc = datetime.datetime.fromtimestamp(epoch_ms / 1000.0, tz=datetime.timezone.utc)
+        dt_utc = datetime.fromtimestamp(epoch_ms / 1000.0, tz=dt_timezone.utc)
         return dt_utc.astimezone()
     except (TypeError, ValueError) as e:
         logger.warning(f"Invalid timestamp value {epoch_ms}: {e}")
@@ -657,7 +658,7 @@ def epoch_to_date(epoch_ms):
     try:
         if not isinstance(epoch_ms, (int, float)) or epoch_ms < 0:
             raise ValueError("Timestamp must be a non-negative number.")
-        return datetime.datetime.fromtimestamp(epoch_ms / 1000.0).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(epoch_ms / 1000.0).strftime("%Y-%m-%d")
     except (TypeError, ValueError) as e:
         logger.warning(f"Invalid timestamp {epoch_ms}: {e}")
         return None
@@ -1307,3 +1308,171 @@ def format_notification_email(owner, change_item_desc, maps_for_owner, apps_for_
     )
 
     return plain_body, html_body, subject
+
+
+def validate_webhook_secret(request):
+    """Validate webhook secret using secret header comparison."""
+    signature = request.headers.get("Secret", "")
+    if not signature:
+        logger.warning("Received webhook request without signature.")
+        return False
+
+    # Get webhook secret from SiteSettings
+    try:
+        site_settings = SiteSettings.objects.first()
+        webhook_secret = site_settings.webhook_secret if site_settings else None
+    except Exception as e:
+        logger.error(f"Failed to retrieve webhook secret from SiteSettings: {e}")
+        return False
+
+    if not webhook_secret:
+        logger.warning("Webhook secret not configured in SiteSettings.")
+        return False
+
+    if signature != webhook_secret:
+        logger.warning("Webhook signature mismatch.")
+        return False
+
+    return True
+
+
+def get_portal_instance(portal_url):
+    """Get portal instance from URL with normalized matching."""
+
+    normalized_url = portal_url.rstrip('/')
+    portal_qs = Portal.objects.filter(
+        Q(url=normalized_url) | Q(url=normalized_url + '/')
+    )
+    return portal_qs.first()
+
+
+def process_webhook_events(events, target, portal_instance):
+    """Process multiple webhook events by routing to appropriate handlers."""
+    logger.debug(f"Processing {len(events)} webhook events")
+
+    for event in events:
+        source = event.get("source")
+        operation = event.get("operation")
+        event_id = event.get("id")
+
+        logger.info(f"Processing event - Source: {source}, Operation: {operation}, ID: {event_id}")
+
+        try:
+            if source == "item":
+                _process_item_event(target, portal_instance, event_id, operation, event)
+            elif source == "user":
+                _process_user_event(portal_instance, event_id, operation)
+            else:
+                logger.warning(f"Unhandled event source: {source}")
+        except Exception as e:
+            logger.error(f"Error processing event {event_id} ({source}/{operation}): {e}", exc_info=True)
+
+
+def _process_item_event(target, portal_instance, event_id, operation, event):
+    """Process item webhook events including public sharing validation and CRUD operations."""
+
+    # Handle public sharing validation for share operations
+    if operation == "share":
+        _webhook_public_sharing_validation(portal_instance, event_id, event)
+
+    # Handle item operations
+    if operation == "delete":
+        _webhook_item_deletion(portal_instance, event_id)
+    elif operation in ("add", "update", "publish", "share", "unshare"):
+        _webhook_item_crud(target, portal_instance, event_id, operation)
+    else:
+        logger.warning(f"Unhandled item operation: {operation}")
+
+def _webhook_public_sharing_validation(portal_instance, event_id, event):
+    """Handle public sharing validation when items are shared publicly."""
+    try:
+        tool_settings = portal_instance.tool_settings
+
+        # Check if validation is enabled and configured for webhook triggers
+        if not (tool_settings.tool_public_unshare_enabled and
+                tool_settings.tool_public_unshare_trigger == 'webhook'):
+            return
+
+        # Check if item was shared to "Everyone" (public)
+        shared_to_groups = event.get("properties", {}).get("sharedToGroups", [])
+        if "Everyone" not in shared_to_groups:
+            return
+
+        logger.info(f"Processing public item share validation for item: {event_id}")
+
+        tasks.process_public_unshare_task.delay(
+            portal_alias=portal_instance.alias,
+            score_threshold=tool_settings.tool_public_unshare_score,
+            item_id=event_id
+        )
+
+    except Exception as e:
+        logger.error(f"Error in public item share validation for {event_id}: {e}", exc_info=True)
+
+
+def _webhook_item_deletion(portal_instance, event_id):
+    """Handle item deletion by cleaning up local database records."""
+    try:
+        deleted_count = 0
+
+        # Clean up records for the deleted item
+        item_type_models = [
+            (Service, {'portal_instance': portal_instance, 'portal_id__has_any_keys': [event_id]}),
+            (Webmap, {'portal_instance': portal_instance, 'webmap_id': event_id}),
+            (App, {'portal_instance': portal_instance, 'app_id': event_id})
+        ]
+
+        for model_class, filter_kwargs in item_type_models:
+            deleted = model_class.objects.filter(**filter_kwargs).delete()
+            if deleted[0] > 0:
+                deleted_count += deleted[0]
+                logger.info(f"Deleted {deleted[0]} {model_class.__name__.lower()} records for item {event_id}")
+
+        if deleted_count > 0:
+            logger.info(f"Cleaned up {deleted_count} records for deleted item {event_id}")
+        else:
+            logger.debug(f"No records found to delete for item {event_id}")
+
+    except Exception as e:
+        logger.error(f"Error processing delete webhook for {event_id}: {e}", exc_info=True)
+
+
+def _webhook_item_crud(target, portal_instance, event_id, operation):
+    """Handle create/update/publish operations by dispatching to appropriate tasks."""
+    try:
+        item = target.content.get(event_id)
+        if not item:
+            logger.warning(f"Item {event_id} not found in portal for operation {operation}")
+            return
+
+        item_type = item.type
+        logger.debug(f"Processing {operation} for {item_type} item {event_id}")
+
+        # Task mapping for item types
+        task_mapping = {
+            "Feature Layer": "process_service",
+            "Map Image Layer": "process_service",
+            "Web Map": "process_webmap",
+            "Web Mapping Application": "process_webapp",
+            "Dashboard": "process_webapp",
+            "Web AppBuilder Apps": "process_webapp",
+            "Experience Builder": "process_webapp",
+            "Form": "process_webapp",
+            "Story Map": "process_webapp"
+        }
+
+        task_name = task_mapping.get(item_type)
+        if task_name:
+            task = getattr(tasks, task_name)
+            task.delay(portal_instance.alias, event_id, operation)
+        else:
+            logger.info(f"No processing defined for item type: {item_type}")
+
+    except Exception as e:
+        logger.error(f"Error processing {operation} webhook for {event_id}: {e}", exc_info=True)
+
+
+def _process_user_event(portal_instance, event_id, operation):
+    """Process user webhook events."""
+    logger.info(f"Processing user webhook - ID: {event_id}, Operation: {operation}")
+    tasks.process_user.delay(portal_instance.id, event_id, operation)

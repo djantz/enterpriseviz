@@ -447,6 +447,7 @@ class SiteSettings(models.Model):
         ('CRITICAL', 'Critical'),
     ]
     logging_level = models.CharField(max_length=255, choices=LOG_LEVEL_CHOICES, default='warning', null=False, blank=False)
+    webhook_secret = encrypt(models.CharField(max_length=255, null=True, blank=True))
 
     def has_module_permission(self, request):
         return request.user.is_superuser
@@ -546,7 +547,7 @@ class PortalToolSettings(models.Model):
         default=50,
         help_text="Minimum metadata score required for items to remain public."
     )
-    tool_public_unshare_grace_period = models.PositiveIntegerField(
+    tool_public_unshare_notify_limit = models.PositiveIntegerField(
         default=24,
         help_text="Hours to wait before sending another notification email for public item unsharing (prevents spam)."
     )
