@@ -275,7 +275,7 @@ class LogTable(ExportMixin, SingleTableMixin, FilterView):
 
 
 @login_required
-def logs_page(request):
+def logs_view(request):
     """
     Renders the main application logs page or a partial for HTMX requests.
 
