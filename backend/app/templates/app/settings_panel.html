@@ -2,11 +2,20 @@
 <div id="settings-container">
   <calcite-action id="email-action" text="Email" icon="envelope" text-enabled
                   hx-get="{% url 'enterpriseviz:email_settings' %}" hx-target="#email_settings_modal"></calcite-action>
+  <calcite-action id="webhook-action" text="Webhook" icon="key" text-enabled
+                  hx-get="{% url 'enterpriseviz:webhook_settings' %}" hx-target="#webhook_settings_modal"></calcite-action>
   <calcite-action id="log-viewer-action" text="Logs" icon="access-string-results" text-enabled
                   hx-get="{% url 'enterpriseviz:log' %}"
                   hx-target="#mainbodycontent"
                   hx-push-url="true">
   </calcite-action>
+  <calcite-tooltip reference-element="email-action" placement="left" overlay-positioning="fixed"
+                   close-on-click="true">
+    <span>Configure email settings</span>
+  </calcite-tooltip>
+  <calcite-tooltip reference-element="webhook-action" placement="left" overlay-positioning="fixed">
+    <span>Configure webhook settings</span>
+  </calcite-tooltip>
   <calcite-tooltip reference-element="log-viewer-action" placement="left" overlay-positioning="fixed"
                    close-on-click="true">
     <span>View application logs</span>
