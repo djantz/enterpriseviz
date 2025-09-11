@@ -1,0 +1,28 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<calcite-dialog id="webhook-modal" modal heading="Configure Webhook Settings" scale="m" open
+                {% if form.errors %}kind="danger"{% endif %}>
+
+  <div id="webhook-form-container">
+    {% include "partials/webhook_settings_form.html" %}
+  </div>
+
+  <calcite-button id="webhook-delete" slot="footer-start" appearance="solid" kind="danger" icon-start="trash"
+                  {% if not current_secret %}disabled{% endif %}
+                  hx-delete="{% url 'enterpriseviz:webhook_settings' %}"
+                  hx-target="#webhook-site-form" hx-include="#webhook-site-form">
+    Clear
+  </calcite-button>
+
+  <calcite-button id="webhook-cancel" data-action="close-modal" slot="footer-end" appearance="outline" icon-start="circle-disallowed">
+    Cancel
+  </calcite-button>
+
+  <calcite-button type="submit" id="webhook-save" slot="footer-end"
+                  hx-post="{% url 'enterpriseviz:webhook_settings' %}"
+                  hx-target="#webhook-site-form" hx-swap="innerHTML"
+                  hx-include="#webhook-site-form" hx-vals='{"action": "save"}'
+                  icon-start="save">
+    Save
+  </calcite-button>
+
+</calcite-dialog>
