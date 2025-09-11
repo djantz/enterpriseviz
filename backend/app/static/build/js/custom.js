@@ -621,6 +621,10 @@ htmx.on('htmx:afterRequest', (e) => {
     if (e.detail.target.id === 'tool_settings_modal') {
         initPortalTools();
     }
+    if (e.detail.target.id === 'webhook_settings_modal') {
+        initWebhookSecretGenerator();
+    }
+
     if (e.detail.target.id === 'service-table') {
         initializeSparklines();
     }
@@ -1122,3 +1126,44 @@ function initPortalTools() {
         }
     });
 }
+
+function initWebhookSecretGenerator() {
+    const generateButton = document.getElementById('generate-secret-action');
+    const copyButton = document.getElementById('copy-secret-btn');
+
+    if (generateButton) {
+        generateButton.addEventListener('click', function() {
+            // Generate a random 32-character secret
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            let result = '';
+            for (let i = 0; i < 32; i++) {
+                result += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+
+            // Find the webhook secret input field
+            const webhookSecretInput = document.querySelector('calcite-input[name="webhook_secret"]');
+            if (webhookSecretInput) {
+                webhookSecretInput.value = result;
+            }
+        });
+    }
+
+    if (copyButton) {
+        copyButton.addEventListener('click', function() {
+            const webhookSecretInput = document.querySelector('calcite-input[name="webhook_secret"]');
+            if (webhookSecretInput && webhookSecretInput.value) {
+                navigator.clipboard.writeText(webhookSecretInput.value).then(() => {
+                    // Show success feedback
+                    htmx.trigger(copyButton, 'showSuccessAlert', { value: 'Webhook secret copied to clipboard!' });
+                }).catch(() => {
+                    // Fallback for older browsers
+                    webhookSecretInput.select();
+                    document.execCommand('copy');
+                    htmx.trigger(copyButton, 'showSuccessAlert', { value: 'Webhook secret copied to clipboard!' });
+
+                });
+            }
+        });
+    }
+}
+
