@@ -12,7 +12,14 @@
       The ability to schedule updates is dependent on storing a username and password for the portal.
     </div>
   {% endif %}
-
+  <calcite-tabs>
+    <calcite-tab-nav slot="title-group">
+      <calcite-tab-title selected>
+        Schedule
+      </calcite-tab-title>
+      <calcite-tab-title>Results</calcite-tab-title>
+    </calcite-tab-nav>
+    <calcite-tab selected>
   <div>
     {% include "partials/portal_schedule_form.html" %}
 
@@ -27,6 +34,9 @@
         </ul>
       {% endif %}
     </div>
+  </div>
+  </calcite-tab>
+    <calcite-tab>
     <calcite-label>Run History (last 24 hours)</calcite-label>
     <calcite-table caption="Run History (last 24 hours)" bordered striped>
       <calcite-table-row slot="table-header">
@@ -48,12 +58,12 @@
         {% endfor %}
       {% else %}
         <calcite-table-row>
-          <calcite-table-cell colspan="5">No runs in the last 24 hours.</calcite-table-cell>
+          <calcite-table-cell col-span="5">No runs in the last 24 hours.</calcite-table-cell>
         </calcite-table-row>
       {% endif %}
     </calcite-table>
-  </div>
-
+</calcite-tab>
+  </calcite-tabs>
   <calcite-button id="schedule-portal-delete" slot="footer-start" appearance="solid" kind="danger" icon-start="trash"
                   {% if not description %}disabled{% endif %}
                   hx-delete="{% url 'enterpriseviz:schedule' instance=form.instance.value %}"
