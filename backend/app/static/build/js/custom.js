@@ -983,7 +983,7 @@ async function showAlert(kind, label, message, autoClose = true) {
     const alert = document.createElement("calcite-alert");
     alert.setAttribute("kind", kind);
     alert.setAttribute("open", "");
-    alert.setAttribute("autoClose", autoClose ? "true" : "false");
+    alert.setAttribute("auto-close", autoClose ? "true" : "false");
     alert.setAttribute("label", label);
     alert.setAttribute("icon", "");
 
