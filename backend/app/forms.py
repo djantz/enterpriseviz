@@ -459,3 +459,27 @@ class ToolsForm(forms.ModelForm):
                 # Task doesn't exist, nothing to do
                 pass
 
+
+class WebhookSettingsForm(forms.ModelForm):
+    """
+    Form for configuring webhook settings with enhanced security validation.
+    """
+
+    class Meta:
+        model = SiteSettings
+        fields = ('webhook_secret',)
+
+    def clean_webhook_secret(self):
+        """Validate webhook secret with enhanced security checks."""
+        webhook_secret = self.cleaned_data.get('webhook_secret', '').strip()
+
+        if not webhook_secret:
+            return webhook_secret
+
+        # Length validation
+        if len(webhook_secret) < 16:
+            raise ValidationError(
+                "Webhook secret should be at least 16 characters long for security."
+            )
+
+        return webhook_secret

@@ -48,6 +48,7 @@ urlpatterns = [
     path(r"/notify/", notify_view, name="notify"),
     path(r"/portal/tools/<instance>/", tool_settings, name="tool_settings"),
     path(r"/portal/tools/<instance>/<tool_name>/", tool_run, name="tools_run"),
+    path(r"/settings/webhook/", webhook_settings_view, name='webhook_settings'),
 
     # The home page
     path(r"/", index_view, name="index"),
