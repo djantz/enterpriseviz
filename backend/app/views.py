@@ -47,7 +47,7 @@ from django_tables2.export.views import ExportMixin
 
 from app import utils
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
-from .forms import ScheduleForm, SiteSettingsForm, ToolsForm
+from .forms import ScheduleForm, SiteSettingsForm, ToolsForm, WebhookSettingsForm
 from .models import Portal, User, Webmap, Service, Layer, App, PortalCreateForm, UserProfile, LogEntry
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *
@@ -1858,3 +1858,36 @@ def tool_run(request, instance, tool_name):
             "HX-Trigger-After-Settle": json.dumps(
                 {"showDangerAlert": "Failed to queue the tool. See logs for details."})
         })
+
+
+@staff_member_required
+def webhook_settings_view(request):
+    """Configure webhook settings for the site."""
+    site_settings, _ = SiteSettings.objects.get_or_create(pk=1)
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+
+        if action == "save":
+            form = WebhookSettingsForm(request.POST, instance=site_settings)
+            if form.is_valid():
+                form.save()
+                return HttpResponse(headers={"HX-Trigger-After-Settle": json.dumps(
+                    {"showSuccessAlert": "Webhook settings saved successfully.", "closeModal": True}
+                )})
+            else:
+                return render(request, 'partials/webhook_settings_form.html', {'form': form})
+
+    elif request.method == "DELETE":
+        site_settings.webhook_secret = ""
+        site_settings.save(update_fields=['webhook_secret'])
+        return HttpResponse(headers={"HX-Trigger-After-Settle": json.dumps(
+            {"showSuccessAlert": "Webhook secret cleared.", "closeModal": True}
+        )})
+
+    # GET request - show form
+    form = WebhookSettingsForm(instance=site_settings)
+    return render(request, 'portals/webhook_settings.html', {
+        'form': form,
+        'current_secret': bool(site_settings.webhook_secret)
+    })
