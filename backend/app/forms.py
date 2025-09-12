@@ -5,7 +5,9 @@ import logging
 
 from django import forms
 from django.core.exceptions import ValidationError
-from django_celery_beat.models import PeriodicTask, IntervalSchedule, CrontabSchedule
+from django.db import transaction
+from django.utils import timezone
+from django_celery_beat.models import PeriodicTask, CrontabSchedule
 
 from .models import Portal, SiteSettings, PortalToolSettings
 
@@ -14,239 +16,343 @@ logger = logging.getLogger('enterpriseviz')
 
 class ScheduleForm(forms.Form):
     """
-    Handles the definition and validation of a form for scheduling periodic tasks with
-    varied frequency and specific customization options.
+    Form for scheduling periodic data update tasks for a portal instance.
 
-    This class provides utilities for creating a Django form that allows users to
-    specify task schedules. It includes diverse fields to set the behavior of the
-    scheduling process such as repeat intervals, start and end dates, repeat types,
-    days of the week, and additional task-specific configurations.
+    Allows users to define task frequency (minute, hour, day, week, month),
+    start date, end conditions (never, specific date, or after a number of occurrences),
+    and the types of items to update (webmaps, services, apps, users).
 
-    :ivar instance: Selectable portal URL for the task.
-    :type instance: django.db.models.ModelChoiceField
-    :ivar beginning_on: The starting date of the schedule.
-    :type beginning_on: django.forms.fields.DateField
-    :ivar repeat_type: The type of repetition for the task.
-    :type repeat_type: django.forms.fields.ChoiceField
-    :ivar repeat_interval_minute: Interval in minutes for tasks to repeat.
-    :type repeat_interval_minute: django.forms.fields.IntegerField
-    :ivar repeat_interval_hour: Interval in hours for tasks to repeat.
-    :type repeat_interval_hour: django.forms.fields.IntegerField
-    :ivar repeat_interval_day: Interval in days for tasks to repeat.
-    :type repeat_interval_day: django.forms.fields.IntegerField
-    :ivar repeat_interval_week: Interval in weeks for tasks to repeat.
-    :type repeat_interval_week: django.forms.fields.IntegerField
-    :ivar repeat_interval_month: Interval in months for tasks to repeat.
-    :type repeat_interval_month: django.forms.fields.IntegerField
-    :ivar day_of_week_minute: Days of the week for minute-based tasks.
-    :type day_of_week_minute: django.forms.fields.MultipleChoiceField
-    :ivar day_of_week_hour: Days of the week for hour-based tasks.
-    :type day_of_week_hour: django.forms.fields.MultipleChoiceField
-    :ivar day_of_week_week: Days of the week for week-based tasks.
-    :type day_of_week_week: django.forms.fields.MultipleChoiceField
-    :ivar on_minute_hour: Specific minute(s) on which hour-based tasks run.
-    :type on_minute_hour: django.forms.fields.ChoiceField
-    :ivar between_hours_start_minute: Start time for active task hours in minute-based schedules.
-    :type between_hours_start_minute: django.forms.fields.TimeField
-    :ivar between_hours_end_minute: End time for active task hours in minute-based schedules.
-    :type between_hours_end_minute: django.forms.fields.TimeField
-    :ivar between_hours_start_hour: Start time for active task hours in hour-based schedules.
-    :type between_hours_start_hour: django.forms.fields.TimeField
-    :ivar between_hours_end_hour: End time for active task hours in hour-based schedules.
-    :type between_hours_end_hour: django.forms.fields.TimeField
-    :ivar ending_on: The type of ending condition for the task schedule.
-    :type ending_on: django.forms.fields.ChoiceField
-    :ivar ending_on_date: Specific date on which the task schedule ends.
-    :type ending_on_date: django.forms.fields.DateField
-    :ivar ending_on_count: The number of occurrences after which the task ends.
-    :type ending_on_count: django.forms.fields.IntegerField
-    :ivar time_day: Specific time of day for day-based tasks.
-    :type time_day: django.forms.fields.TimeField
-    :ivar time_week: Specific time of week for week-based tasks.
-    :type time_week: django.forms.fields.TimeField
-    :ivar time_month: Specific time of month for month-based tasks.
-    :type time_month: django.forms.fields.TimeField
-    :ivar items: Selected items related to the task, such as maps or services.
-    :type items: django.forms.fields.MultipleChoiceField
+    The form's `save_task` method creates or updates a `PeriodicTask`
+    with a `CrontabSchedule` based on the form's validated data.
     """
-    instance = forms.ModelChoiceField(queryset=Portal.objects.all(), label="Portal URL")
-    beginning_on = forms.DateField(label="Beginning on", initial=datetime.date.today())
-    repeat_type = forms.ChoiceField(
-        choices=[("minute", "Minute"), ("hour", "Hour"), ("day", "Day"), ("week", "Week"), ("month", "Month")],
-        required=True, initial="minute"
+
+    DAY_CHOICES = [
+        ("0", "Sunday"), ("1", "Monday"), ("2", "Tuesday"), ("3", "Wednesday"),
+        ("4", "Thursday"), ("5", "Friday"), ("6", "Saturday")
+    ]
+    DEFAULT_DAYS = [day[0] for day in DAY_CHOICES]
+
+    REPEAT_CHOICES = [
+        ("minute", "Minute"), ("hour", "Hour"), ("day", "Day"),
+        ("week", "Week"), ("month", "Month")
+    ]
+
+    ENDING_CHOICES = [
+        ("never", "Never"), ("date", "Date"), ("count", "Count")
+    ]
+
+    ITEM_CHOICES = [
+        ("webmaps", "Maps"), ("services", "Services/Layers"),
+        ("webapps", "Apps"), ("users", "Users")
+    ]
+
+    instance = forms.ModelChoiceField(
+        queryset=Portal.objects.all(),
+        label="Portal URL"
     )
-    repeat_interval_minute = forms.IntegerField(required=False, initial=15)
-    repeat_interval_hour = forms.IntegerField(required=False, initial=1)
-    repeat_interval_day = forms.IntegerField(required=False, initial=1)
-    repeat_interval_week = forms.IntegerField(required=False, initial=1)
-    repeat_interval_month = forms.IntegerField(required=False, initial=1)
+
+    beginning_on = forms.DateField(
+        label="Beginning on",
+        initial=timezone.now().date
+    )
+
+    repeat_type = forms.ChoiceField(
+        choices=REPEAT_CHOICES,
+        required=True,
+        initial="minute"
+    )
+
+    # Repeat intervals with validation ranges
+    repeat_interval_minute = forms.IntegerField(
+        required=False, initial=15, min_value=1, max_value=59
+    )
+    repeat_interval_hour = forms.IntegerField(
+        required=False, initial=1, min_value=1, max_value=23
+    )
+    repeat_interval_day = forms.IntegerField(
+        required=False, initial=1, min_value=1, max_value=365
+    )
+    repeat_interval_week = forms.IntegerField(
+        required=False, initial=1, min_value=1, max_value=52
+    )
+    repeat_interval_month = forms.IntegerField(
+        required=False, initial=1, min_value=1, max_value=12
+    )
+
+    # Day of week
     day_of_week_minute = forms.MultipleChoiceField(
-        choices=[("0", "Sunday"), ("1", "Monday"), ("2", "Tuesday"), ("3", "Wednesday"),
-                 ("4", "Thursday"), ("5", "Friday"), ("6", "Saturday")],
-        required=False, initial=["0", "1", "2", "3", "4", "5", "6"]
+        choices=DAY_CHOICES,
+        required=False,
+        initial=DEFAULT_DAYS
     )
     day_of_week_hour = forms.MultipleChoiceField(
-        choices=[("0", "Sunday"), ("1", "Monday"), ("2", "Tuesday"), ("3", "Wednesday"),
-                 ("4", "Thursday"), ("5", "Friday"), ("6", "Saturday")],
-        required=False, initial=["0", "1", "2", "3", "4", "5", "6"]
+        choices=DAY_CHOICES,
+        required=False,
+        initial=DEFAULT_DAYS
     )
     day_of_week_week = forms.MultipleChoiceField(
-        choices=[("0", "Sunday"), ("1", "Monday"), ("2", "Tuesday"), ("3", "Wednesday"),
-                 ("4", "Thursday"), ("5", "Friday"), ("6", "Saturday")],
-        required=False, initial=["0", "1", "2", "3", "4", "5", "6"]
+        choices=DAY_CHOICES,
+        required=False,
+        initial=DEFAULT_DAYS
     )
+
     on_minute_hour = forms.ChoiceField(
-        choices=[("0", "0"), ("5", "5"), ("15", "15"), ("30", "30"), ("45", "45")],
-        required=False, initial=["0", "1", "2", "3", "4", "5", "6"]
+        choices=[(str(m), f"{m} minutes past the hour") for m in [0, 5, 15, 30, 45]],
+        required=False,
+        initial="0"
     )
-    between_hours_start_minute = forms.TimeField(required=False, initial="00:00", widget=forms.TimeInput(format='%H:%M'), input_formats=['%H:%M'])
-    between_hours_end_minute = forms.TimeField(required=False, initial="00:00", widget=forms.TimeInput(format='%H:%M'), input_formats=['%H:%M'])
-    between_hours_start_hour = forms.TimeField(required=False, initial="00:00", widget=forms.TimeInput(format='%H:%M'), input_formats=['%H:%M'])
-    between_hours_end_hour = forms.TimeField(required=False, initial="00:00", widget=forms.TimeInput(format='%H:%M'), input_formats=['%H:%M'])
+
+    # Time fields
+    between_hours_start_minute = forms.TimeField(required=False, initial="00:00")
+    between_hours_end_minute = forms.TimeField(required=False, initial="23:59")
+    between_hours_start_hour = forms.TimeField(required=False, initial="00:00")
+    between_hours_end_hour = forms.TimeField(required=False, initial="23:59")
+    time_day = forms.TimeField(required=False, initial="00:00")
+    time_week = forms.TimeField(required=False, initial="00:00")
+    time_month = forms.TimeField(required=False, initial="00:00")
+
+    # Ending conditions
     ending_on = forms.ChoiceField(
-        choices=[("never", "Never"), ("date", "Date"), ("count", "Count")],
-        required=False, initial="never"
+        choices=ENDING_CHOICES,
+        required=False,
+        initial="never"
     )
     ending_on_date = forms.DateField(required=False)
-    ending_on_count = forms.IntegerField(required=False)
-    time_day = forms.TimeField(required=False, initial="00:00", widget=forms.TimeInput(format='%H:%M'), input_formats=['%H:%M'])
-    time_week = forms.TimeField(required=False, initial="00:00", widget=forms.TimeInput(format='%H:%M'), input_formats=['%H:%M'])
-    time_month = forms.TimeField(required=False, initial="00:00", widget=forms.TimeInput(format='%H:%M'), input_formats=['%H:%M'])
+    ending_on_count = forms.IntegerField(required=False, min_value=1, max_value=9999)
 
-    ITEM_CHOICES = (
-        ("webmaps", "Maps"),
-        ("services", "Services/Layers"),
-        ("webapps", "Apps"),
-        ("users", "Users")
+    # Items to update
+    items = forms.MultipleChoiceField(
+        choices=ITEM_CHOICES,
+        initial=[key for key, val in ITEM_CHOICES]
     )
-    items = forms.MultipleChoiceField(widget=forms.CheckboxSelectMultiple,
-                                      choices=ITEM_CHOICES, initial=[])
+
+    def _clean_day_of_week(self, field_name):
+        """Helper to clean and format day_of_week fields."""
+        days = self.cleaned_data.get(field_name)
+        if not days:
+            self.add_error(field_name, "At least one day must be selected.")
+            return ""
+        # Ensure consistent order for CrontabSchedule
+        return ",".join(sorted(days))
+
+    def _validate_time_range(self, start_field, end_field):
+        """Validate that start time is before end time."""
+        start_time = self.cleaned_data.get(start_field)
+        end_time = self.cleaned_data.get(end_field)
+
+        if start_time and end_time and start_time >= end_time:
+            self.add_error(end_field, f"End time must be after start time.")
+
+    def clean_beginning_on(self):
+        """Ensure beginning date is not in the past."""
+        beginning_on = self.cleaned_data.get('beginning_on')
+        if beginning_on and beginning_on < timezone.now().date():
+            raise ValidationError("Start date cannot be in the past.")
+        return beginning_on
+
+    def clean_ending_on_date(self):
+        """Ensure ending date is after beginning date."""
+        ending_date = self.cleaned_data.get('ending_on_date')
+        beginning_date = self.cleaned_data.get('beginning_on')
+
+        if ending_date and beginning_date and ending_date <= beginning_date:
+            raise ValidationError("End date must be after start date.")
+        return ending_date
 
     def clean(self):
+        """Comprehensive form validation."""
         cleaned_data = super().clean()
         repeat_type = cleaned_data.get("repeat_type")
+
+        # Validate required fields based on repeat type
         if repeat_type == "minute":
-            if cleaned_data.get("day_of_week_minute"):
-                cleaned_data["day_of_week_minute"] = ",".join(cleaned_data["day_of_week_minute"])
-            if not cleaned_data.get("day_of_week_minute"):
-                self.add_error("day_of_week_minute", "A day is required")
+            cleaned_data["day_of_week_minute"] = self._clean_day_of_week("day_of_week_minute")
+            self._validate_time_range("between_hours_start_minute", "between_hours_end_minute")
 
-        if repeat_type == "hour":
-            if cleaned_data.get("day_of_week_hour"):
-                cleaned_data["day_of_week_hour"] = ",".join(cleaned_data["day_of_week_hour"])
-            if not cleaned_data.get("day_of_week_hour"):
-                self.add_error("day_of_week_hour", "A day is required")
+            start_time = cleaned_data.get("between_hours_start_minute")
+            end_time = cleaned_data.get("between_hours_end_minute")
 
-        if repeat_type == "week":
-            if cleaned_data.get("day_of_week_week"):
-                cleaned_data["day_of_week_week"] = ",".join(cleaned_data["day_of_week_week"])
-            if not cleaned_data.get("day_of_week_week"):
-                self.add_error("day_of_week_week", "A day is required")
+            if start_time == end_time:
+                cleaned_data["time_range_hour_cron_minute"] = "*"
+            else:
+                cleaned_data["time_range_hour_cron_minute"] = f"{start_time.hour}-{end_time.hour}"
 
-        if cleaned_data.get("ending_on") == "date" and not cleaned_data.get("ending_on_date"):
-            self.add_error("ending_on_date", "Date is required.")
-        if cleaned_data.get("ending_on") == "count" and not cleaned_data.get("ending_on_count"):
-            self.add_error("ending_on_count", "Count is required.")
+        elif repeat_type == "hour":
+            cleaned_data["day_of_week_hour"] = self._clean_day_of_week("day_of_week_hour")
+            self._validate_time_range("between_hours_start_hour", "between_hours_end_hour")
+
+            start_time = cleaned_data.get("between_hours_start_hour")
+            end_time = cleaned_data.get("between_hours_end_hour")
+
+            if start_time == end_time:
+                cleaned_data["time_range_hour_cron_hour"] = "*"
+            else:
+                cleaned_data["time_range_hour_cron_hour"] = f"{start_time.hour}-{end_time.hour}"
+
+        elif repeat_type == "week":
+            cleaned_data["day_of_week_week"] = self._clean_day_of_week("day_of_week_week")
+
+        # Validate ending conditions
+        ending_on = cleaned_data.get("ending_on")
+        if ending_on == "date" and not cleaned_data.get("ending_on_date"):
+            self.add_error("ending_on_date", "An end date is required if 'Ending on Date' is selected.")
+        if ending_on == "count" and not cleaned_data.get("ending_on_count"):
+            self.add_error("ending_on_count", "A count is required if 'Ending on Count' is selected.")
+
+        # Validate items selection
         if not cleaned_data.get("items"):
-            self.add_error("items", "Items are required.")
+            self.add_error("items", "At least one item type to update must be selected.")
+
+        logger.debug(f"ScheduleForm cleaned_data: {cleaned_data}")
         return cleaned_data
 
-    def save_task(self):
+    def _create_crontab_schedule(self, data):
+        """Helper to create or get CrontabSchedule based on cleaned data."""
+        cron_args = {"day_of_month": "*", "month_of_year": "*"}
+
+        repeat_type = data["repeat_type"]
+
+        if repeat_type == "minute":
+            cron_args.update({
+                "minute": f"*/{data['repeat_interval_minute']}",
+                "hour": data["time_range_hour_cron_minute"],
+                "day_of_week": data["day_of_week_minute"],
+            })
+        elif repeat_type == "hour":
+            hour_spec = f"*/{data['repeat_interval_hour']}"
+            if data["time_range_hour_cron_hour"] != "*":
+                hour_spec = f"{data['time_range_hour_cron_hour']}/{data['repeat_interval_hour']}"
+
+            cron_args.update({
+                "minute": data['on_minute_hour'],
+                "hour": hour_spec,
+                "day_of_week": data["day_of_week_hour"],
+            })
+        elif repeat_type == "day":
+            time_day = data['time_day']
+            cron_args.update({
+                "minute": str(time_day.minute),
+                "hour": str(time_day.hour),
+                "day_of_week": f"*/{data['repeat_interval_day']}",
+            })
+        elif repeat_type == "week":
+            time_week = data['time_week']
+            cron_args.update({
+                "minute": str(time_week.minute),
+                "hour": str(time_week.hour),
+                "day_of_week": data['day_of_week_week'],
+            })
+        elif repeat_type == "month":
+            time_month = data['time_month']
+            cron_args.update({
+                "minute": str(time_month.minute),
+                "hour": str(time_month.hour),
+                "day_of_week": "*",
+                "day_of_month": data.get("day_of_month_input", "1"),
+                "month_of_year": f"*/{data['repeat_interval_month']}"
+            })
+        else:
+            raise ValidationError(f"Invalid repeat type: {repeat_type}")
+
+        logger.debug(f"Crontab schedule arguments: {cron_args}")
+        schedule, created = CrontabSchedule.objects.get_or_create(**cron_args)
+        return schedule
+
+    @transaction.atomic
+    def save_task(self, portal=None):
+        """
+        Saves the schedule as a PeriodicTask within a database transaction.
+
+        Args:
+            portal: The Portal model instance for which this task is being saved.
+
+        Returns:
+            Tuple of (PeriodicTask instance or None, error message string or None).
+        """
+        if not self.is_valid():
+            logger.error("ScheduleForm save_task called on invalid form.")
+            return None, "Form is not valid."
+
         cleaned_data = self.cleaned_data
-        cleaned_data["instance"] = str(cleaned_data.get("instance"))
+        portal_instance_obj = cleaned_data.get("instance")
+        if not portal_instance_obj:
+            return None, "Portal instance is required."
+
+        # Use provided portal or fall back to form data
+        target_portal = portal or portal_instance_obj
+        task_name = f"portal-data-update-{target_portal.alias}"
+
         try:
-            if cleaned_data["repeat_type"] == "minute":
-                schedule, _ = CrontabSchedule.objects.get_or_create(
-                    minute=f"*/{cleaned_data['repeat_interval_minute']}",
-                    hour="*" if (cleaned_data["between_hours_start_minute"].hour == 0 and cleaned_data[
-                        "between_hours_end_minute"].hour == 0) else
-                    f"{cleaned_data['between_hours_start_minute'].hour}-{cleaned_data['between_hours_end_minute'].hour}",
-                    day_of_week=cleaned_data["day_of_week_minute"],
-                    day_of_month="*",
-                    month_of_year="*",
+            # Clean up existing task
+            if hasattr(target_portal, 'task') and target_portal.task:
+                logger.debug(
+                    f"Deleting existing task '{target_portal.task.name}' "
+                    f"for portal '{target_portal.alias}' before rescheduling."
                 )
-            elif cleaned_data["repeat_type"] == "hour":
-                schedule, _ = CrontabSchedule.objects.get_or_create(
-                    minute=f"{cleaned_data['on_minute_hour']}",
-                    hour=f"*/{cleaned_data['repeat_interval_hour']}"
-                        if (cleaned_data["between_hours_start_hour"].hour == 0 and cleaned_data[
-                            "between_hours_end_hour"].hour == 0)
-                        else f"{cleaned_data['between_hours_start_hour'].hour}-{cleaned_data['between_hours_end_hour'].hour}/{cleaned_data['repeat_interval_hour']}",
-                    day_of_week=cleaned_data["day_of_week_hour"],
-                    day_of_month="*",
-                    month_of_year="*"
-                )
-            elif cleaned_data["repeat_type"] == "day":
-                schedule, _ = CrontabSchedule.objects.get_or_create(
-                    minute=f"{cleaned_data['time_day'].minute}",
-                    hour=f"{cleaned_data['time_day'].hour}",
-                    day_of_week=f"*/{cleaned_data['repeat_interval_day']}",
-                    day_of_month="*",
-                    month_of_year="*"
-                )
-            elif cleaned_data["repeat_type"] == "week":
-                schedule, _ = CrontabSchedule.objects.get_or_create(
-                    minute=f"{cleaned_data['time_week'].minute}",
-                    hour=f"{cleaned_data['time_week'].hour}",
-                    day_of_week=cleaned_data['day_of_week_week'],
-                    day_of_month="*",
-                    month_of_year="*"
-                )
-            elif cleaned_data["repeat_type"] == "month":
-                schedule, _ = CrontabSchedule.objects.get_or_create(
-                    minute=f"{cleaned_data['time_month'].minute}",
-                    hour=f"{cleaned_data['time_month'].hour}",
-                    day_of_week="*",
-                    day_of_month=cleaned_data.get("day_of_month", "*"),
-                    month_of_year=f"*/{cleaned_data['repeat_interval_month']}"
-                )
-            else:
-                return None, "Invalid repeat type selected"
+                target_portal.task.delete()
+                target_portal.task = None
 
-            # Custom serializer function
-            def json_serial(obj):
-                if isinstance(obj, (datetime.date, datetime.datetime, datetime.time)):
-                    return obj.isoformat()  # Convert to ISO 8601 string
-                raise TypeError(f"Type {type(obj)} not serializable")
+            schedule_obj = self._create_crontab_schedule(cleaned_data)
 
-            # Create Periodic Task
-            try:
-                task, _ = PeriodicTask.objects.update_or_create(
-                    name=cleaned_data["instance"],
-                    defaults={
-                        "interval": schedule if isinstance(schedule, IntervalSchedule) else None,
-                        "crontab": schedule if isinstance(schedule, CrontabSchedule) else None,
-                        "task": "app.tasks.update_all",
-                        "kwargs": json.dumps(cleaned_data, default=json_serial),
-                        "enabled": True,
-                        "start_time": cleaned_data.get("beginning_on"),
-                        "expires": None if cleaned_data.get("ending_on") != "date" else cleaned_data.get(
-                            "ending_on_date")
-                    }
+            task_kwargs = {
+                'portal_alias': target_portal.alias,
+                'items_to_update': cleaned_data.get('items', [])
+            }
 
-                )
-                portal = Portal.objects.get(alias=cleaned_data["instance"])
-                portal.task = task
-                portal.save()
-            except Exception as e:
-                return None, str(e)
-            return task, None
+            task_defaults = {
+                "crontab": schedule_obj,
+                "task": "app.tasks.update_all",
+                "kwargs": json.dumps(task_kwargs),
+                "enabled": False,
+                "start_time": cleaned_data.get("beginning_on"),
+                "description": f"Scheduled data update for portal {target_portal.alias}"
+            }
 
+            # Set expiry date if specified
+            if cleaned_data.get("ending_on") == "date" and cleaned_data.get("ending_on_date"):
+                task_defaults["expires"] = cleaned_data.get("ending_on_date")
+
+            periodic_task, created = PeriodicTask.objects.update_or_create(
+                name=task_name,
+                defaults=task_defaults
+            )
+
+            # Link task to portal
+            target_portal.task = periodic_task
+            target_portal.save(update_fields=['task'])
+
+            status_msg = "created" if created else "updated"
+            logger.info(
+                f"Periodic task '{periodic_task.name}' for portal "
+                f"'{target_portal.alias}' {status_msg} successfully."
+            )
+            return periodic_task, None
+
+        except ValidationError as ve:
+            logger.error(f"Validation error creating schedule for {target_portal.alias}: {ve}")
+            return None, str(ve)
         except Exception as e:
-            return None, str(e)
+            logger.error(
+                f"Failed to save periodic task for {target_portal.alias}: {e}",
+                exc_info=True
+            )
+            return None, f"Failed to save task: {e}"
 
 
 class SiteSettingsForm(forms.ModelForm):
     """
     Form for managing site-wide email configuration settings.
 
-    Based on the `SiteSettings` model. Includes validation for email port numbers
-    and encryption types, providing advisory messages for standard port usage.
-
-    Meta:
-        model (SiteSettings): The model this form is based on.
-        fields (list): List of fields from SiteSettings model to include in the form.
+    Provides validation for email settings including port numbers,
+    encryption types, and required field combinations.
     """
+
+    # Standard port mappings for validation
+    STANDARD_PORTS = {
+        'ssl': 465,
+        'starttls': 587,
+        'plain_text': [25, 587]
+    }
 
     class Meta:
         model = SiteSettings
@@ -255,62 +361,81 @@ class SiteSettingsForm(forms.ModelForm):
             "email_username", "email_password", "from_email", "reply_to",
             "webhook_secret"
         ]
-        widgets = {
-            'email_password': forms.PasswordInput(render_value=False),
-            'webhook_secret': forms.PasswordInput(render_value=False),
-        }
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
 
     def clean_email_encryption(self):
         """Validates the selected email encryption type."""
-        enc = self.cleaned_data.get("email_encryption")
-        if enc not in ("plain_text", "starttls", "ssl"):
-            raise ValidationError("Invalid encryption type selected.")
-        return enc
+        encryption = self.cleaned_data.get("email_encryption")
+        valid_types = ("plain_text", "starttls", "ssl")
+
+        if encryption and encryption not in valid_types:
+            raise ValidationError(f"Invalid encryption type. Must be one of: {', '.join(valid_types)}")
+        return encryption
 
     def clean_email_port(self):
         """Validates the email port number is within the valid range."""
         port = self.cleaned_data.get("email_port")
-        if port is not None and (port <= 0 or port > 65535):
-            raise ValidationError("Enter a valid port number (1-65535).")
+        if port is not None:
+            if not (1 <= port <= 65535):
+                raise ValidationError("Enter a valid port number (1-65535).")
         return port
 
-    def clean(self):
-        """
-        Cross-field validation for email settings.
+    def clean_webhook_secret(self):
+        """Validate webhook secret strength."""
+        secret = self.cleaned_data.get('webhook_secret')
+        if secret and len(secret) < 16:
+            raise ValidationError("Webhook secret must be at least 16 characters long.")
+        return secret
 
-        Ensures port is provided if host is set, and suggests standard ports.
-        """
+    def clean(self):
+        """Cross-field validation for email settings."""
         cleaned_data = super().clean()
+
         host = cleaned_data.get("email_host")
         port = cleaned_data.get("email_port")
-        enc = cleaned_data.get("email_encryption")
+        encryption = cleaned_data.get("email_encryption")
+        from_email = cleaned_data.get("from_email")
 
-        if host and port is None:
-            self.add_error("email_port", "Email port is required when a host is provided.")
+        # If any email field is set, require the core fields
+        email_fields_set = any([host, port, encryption, from_email])
 
-        if host and port and enc:
-            if enc == "ssl" and port != 465:
-                self.add_error("email_port", f"Port for SSL is typically 465 (you entered {port}).")
-            elif enc == "starttls" and port != 587:
-                self.add_error("email_port", f"Port for STARTTLS is typically 587 (you entered {port}).")
-            elif enc == "plain_text" and port not in [25,
-                                                      587]:
-                self.add_error("email_port",
-                               f"Port for Plain Text/Submission is typically 25 or 587 (you entered {port}).")
+        if email_fields_set:
+            required_fields = {
+                "email_host": "SMTP host is required for email configuration",
+                "email_port": "SMTP port is required for email configuration",
+                "email_encryption": "Encryption type is required for email configuration",
+                "from_email": "From email address is required for email configuration"
+            }
 
+            for field_name, error_msg in required_fields.items():
+                if not cleaned_data.get(field_name):
+                    self.add_error(field_name, error_msg)
+
+            # Port recommendations based on encryption type
+            if host and port and encryption:
+                self._validate_port_encryption_combination(port, encryption)
+
+        logger.debug(f"SiteSettingsForm cleaned_data keys: {list(cleaned_data.keys())}")
         return cleaned_data
+
+    def _validate_port_encryption_combination(self, port, encryption):
+        """Validate port/encryption combinations and provide warnings."""
+        if encryption == "ssl" and port != 465:
+            self.add_error("email_port",
+                           f"Port {port} is unusual for SSL encryption. Standard port is 465.")
+        elif encryption == "starttls" and port != 587:
+            self.add_error("email_port",
+                           f"Port {port} is unusual for STARTTLS encryption. Standard port is 587.")
+        elif encryption == "plain_text" and port not in [25, 587]:
+            self.add_error("email_port",
+                           f"Port {port} is unusual for plain text. Standard ports are 25 or 587.")
 
 
 class ToolsForm(forms.ModelForm):
     """
-    Form for configuring portal automation tools, based on `PortalToolSettings`.
+    Form for configuring portal automation tools.
 
     Handles enabling/disabling various tools and their specific parameters.
-    The `save` method saves the `PortalToolSettings` instance and then creates or
-    updates separate Celery Beat tasks for each enabled tool.
+    Creates separate Celery Beat tasks for each enabled tool.
     """
 
     class Meta:
@@ -318,8 +443,7 @@ class ToolsForm(forms.ModelForm):
         fields = [
             'tool_pro_license_enabled', 'tool_pro_duration', 'tool_pro_warning',
             'tool_public_unshare_enabled', 'tool_public_unshare_score',
-            'tool_public_unshare_trigger',
-            'tool_public_unshare_notify_limit',
+            'tool_public_unshare_trigger', 'tool_public_unshare_notify_limit',
             'tool_inactive_user_enabled', 'tool_inactive_user_duration',
             'tool_inactive_user_warning', 'tool_inactive_user_action',
         ]
@@ -328,47 +452,72 @@ class ToolsForm(forms.ModelForm):
         """Validates tool-specific fields based on whether the tool is enabled."""
         cleaned_data = super().clean()
 
+        # Tool configurations with their dependent fields
         tool_configs = [
-            ('tool_pro_license_enabled', ['tool_pro_duration', 'tool_pro_warning']),
+            ('tool_pro_license_enabled',
+             ['tool_pro_duration', 'tool_pro_warning'],
+             'Pro License Management'),
             ('tool_public_unshare_enabled',
-             ['tool_public_unshare_score', 'tool_public_unshare_notify_limit', 'tool_public_unshare_trigger']),
+             ['tool_public_unshare_score', 'tool_public_unshare_notify_limit', 'tool_public_unshare_trigger'],
+             'Public Item Unshare'),
             ('tool_inactive_user_enabled',
-             ['tool_inactive_user_duration', 'tool_inactive_user_warning', 'tool_inactive_user_action']),
+             ['tool_inactive_user_duration', 'tool_inactive_user_warning', 'tool_inactive_user_action'],
+             'Inactive User Management'),
         ]
 
-        for enabled_field, dependent_fields in tool_configs:
+        for enabled_field, dependent_fields, tool_name in tool_configs:
             if cleaned_data.get(enabled_field):
-                for dep_field in dependent_fields:
-                    if not cleaned_data.get(dep_field) and cleaned_data.get(dep_field) != 0:
-                        self.add_error(dep_field,
-                                       f"This field is required when '{self.fields[enabled_field].label}' is enabled.")
+                self._validate_tool_dependencies(cleaned_data, enabled_field, dependent_fields, tool_name)
 
         return cleaned_data
 
-    def save(self, commit=True, portal=None):
+    def _validate_tool_dependencies(self, cleaned_data, enabled_field,
+                                    dependent_fields, tool_name):
+        """Validate that all required fields are set when a tool is enabled."""
+        for dep_field in dependent_fields:
+            value = cleaned_data.get(dep_field)
+            # Check for None or empty string (but allow 0 as valid)
+            if value is None or value == '':
+                field_label = self.fields[dep_field].label or dep_field
+                self.add_error(dep_field,
+                               f"This field is required when {tool_name} is enabled.")
+
+    @transaction.atomic
+    def save(self, commit: bool = True, portal=None):
         """
-        Saves the PortalToolSettings model instance and then creates/updates the
-        associated periodic tasks for each enabled automation tool.
+        Saves the PortalToolSettings and manages associated periodic tasks.
 
         :param commit: If True, saves the instance to the database.
         :type commit: bool
-        :param portal: The Portal model instance associated with these tool settings.
-                       If not provided, it's derived from the form's instance.
-        :type portal: enterpriseviz.models.Portal, optional
+        :param portal: The Portal instance associated with these settings.
+        :type portal: enterpriseviz.models.Portal
         :return: The saved PortalToolSettings instance.
         :rtype: enterpriseviz.models.PortalToolSettings
         """
         settings_instance = super().save(commit=commit)
 
-        # Handle the periodic task creation/update for each tool
+        if not commit:
+            return settings_instance
+
+        # Get the target portal
         target_portal = portal or settings_instance.portal
         if not target_portal:
             logger.error(f"Portal not available for tool settings {settings_instance.pk}.")
             return settings_instance
 
+        try:
+            self._manage_tool_tasks(settings_instance, target_portal)
+        except Exception as e:
+            logger.error(f"Error managing tool tasks for portal {target_portal.alias}: {e}", exc_info=True)
+
+        return settings_instance
+
+    def _manage_tool_tasks(self, settings_instance: PortalToolSettings, target_portal: Portal) -> None:
+        """Create, update, or delete periodic tasks for each tool."""
         # Create daily schedule (midnight)
         daily_schedule, _ = CrontabSchedule.objects.get_or_create(
-            minute='0', hour='0', day_of_week='*', day_of_month='*', month_of_year='*',
+            minute='0', hour='0', day_of_week='*',
+            day_of_month='*', month_of_year='*'
         )
 
         # Tool configurations for creating separate tasks
@@ -398,7 +547,7 @@ class ToolsForm(forms.ModelForm):
             },
         ]
 
-        # Handle public unshare tool (only for daily trigger)
+        # Add public unshare tool for daily trigger only
         if (settings_instance.tool_public_unshare_enabled and
             settings_instance.tool_public_unshare_trigger == 'daily'):
             tool_configs.append({
@@ -412,22 +561,11 @@ class ToolsForm(forms.ModelForm):
                 }
             })
 
-        # Create or update/delete tasks for each tool
+        # Create or update/delete tasks
         for config in tool_configs:
-            self._manage_tool_task(config, daily_schedule)
+            self._manage_individual_task(config, daily_schedule)
 
-        # Clean up old combined task if it exists (backwards compatibility)
-        old_task_name = f'portal-tools-automation-{target_portal.alias}'
-        try:
-            old_task = PeriodicTask.objects.get(name=old_task_name)
-            old_task.delete()
-            logger.info(f"Removed old combined tools task: {old_task_name}")
-        except PeriodicTask.DoesNotExist:
-            pass
-
-        return settings_instance
-
-    def _manage_tool_task(self, config, schedule):
+    def _manage_individual_task(self, config, schedule):
         """Create, update, or delete a periodic task for a specific tool."""
         task_name = config['task_name']
 
@@ -445,8 +583,8 @@ class ToolsForm(forms.ModelForm):
                 periodic_task, created = PeriodicTask.objects.update_or_create(
                     name=task_name, defaults=task_defaults
                 )
-                status_msg = "created" if created else "updated"
-                logger.info(f"Periodic task '{task_name}' {status_msg} successfully.")
+                status = "created" if created else "updated"
+                logger.info(f"Periodic task '{task_name}' {status} successfully.")
             except Exception as e:
                 logger.error(f"Failed to save periodic task '{task_name}': {e}", exc_info=True)
         else:
@@ -458,6 +596,9 @@ class ToolsForm(forms.ModelForm):
             except PeriodicTask.DoesNotExist:
                 # Task doesn't exist, nothing to do
                 pass
+                pass  # Task doesn't exist, nothing to do
+
+
 
 
 class WebhookSettingsForm(forms.ModelForm):
