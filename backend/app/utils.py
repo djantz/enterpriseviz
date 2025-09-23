@@ -15,16 +15,21 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 # ----------------------------------------------------------------------
-from datetime import datetime, timedelta, timezone as dt_timezone
+import hashlib
 import logging
 import re
+import secrets
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timedelta, timezone as dt_timezone
 from itertools import combinations, groupby
 from operator import itemgetter
 
 import requests
 from arcgis import gis
 from arcgis.mapping import WebMap
+from cryptography.fernet import Fernet
+from django.conf import settings
+from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import get_connection, EmailMultiAlternatives, EmailMessage
 from django.core.validators import validate_email
@@ -34,10 +39,127 @@ from django.utils.html import escape
 from fuzzywuzzy import fuzz
 from tabulate import tabulate
 
-from .models import Webmap, Service, Layer, App, Portal, SiteSettings
 from . import tasks
+from .models import Webmap, Service, Layer, App, Portal, SiteSettings
 
 logger = logging.getLogger('enterpriseviz.utils')
+
+
+class CredentialManager:
+    """Manages temporary credential storage with encryption and TTL."""
+
+    @staticmethod
+    def _get_encryption_key():
+        """Get or create encryption key for credentials."""
+        key = getattr(settings, 'CREDENTIAL_ENCRYPTION_KEY', None)
+        if not key:
+            # Generate a key for development - in production this should be set explicitly
+            if settings.DEBUG:
+                logger.warning("CREDENTIAL_ENCRYPTION_KEY not set. Generating temporary key for development.")
+                key = Fernet.generate_key().decode()
+            else:
+                logger.critical("CREDENTIAL_ENCRYPTION_KEY is not set in Django settings! Please create one.")
+                raise ValueError("CREDENTIAL_ENCRYPTION_KEY must be set in production")
+        return key.encode()
+
+    @staticmethod
+    def _validate_token(credential_token):
+        """Validate token format."""
+        if not credential_token or not isinstance(credential_token, str):
+            return False
+        if len(credential_token) != 64:  # SHA256 hex length
+            return False
+        try:
+            int(credential_token, 16)  # Verify it's valid hex
+            return True
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _sanitize_credentials(username, password):
+        """Basic credential validation."""
+        if not username or not password:
+            raise ValueError("Username and password cannot be empty")
+        if not isinstance(username, str) or not isinstance(password, str):
+            raise ValueError("Credentials must be strings")
+        if len(username.strip()) == 0 or len(password.strip()) == 0:
+            raise ValueError("Credentials cannot be just whitespace")
+        return username.strip(), password
+
+    @staticmethod
+    def store_credentials(username, password, ttl_seconds=300):
+        """
+        Store credentials temporarily with encryption.
+        :return: Unique token to retrieve credentials, or None on failure.
+        """
+        try:
+            username, password = CredentialManager._sanitize_credentials(username, password)
+
+            timestamp = str(datetime.now().timestamp())
+            entropy = secrets.token_hex(16)
+            token_data = f"{username}:{timestamp}:{entropy}"
+            credential_token = hashlib.sha256(token_data.encode()).hexdigest()
+
+            fernet = Fernet(CredentialManager._get_encryption_key())
+            credentials_to_encrypt = f"{username}:{password}"
+            encrypted_data = fernet.encrypt(credentials_to_encrypt.encode())
+
+            cache_key = f"portal_creds:{credential_token}"
+            cache.set(cache_key, encrypted_data, timeout=ttl_seconds)
+
+            logger.debug(f"Stored credentials for user '{username[0]}***' with token {credential_token[:8]}...")
+            return credential_token
+
+        except Exception as e:
+            logger.error(f"Failed to store credentials: {type(e).__name__} - {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    def retrieve_credentials(credential_token):
+        """
+        Retrieve and decrypt credentials using token.
+        :return: dict {'username': str, 'password': str} or None if not found/expired/decryption error.
+        """
+        if not CredentialManager._validate_token(credential_token):
+            logger.warning("Invalid credential token format")
+            return None
+
+        try:
+            cache_key = f"portal_creds:{credential_token}"
+            encrypted_data = cache.get(cache_key)
+
+            if not encrypted_data:
+                logger.warning(f"Credentials not found or expired for token {credential_token[:8]}...")
+                return None
+
+            fernet = Fernet(CredentialManager._get_encryption_key())
+            decrypted_data_bytes = fernet.decrypt(encrypted_data)
+            decrypted_data_str = decrypted_data_bytes.decode()
+
+            # Split on first colon to handle passwords with colons
+            username, password = decrypted_data_str.split(':', 1)
+
+            return {'username': username, 'password': password}
+
+        except Exception as e:
+            logger.error(
+                f"Failed to retrieve or decrypt credentials for token {credential_token[:8]}...: {type(e).__name__} - {e}",
+                exc_info=True)
+            return None
+
+    @staticmethod
+    def delete_credentials(credential_token):
+        """Delete credentials immediately."""
+        if not CredentialManager._validate_token(credential_token):
+            return
+
+        try:
+            cache_key = f"portal_creds:{credential_token}"
+            cache.delete(cache_key)
+            logger.debug(f"Deleted credentials for token {credential_token[:8]}...")
+        except Exception as e:
+            logger.error(f"Failed to delete credentials for token {credential_token[:8]}...: {type(e).__name__} - {e}",
+                         exc_info=True)
 
 
 @dataclass
@@ -217,7 +339,7 @@ def try_connection(connection_details):
 
     logger.debug(f"Attempting connection to {url} with user {username}.")
     try:
-        target_gis = gis.GIS(url, username, password)
+        target_gis = gis.GIS(url, username, password, verify_cert=False)
         is_agol = target_gis.properties.isPortal is False
 
         # Verify successful authentication by checking if user property is accessible
@@ -238,7 +360,7 @@ def try_connection(connection_details):
         return {"authenticated": False, "is_agol": None, "error": f"Connection to {url} failed."}
 
 
-def connect(portal_model_instance, username=None, password=None):
+def connect(portal_model_instance, credential_token=None):
     """
     Establishes a connection to an ArcGIS instance defined by a Portal model.
 
@@ -247,10 +369,8 @@ def connect(portal_model_instance, username=None, password=None):
 
     :param portal_model_instance: The Portal model instance.
     :type portal_model_instance: enterpriseviz.models.Portal
-    :param username: Optional username for authentication.
-    :type username: str, optional
-    :param password: Optional password for authentication.
-    :type password: str, optional
+    :param credential_token:Token for temporary credentials.
+    :type credential_token: str, optional
     :return: An authenticated `arcgis.gis.GIS` object.
     :rtype: arcgis.gis.GIS
     :raises ValueError: If portal URL is missing.
@@ -263,39 +383,53 @@ def connect(portal_model_instance, username=None, password=None):
     url = portal_model_instance.url
     logger.debug(f"Preparing to connect to {url} for instance {portal_model_instance.alias}.")
 
-    gis_kwargs = {'verify_cert': True}
+    gis_kwargs = {'verify_cert': False}
+    target_gis = None
 
     try:
-        if username and password:
-            logger.debug(f"Using provided credentials for {url}.")
+        # Determine credentials to use
+        if credential_token:
+            # Use temporary credentials from token
+            creds = CredentialManager.retrieve_credentials(credential_token)
+            if not creds:
+                error = {"error": "Authentication failed - credentials not found or expired"}
+                logger.error(f"Failed to retrieve credentials for portal {portal_model_instance.alias}")
+                return None, error
+
+            username = creds['username']
+            password = creds['password']
+            logger.info(f"Using temporary credentials for portal {portal_model_instance.alias}")
             target_gis = gis.GIS(url, username, password, **gis_kwargs)
+
         elif portal_model_instance.token and portal_model_instance.token_expiration and portal_model_instance.token_expiration > timezone.now():
             logger.debug(f"Using valid stored token for {url}.")
             target_gis = gis.GIS(url, token=portal_model_instance.token, **gis_kwargs)
             if target_gis.properties.isPortal:
                 _update_portal_token_info(portal_model_instance, target_gis)
+
         elif portal_model_instance.store_password and portal_model_instance.username and portal_model_instance.password:
             logger.debug(f"Using stored credentials for {url}.")
             target_gis = gis.GIS(url, portal_model_instance.username, portal_model_instance.password, **gis_kwargs)
-        else:  # Expired or no token, and no stored user/pass, or store_password is false
+
+        else:
             logger.warning(f"No valid credentials or token for {url}. Authentication may fail or be anonymous.")
-            target_gis = gis.GIS(url, **gis_kwargs)
-
-        if not target_gis.properties.isPortal and not portal_model_instance.org_id:  # is AGOL
-            _fetch_and_save_org_id(portal_model_instance, target_gis)
-
-        # Ensure connection is actually established (GIS() can sometimes not raise error on init)
-        if not target_gis._con.is_logged_in and (
-            username or portal_model_instance.store_password):
-            logger.error(f"Failed to establish an authenticated session for {url}.")
-            raise ConnectionError(f"Failed to establish an authenticated session for {url}.")
-
-        logger.info(f"Successfully connected to {url} (Instance: {portal_model_instance.alias}).")
-        return target_gis
+            return None
 
     except Exception as e:
-        logger.error(f"Failed to connect to {url} for instance {portal_model_instance.alias}: {e}", exc_info=True)
-        raise ConnectionError(f"Connection to {url} failed: {e}")
+        logger.error(f"Failed to establish an authenticated session for {url}: {e}", exc_info=True)
+        raise ConnectionError(f"Failed to establish an authenticated session for {url}.")
+
+    if not target_gis.properties.isPortal and not portal_model_instance.org_id:  # is AGOL
+        _fetch_and_save_org_id(portal_model_instance, target_gis)
+
+    # Ensure connection is actually established (GIS() can sometimes not raise error on init)
+    if not target_gis._con.is_logged_in and (
+        credential_token or portal_model_instance.store_password):
+        logger.error(f"Failed to establish an authenticated session for {url}.")
+        raise ConnectionError(f"Failed to establish an authenticated session for {url}.")
+
+    logger.info(f"Successfully connected to {url} (Instance: {portal_model_instance.alias}).")
+    return target_gis
 
 
 def _update_portal_token_info(portal_model_instance, target_gis_connection):
@@ -1475,4 +1609,4 @@ def _webhook_item_crud(target, portal_instance, event_id, operation):
 def _process_user_event(portal_instance, event_id, operation):
     """Process user webhook events."""
     logger.info(f"Processing user webhook - ID: {event_id}, Operation: {operation}")
-    tasks.process_user.delay(portal_instance.id, event_id, operation)
+    tasks.process_user.delay(portal_instance.alias, event_id, operation)
