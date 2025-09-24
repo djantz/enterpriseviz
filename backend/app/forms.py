@@ -594,11 +594,101 @@ class ToolsForm(forms.ModelForm):
                 existing_task.delete()
                 logger.info(f"Disabled and removed periodic task: {task_name}")
             except PeriodicTask.DoesNotExist:
-                # Task doesn't exist, nothing to do
-                pass
                 pass  # Task doesn't exist, nothing to do
 
 
+class PortalCredentialsForm(forms.Form):
+    """
+    Form for handling portal credential updates with context-aware validation.
+
+    The form adapts its validation based on whether credentials are actually required
+    for the portal (i.e., portal.store_password is False).
+    """
+
+    ITEM_CHOICES = [
+        ('webmaps', 'Web Maps'),
+        ('services', 'Services'),
+        ('webapps', 'Web Apps'),
+        ('users', 'Users')
+    ]
+
+    username = forms.CharField(max_length=150, required=False)
+    password = forms.CharField(required=False, widget=forms.PasswordInput())
+    instance = forms.CharField(max_length=100, widget=forms.HiddenInput())
+    items = forms.ChoiceField(choices=ITEM_CHOICES, widget=forms.HiddenInput())
+    delete = forms.BooleanField(required=False, widget=forms.HiddenInput())
+
+    def __init__(self, *args, portal=None, require_credentials=False, **kwargs):
+        """
+        Initialize form with portal context.
+
+        Args:
+            portal: Portal instance for context
+            require_credentials: Whether credentials are required for this portal
+        """
+        self.portal = portal
+        self.require_credentials = require_credentials
+        super().__init__(*args, **kwargs)
+
+        # Adjust field requirements based on context
+        if self.require_credentials:
+            self.fields['username'].required = True
+            self.fields['password'].required = True
+            self.fields['username'].widget.attrs.update({
+                'placeholder': 'Portal username',
+                'class': 'form-control'
+            })
+            self.fields['password'].widget.attrs.update({
+                'placeholder': 'Portal password',
+                'class': 'form-control'
+            })
+
+    def clean_instance(self):
+        """Validate that the portal instance exists."""
+        instance_alias = self.cleaned_data.get('instance')
+
+        if not instance_alias:
+            raise ValidationError("Portal instance is required.")
+
+        # Verify portal exists if not already provided
+        if not self.portal:
+            try:
+                from .models import Portal
+                self.portal = Portal.objects.get(alias=instance_alias)
+            except Portal.DoesNotExist:
+                raise ValidationError(f"Portal '{instance_alias}' does not exist.")
+
+        return instance_alias
+
+    def clean(self):
+        """Context-aware credential validation."""
+        cleaned_data = super().clean()
+        username = cleaned_data.get('username')
+        password = cleaned_data.get('password')
+
+        # Only validate credentials if they're required
+        if self.require_credentials:
+            # Both must be provided when credentials are required
+            if not username:
+                raise ValidationError({'username': "Username is required for this portal."})
+            if not password:
+                raise ValidationError({'password': "Password is required for this portal."})
+        else:
+            # When not required, validate pairs if either is provided
+            if username and not password:
+                raise ValidationError({
+                    'password': "Password is required when username is provided"
+                })
+            if password and not username:
+                raise ValidationError({
+                    'username': "Username is required when password is provided"
+                })
+
+        return cleaned_data
+
+    def get_portal(self):
+        """Return the portal instance."""
+        return self.portal
 
 
 class WebhookSettingsForm(forms.ModelForm):
