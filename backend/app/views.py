@@ -742,7 +742,7 @@ def refresh_portal_view(request):
                     portal.portal_type = "agol" if auth_result["is_agol"] else "portal"
                     portal.save(update_fields=['portal_type'])
 
-                credential_token = utils.CredentialManager.store_credentials(username, password, ttl_seconds=600)
+                credential_token = utils.CredentialManager.store_credentials(username, password, ttl_seconds=300)
                 if not credential_token:
                     logger.error(f"Failed to store temporary credentials for {portal.alias}.")
                     form.add_error(None, "System error: Failed to secure credentials.")
@@ -1373,56 +1373,139 @@ def metadata_view(request, instance):
         portal = get_object_or_404(Portal, alias=instance)
     except Http404:
         logger.warning(f"Portal '{instance}' not found.")
-        return HttpResponse(status=404, headers={
-            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Portal instance not found."})})
+        return HttpResponse(status=200, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Portal instance not found."})
+        })
 
-    username = request.POST.get("username")
-    password = request.POST.get("password")
-    auth_args = {}
+    # Determine if credentials are needed
+    credentials_required = not portal.store_password
+    credential_token = None
 
-    if username and password:
-        logger.debug(f"Credentials provided for {instance}.")
-        auth_result = utils.try_connection(request.POST)
-        if not auth_result.get("authenticated", False):
-            logger.warning(f"metadata_view: Auth failed for {instance} with user {username}.")
-            return HttpResponse(status=401, headers={
-                "HX-Trigger": json.dumps({"showDangerAlert": "Unable to connect. Verify credentials."})})
-        logger.info(f"Authenticated to {instance} as {username}.")
-        if portal.portal_type is None and auth_result.get("is_agol") is not None:
-            portal.portal_type = "agol" if auth_result["is_agol"] else "portal"
-            portal.save(update_fields=['portal_type'])
-        auth_args = {'username': username, 'password': password}
-    elif not portal.store_password:
-        logger.debug(f"Credentials required for {instance}, rendering form.")
-        return render(request, "portals/portal_credentials.html",
-                      {"instance": portal, "items": "metadata_report"})
+    # Check if this is a credential form submission
+    is_credential_submission = 'username' in request.POST or 'password' in request.POST
 
+    if credentials_required:
+        if is_credential_submission:
+            # Validate credential form submission
+            logger.debug(f"Processing credential form submission for portal '{portal.alias}'.")
+            form = PortalCredentialsForm(
+                request.POST,
+                portal=portal,
+                require_credentials=True
+            )
+
+            if form.is_valid():
+                username = form.cleaned_data['username']
+                password = form.cleaned_data['password']
+
+                # Test connection
+                logger.debug(f"Testing auth for {portal.alias} with user {username[0] if username else ''}...")
+                auth_payload = {'username': username, 'password': password, 'url': portal.url}
+                auth_result = utils.try_connection(auth_payload)
+
+                if not auth_result.get("authenticated", False):
+                    logger.warning(f"Auth failed for {portal.alias} during form submission.")
+                    form.add_error('password',
+                                   auth_result.get("error", "Authentication failed. Please verify credentials."))
+                    context = {
+                        "form": form,
+                        "instance": portal,
+                        "items": "metadata",
+                        "error_message": "Authentication failed. Please verify credentials."
+                    }
+                    return render(request, "portals/portal_credentials.html", context, status=200)
+
+                # Store credentials
+                logger.info(f"Authenticated to {portal.alias} as {username[0] if username else ''}...")
+
+                # Update portal type if needed
+                if portal.portal_type is None and auth_result.get("is_agol") is not None:
+                    portal.portal_type = "agol" if auth_result["is_agol"] else "portal"
+                    portal.save(update_fields=['portal_type'])
+
+                credential_token = utils.CredentialManager.store_credentials(username, password, ttl_seconds=300)
+                if not credential_token:
+                    logger.error(f"Failed to store temporary credentials for {portal.alias}.")
+                    form.add_error(None, "System error: Failed to secure credentials.")
+                    context = {
+                        "form": form,
+                        "instance": portal,
+                        "items": "metadata",
+                        "error_message": "System error: Failed to secure credentials."
+                    }
+                    return render(request, "portals/portal_credentials.html", context, status=200)
+
+                logger.debug(f"Credential token generated for {portal.alias}: {credential_token[:8]}...")
+
+            else:
+                # Form validation failed
+                logger.warning(f"Credential form validation failed for {portal.alias}: {form.errors}")
+                context = {
+                    "form": form,
+                    "instance": portal,
+                    "items": "metadata",
+                    "error_message": "Please correct the errors below."
+                }
+                return render(request, "portals/portal_credentials.html", context, status=200)
+        else:
+            # Need to show credential form
+            logger.debug(f"Credentials required for {portal.alias}; rendering credential form.")
+            form = PortalCredentialsForm(
+                initial={
+                    'instance': portal.alias,
+                    'items': "metadata"
+                },
+                portal=portal,
+                require_credentials=True
+            )
+            context = {
+                "form": form,
+                "instance": portal,
+                "items": "metadata",
+            }
+            return render(request, "portals/portal_credentials.html", context)
+    else:
+        # Portal has stored credentials, proceed directly
+        logger.debug(f"Portal '{portal.alias}' has stored credentials. Proceeding to fetch metadata.")
+
+    # Fetch metadata report
     try:
         logger.debug(f"metadata_view: Fetching metadata for {instance}.")
-        metadata_report_data = utils.get_metadata(portal, **auth_args)
+
+        metadata_report_data = utils.get_metadata(portal, credential_token)
 
         if "error" in metadata_report_data:
             error_msg = metadata_report_data["error"]
             logger.warning(f"Error from get_metadata for '{instance}': {error_msg}")
-            return HttpResponse(status=500,
-                                headers={"HX-Trigger-After-Settle": json.dumps({"showDangerAlert": error_msg})})
+            return HttpResponse(status=200, headers={
+                "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": error_msg})
+            })
 
         context = {
             "portal_list": Portal.objects.values_list("alias", "portal_type", "url"),
             "current_portal": portal,
             "instance_alias": instance,
-            "metadata_items": metadata_report_data.get("metadata", []),
+            "metadata": metadata_report_data.get("metadata", []),
         }
+
         logger.debug(f"Rendering metadata for '{instance}'.")
         response = render(request, template_name, context)
-        if (username and password) or (not portal.store_password and not (username and password)):
+
+        # Close modal if credentials were provided or form was submitted
+        if credential_token or (credentials_required and is_credential_submission):
             response["HX-Trigger"] = json.dumps({"closeModal": True})
+
         return response
 
     except Exception as e:
         logger.error(f"Error processing metadata for '{instance}': {e}", exc_info=True)
+        # Clean up credential token if an error occurred
+        if credential_token:
+            utils.CredentialManager.delete_credentials(credential_token)
+            logger.info("Cleaned up credential token due to metadata processing error.")
         return HttpResponse(status=500, headers={
-            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error getting metadata report."})})
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error getting metadata report."})
+        })
 
 
 @login_required

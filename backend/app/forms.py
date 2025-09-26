@@ -609,7 +609,10 @@ class PortalCredentialsForm(forms.Form):
         ('webmaps', 'Web Maps'),
         ('services', 'Services'),
         ('webapps', 'Web Apps'),
-        ('users', 'Users')
+        ('users', 'Users'),
+        ('metadata', 'Metadata'),
+        ('unused', 'Unused Items'),
+        ('duplicates', 'Duplicates')
     ]
 
     username = forms.CharField(max_length=150, required=False)

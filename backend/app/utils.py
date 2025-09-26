@@ -954,7 +954,7 @@ def get_missing_item_attrs(arcgis_item):
     return status
 
 
-def get_metadata(portal_model_instance, username=None, password=None):
+def get_metadata(portal_model_instance, credential_token=None):
     """
     Retrieves metadata compliance for content items in a portal.
 
@@ -963,17 +963,15 @@ def get_metadata(portal_model_instance, username=None, password=None):
 
     :param portal_model_instance: Portal model instance.
     :type portal_model_instance: enterpriseviz.models.Portal
-    :param username: Optional username for authentication.
-    :type username: str, optional
-    :param password: Optional password for authentication.
-    :type password: str, optional
+    :param credential_token: Token for temporary credentials (optional)
+    :type credential_token: str
     :return: Dictionary with 'metadata' (list of compliance dicts).
              Returns {'error': msg} on failure.
     :rtype: dict
     """
     logger.debug(f"Fetching metadata for portal '{portal_model_instance.alias}'.")
     try:
-        target_gis = connect(portal_model_instance, username, password)
+        target_gis = connect(portal_model_instance, credential_token)
     except ConnectionError as e:
         logger.error(f"Connection failed for '{portal_model_instance.alias}': {e}")
         return {"error": f"Connection failed for portal '{portal_model_instance.alias}'."}
