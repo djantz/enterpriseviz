@@ -27,6 +27,7 @@ This deployment package is designed for easy setup with Docker Compose. Follow t
    `.env.django`:
 
     * `REDIS_URL`: URL for the Redis instance (e.g., `redis://redis:6379/0`).
+    * `CACHE_URL`: URL for the cache backend (Redis). Use the same host as `REDIS_URL` but a different database index (e.g., `redis://redis:6379/1`).
     * `DJANGO_SUPERUSER_USERNAME`: Username for the Django superuser.
     * `DJANGO_SUPERUSER_PASSWORD`: Password for the Django superuser.
     * `DJANGO_SUPERUSER_EMAIL`: Email for the Django superuser
@@ -154,6 +155,9 @@ Once you've configured the `.env` files, you can deploy EnterpriseViz using Dock
             * Preferences are saved to your user
         * **Service Usage:** Enable or disable real-time service usage graphs in detail pages.
             * Sometimes usage graphs can take a while to retrieve from ArcGIS Server
+        * **Webhooks:** Configure and manage the Webhook Secret used to validate incoming webhook requests for immediate processing of events.
+            * The Webhook Secret is required. Set or rotate it using the Webhook Settings modal/form in Settings.
+            * Copy this secret into your ArcGIS webhook configuration so EnterpriseViz can verify requests.
 
     * **Portal Tools**
 
