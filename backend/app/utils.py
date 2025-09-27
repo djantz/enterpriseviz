@@ -35,6 +35,7 @@ from django.core.mail import get_connection, EmailMultiAlternatives, EmailMessag
 from django.core.validators import validate_email
 from django.db.models import F, QuerySet, Q
 from django.utils import timezone
+from django.utils.crypto import constant_time_compare
 from django.utils.html import escape
 from fuzzywuzzy import fuzz
 from tabulate import tabulate
@@ -57,6 +58,8 @@ class CredentialManager:
             if settings.DEBUG:
                 logger.warning("CREDENTIAL_ENCRYPTION_KEY not set. Generating temporary key for development.")
                 key = Fernet.generate_key().decode()
+                setattr(settings, 'CREDENTIAL_ENCRYPTION_KEY', key)
+
             else:
                 logger.critical("CREDENTIAL_ENCRYPTION_KEY is not set in Django settings! Please create one.")
                 raise ValueError("CREDENTIAL_ENCRYPTION_KEY must be set in production")
@@ -392,9 +395,8 @@ def connect(portal_model_instance, credential_token=None):
             # Use temporary credentials from token
             creds = CredentialManager.retrieve_credentials(credential_token)
             if not creds:
-                error = {"error": "Authentication failed - credentials not found or expired"}
                 logger.error(f"Failed to retrieve credentials for portal {portal_model_instance.alias}")
-                return None, error
+                raise ConnectionError("Authentication failed. Credentials not found or expired")
 
             username = creds['username']
             password = creds['password']
@@ -413,7 +415,7 @@ def connect(portal_model_instance, credential_token=None):
 
         else:
             logger.warning(f"No valid credentials or token for {url}. Authentication may fail or be anonymous.")
-            return None
+            raise ConnectionError(f"No valid credentials or token for {url}.")
 
     except Exception as e:
         logger.error(f"Failed to establish an authenticated session for {url}: {e}", exc_info=True)
@@ -1461,7 +1463,7 @@ def validate_webhook_secret(request):
         logger.warning("Webhook secret not configured in SiteSettings.")
         return False
 
-    if signature != webhook_secret:
+    if not constant_time_compare(signature, webhook_secret):
         logger.warning("Webhook signature mismatch.")
         return False
 

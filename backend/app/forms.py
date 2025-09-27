@@ -1,5 +1,4 @@
 # Licensed under GPLv3 - See LICENSE file for details.
-import datetime
 import json
 import logging
 
@@ -167,30 +166,56 @@ class ScheduleForm(forms.Form):
         # Validate required fields based on repeat type
         if repeat_type == "minute":
             cleaned_data["day_of_week_minute"] = self._clean_day_of_week("day_of_week_minute")
+            interval = cleaned_data.get("repeat_interval_minute")
+            if not interval:
+                self.add_error("repeat_interval_minute", "Repeat interval is required for minute schedules.")
+
             self._validate_time_range("between_hours_start_minute", "between_hours_end_minute")
 
             start_time = cleaned_data.get("between_hours_start_minute")
             end_time = cleaned_data.get("between_hours_end_minute")
 
-            if start_time == end_time:
+            if not start_time or not end_time:
+                self.add_error("between_hours_start_minute","Both start and end times are required for minute schedules.")
+                self.add_error("between_hours_end_minute", "Both start and end times are required for minute schedules.")
+            elif start_time == end_time:
                 cleaned_data["time_range_hour_cron_minute"] = "*"
             else:
                 cleaned_data["time_range_hour_cron_minute"] = f"{start_time.hour}-{end_time.hour}"
 
         elif repeat_type == "hour":
             cleaned_data["day_of_week_hour"] = self._clean_day_of_week("day_of_week_hour")
+            interval = cleaned_data.get("repeat_interval_hour")
+            if not interval:
+                self.add_error("repeat_interval_hour", "Repeat interval is required for hourly schedules.")
             self._validate_time_range("between_hours_start_hour", "between_hours_end_hour")
 
             start_time = cleaned_data.get("between_hours_start_hour")
             end_time = cleaned_data.get("between_hours_end_hour")
 
+            if not start_time or not end_time:
+                self.add_error("between_hours_start_hour","Both start and end times are required for hourly schedules.")
+                self.add_error("between_hours_end_hour", "Both start and end times are required for hourly schedules.")
+
             if start_time == end_time:
                 cleaned_data["time_range_hour_cron_hour"] = "*"
             else:
                 cleaned_data["time_range_hour_cron_hour"] = f"{start_time.hour}-{end_time.hour}"
-
+        elif repeat_type == "day":
+            if not cleaned_data.get("repeat_interval_day"):
+                self.add_error("repeat_interval_day", "Repeat interval is required for daily schedules.")
+            if not cleaned_data.get("time_day"):
+                self.add_error("time_day", "Time of day is required for daily schedules.")
         elif repeat_type == "week":
             cleaned_data["day_of_week_week"] = self._clean_day_of_week("day_of_week_week")
+
+            if not cleaned_data.get("time_week"):
+                self.add_error("time_week", "Time of day is required for weekly schedules.")
+        elif repeat_type == "month":
+            if not cleaned_data.get("repeat_interval_month"):
+                self.add_error("repeat_interval_month", "Repeat interval is required for monthly schedules.")
+            if not cleaned_data.get("time_month"):
+                self.add_error("time_month", "Time of day is required for monthly schedules.")
 
         # Validate ending conditions
         ending_on = cleaned_data.get("ending_on")

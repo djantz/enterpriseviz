@@ -7,6 +7,7 @@ DJANGO_ADMIN_URL=admin/
 # Redis
 # ------------------------------------------------------------------------------
 REDIS_URL=redis://redis:6379/0
+CACHE_URL=redis://redis:6379/1
 
 # Celery
 # ------------------------------------------------------------------------------
@@ -19,3 +20,5 @@ SOCIAL_AUTH_ARCGIS_SECRET = '' # App Secret
 SOCIAL_AUTH_ARCGIS_URL = '' # Enterprise Portal or AGOL URL
 ARCGIS_USER_ROLE = 'org_admin'
 USE_SERVICE_USAGE_REPORT=True
+
+CREDENTIAL_ENCRYPTION_KEY = ''

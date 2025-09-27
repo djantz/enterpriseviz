@@ -1133,11 +1133,33 @@ function initWebhookSecretGenerator() {
 
     if (generateButton) {
         generateButton.addEventListener('click', function() {
-            // Generate a random 32-character secret
             const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            const secretLength = 32;
+            // Check for crypto availability
+            const crypto = globalThis.crypto || window.crypto;
+            if (!crypto || !crypto.getRandomValues) {
+                console.error('Crypto API not available. This environment does not support cryptographically secure random number generation.');
+            }
+
+            // Calculate the largest multiple of chars.length that fits in 256
+            const maxValidValue = Math.floor(256 / chars.length) * chars.length;
+
             let result = '';
-            for (let i = 0; i < 32; i++) {
-                result += chars.charAt(Math.floor(Math.random() * chars.length));
+
+            while (result.length < secretLength) {
+                // Generate random bytes (we'll process them one by one)
+                const randomBytes = new Uint8Array(secretLength - result.length);
+                crypto.getRandomValues(randomBytes);
+
+                for (let i = 0; i < randomBytes.length && result.length < secretLength; i++) {
+                    const randomByte = randomBytes[i];
+
+                    // Rejection sampling: only accept bytes within maxValidValue to avoid modulo bias
+                    if (randomByte < maxValidValue) {
+                        const index = randomByte % chars.length;
+                        result += chars[index];
+                    }
+                }
             }
 
             // Find the webhook secret input field

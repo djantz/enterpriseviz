@@ -19,7 +19,7 @@
 
   <calcite-button type="submit" id="webhook-save" slot="footer-end"
                   hx-post="{% url 'enterpriseviz:webhook_settings' %}"
-                  hx-target="#webhook-site-form" hx-swap="innerHTML"
+                  hx-target="#webhook-form-container" hx-swap="innerHTML"
                   hx-include="#webhook-site-form" hx-vals='{"action": "save"}'
                   icon-start="save">
     Save
