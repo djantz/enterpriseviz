@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 # ----------------------------------------------------------------------
+import base64
 import hashlib
 import logging
 import re
@@ -54,12 +55,10 @@ class CredentialManager:
         """Get or create encryption key for credentials."""
         key = getattr(settings, 'CREDENTIAL_ENCRYPTION_KEY', None)
         if not key:
-            # Generate a key for development - in production this should be set explicitly
             if settings.DEBUG:
-                logger.warning("CREDENTIAL_ENCRYPTION_KEY not set. Generating temporary key for development.")
-                key = Fernet.generate_key().decode()
-                setattr(settings, 'CREDENTIAL_ENCRYPTION_KEY', key)
-
+                logger.warning("CREDENTIAL_ENCRYPTION_KEY not set. Deriving a dev key from SECRET_KEY.")
+                digest = hashlib.sha256(settings.SECRET_KEY.encode()).digest()
+                key = base64.urlsafe_b64encode(digest).decode()
             else:
                 logger.critical("CREDENTIAL_ENCRYPTION_KEY is not set in Django settings! Please create one.")
                 raise ValueError("CREDENTIAL_ENCRYPTION_KEY must be set in production")
