@@ -44,17 +44,17 @@ def apply_site_log_level_in_worker():
     utils.apply_global_log_level()
 
 
-@shared_task(bind=True)
+@shared_task(bind=True, name="Update All")
 def update_all(self, instance, items):
     for item in items:
         if item == "webmaps":
-            update_webmaps.enqueue(instance, False)
+            update_webmaps.delay(instance, False)
         if item == "services":
-            update_services.enqueue(instance, False)
+            update_services.delay(instance, False)
         if item == "webapps":
-            update_webapps.enqueue(instance, False)
+            update_webapps.delay(instance, False)
         if item == "users":
-            update_users.enqueue(instance, False)
+            update_users.delay(instance, False)
 
 
 @shared_task(bind=True, name="Update webmaps", time_limit=6000, soft_time_limit=3000)
