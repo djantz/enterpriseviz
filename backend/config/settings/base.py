@@ -314,6 +314,10 @@ TASKS = {
 if USE_TZ:
     # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-timezone
     CELERY_TIMEZONE = TIME_ZONE
+    DJANGO_CELERY_BEAT_TZ_AWARE = True
+else:
+    DJANGO_CELERY_BEAT_TZ_AWARE = False
+
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-broker_url
 CELERY_BROKER_URL = env("REDIS_URL")
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-result_backend
