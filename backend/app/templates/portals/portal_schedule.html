@@ -20,7 +20,7 @@
       <calcite-tab-title>Results</calcite-tab-title>
     </calcite-tab-nav>
     <calcite-tab selected>
-  <div>
+  <div id="schedule-form-container">
     {% include "partials/portal_schedule_form.html" %}
 
     <div id="form-errors">
@@ -78,7 +78,7 @@
 
   <calcite-button id="schedule-portal-save" slot="footer-end"
                   hx-post="{% url 'enterpriseviz:schedule' instance=form.instance.value %}"
-                  hx-target="#schedule-portal-form" hx-include="#schedule-portal-form"
+                  hx-target="#schedule-form-container" hx-include="#schedule-portal-form"
                   icon-start="save" {% if not enable %}disabled{% endif %}>
     Save
   </calcite-button>
