@@ -5,11 +5,10 @@
 
   <calcite-label>
     Webhook Secret
-    <calcite-input type="text" id="{{ form.webhook_secret.name }}" name="{{ form.webhook_secret.name }}"
-                   autocomplete="off" value="{{ form.webhook_secret.value|default_if_none:"" }}"
-                   placeholder="Enter a secure secret key">
+    <calcite-input type="password" id="{{ form.webhook_secret.name }}" name="{{ form.webhook_secret.name }}"
+                   autocomplete="off" placeholder="Enter a secure secret key" minlength="16">
       <calcite-button slot="action" id="copy-secret-btn" icon-start="copy-to-clipboard"
-                      title="Copy secret to clipboard">
+                      title="Copy secret to clipboard" type="button">
       </calcite-button>
     </calcite-input>
     <calcite-input-message {% if not form.webhook_secret.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
