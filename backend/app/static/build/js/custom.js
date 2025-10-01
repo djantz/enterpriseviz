@@ -822,6 +822,17 @@ htmx.on("htmx:afterSettle", (e) => {
             "schedule_portal_modal": "schedule-modal",
             "progress-container": "credentials-modal"
         };
+
+        // Check if this is a form container update
+        if (e.detail.target.id === "schedule-form-container") {
+            const modal = document.getElementById("schedule-modal");
+            if (modal) {
+                await ensureCalciteComponentsInitialized(modal);
+                setupScheduleFormLogic(modal);
+            }
+            return;
+        }
+
         const modalId = modalMap[e.detail.target.id];
         if (!modalId) return;
 
@@ -834,11 +845,18 @@ htmx.on("htmx:afterSettle", (e) => {
         // Wait for all Calcite components to be initialized
         await ensureCalciteComponentsInitialized(modal);
 
-
         // Attach event listeners scoped to this modal
         setupModalHTMXListeners(modal);
-    })();
 
+        // Setup form-specific logic
+        if (["add-modal", "update-modal"].includes(modalId)) {
+            setupPortalFormLogic(modal);
+        } else if (modalId === "schedule-modal") {
+            setupScheduleFormLogic(modal);
+        } else if (modalId === "credentials-modal") {
+            setupCredentialsFormLogic(modal);
+        }
+    })();
 });
 
 async function ensureCalciteComponentsInitialized(modal) {
