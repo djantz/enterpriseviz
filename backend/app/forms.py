@@ -1,8 +1,11 @@
 # Licensed under GPLv3 - See LICENSE file for details.
 import json
 import logging
+import zoneinfo
+from datetime import datetime, time
 
 from django import forms
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -94,6 +97,9 @@ class ScheduleForm(forms.Form):
         required=False,
         initial=DEFAULT_DAYS
     )
+    day_of_month = forms.IntegerField(
+        required=False, initial=1, min_value=1, max_value=31
+    )
 
     on_minute_hour = forms.ChoiceField(
         choices=[(str(m), f"{m} minutes past the hour") for m in [0, 5, 15, 30, 45]],
@@ -143,10 +149,17 @@ class ScheduleForm(forms.Form):
             self.add_error(end_field, f"End time must be after start time.")
 
     def clean_beginning_on(self):
-        """Ensure beginning date is not in the past."""
+        """Ensure beginning_on is a timezone-aware datetime."""
         beginning_on = self.cleaned_data.get('beginning_on')
-        if beginning_on and beginning_on < timezone.now().date():
-            raise ValidationError("Start date cannot be in the past.")
+        if beginning_on:
+            # Convert date to datetime if needed
+            if not isinstance(beginning_on, datetime):
+                beginning_on = datetime.combine(beginning_on, time.min)
+
+            # Make timezone-aware
+            if timezone.is_naive(beginning_on):
+                beginning_on = timezone.make_aware(beginning_on)
+
         return beginning_on
 
     def clean_ending_on_date(self):
@@ -175,14 +188,18 @@ class ScheduleForm(forms.Form):
             start_time = cleaned_data.get("between_hours_start_minute")
             end_time = cleaned_data.get("between_hours_end_minute")
 
-            if not start_time or not end_time:
-                self.add_error("between_hours_start_minute","Both start and end times are required for minute schedules.")
-                self.add_error("between_hours_end_minute", "Both start and end times are required for minute schedules.")
+            # Allow None for both (all day), otherwise both required
+            if start_time is None and end_time is None:
+                # All day - set cron to run every hour
+                cleaned_data["time_range_hour_cron_minute"] = "*"
+            elif start_time is None or end_time is None:
+                # Only one is None - error
+                self.add_error("between_hours_start_minute", "Both start and end times are required, or select all day.")
+                self.add_error("between_hours_end_minute", "Both start and end times are required, or select all day.")
             elif start_time == end_time:
                 cleaned_data["time_range_hour_cron_minute"] = "*"
             else:
                 cleaned_data["time_range_hour_cron_minute"] = f"{start_time.hour}-{end_time.hour}"
-
         elif repeat_type == "hour":
             cleaned_data["day_of_week_hour"] = self._clean_day_of_week("day_of_week_hour")
             interval = cleaned_data.get("repeat_interval_hour")
@@ -193,11 +210,15 @@ class ScheduleForm(forms.Form):
             start_time = cleaned_data.get("between_hours_start_hour")
             end_time = cleaned_data.get("between_hours_end_hour")
 
-            if not start_time or not end_time:
-                self.add_error("between_hours_start_hour","Both start and end times are required for hourly schedules.")
-                self.add_error("between_hours_end_hour", "Both start and end times are required for hourly schedules.")
-
-            if start_time == end_time:
+            # Allow None for both (all day), otherwise both required
+            if start_time is None and end_time is None:
+                # All day - set cron to run every hour
+                cleaned_data["time_range_hour_cron_hour"] = "*"
+            elif start_time is None or end_time is None:
+                # Only one is None - error
+                self.add_error("between_hours_start_hour", "Both start and end times are required, or select all day.")
+                self.add_error("between_hours_end_hour", "Both start and end times are required, or select all day.")
+            elif start_time == end_time:
                 cleaned_data["time_range_hour_cron_hour"] = "*"
             else:
                 cleaned_data["time_range_hour_cron_hour"] = f"{start_time.hour}-{end_time.hour}"
@@ -233,7 +254,11 @@ class ScheduleForm(forms.Form):
 
     def _create_crontab_schedule(self, data):
         """Helper to create or get CrontabSchedule based on cleaned data."""
-        cron_args = {"day_of_month": "*", "month_of_year": "*"}
+        cron_args = {
+            "day_of_month": "*",
+            "month_of_year": "*",
+            "timezone": zoneinfo.ZoneInfo(settings.TIME_ZONE)
+        }
 
         repeat_type = data["repeat_type"]
 
@@ -258,7 +283,9 @@ class ScheduleForm(forms.Form):
             cron_args.update({
                 "minute": str(time_day.minute),
                 "hour": str(time_day.hour),
-                "day_of_week": f"*/{data['repeat_interval_day']}",
+                "day_of_week": "*",
+                "day_of_month": f"*/{data['repeat_interval_day']}",
+
             })
         elif repeat_type == "week":
             time_week = data['time_week']
@@ -273,7 +300,7 @@ class ScheduleForm(forms.Form):
                 "minute": str(time_month.minute),
                 "hour": str(time_month.hour),
                 "day_of_week": "*",
-                "day_of_month": data.get("day_of_month_input", "1"),
+                "day_of_month": data.get("day_of_month", "1"),
                 "month_of_year": f"*/{data['repeat_interval_month']}"
             })
         else:
@@ -320,22 +347,28 @@ class ScheduleForm(forms.Form):
             schedule_obj = self._create_crontab_schedule(cleaned_data)
 
             task_kwargs = {
-                'portal_alias': target_portal.alias,
-                'items_to_update': cleaned_data.get('items', [])
+                'instance': target_portal.alias,
+                'items': cleaned_data.get('items', [])
             }
+
+            start_on = cleaned_data.get("beginning_on")
+            expires_on = cleaned_data.get("ending_on_date") if cleaned_data.get("ending_on") == "date" else None
+            start_dt = timezone.make_aware(datetime.combine(start_on, time.min)) if start_on else None
+            expires_dt = timezone.make_aware(datetime.combine(expires_on, time.max)) if expires_on else None
+
 
             task_defaults = {
                 "crontab": schedule_obj,
-                "task": "app.tasks.update_all",
+                "task": "Update All",
                 "kwargs": json.dumps(task_kwargs),
-                "enabled": False,
-                "start_time": cleaned_data.get("beginning_on"),
+                "enabled": True,
+                "start_time": start_dt,
                 "description": f"Scheduled data update for portal {target_portal.alias}"
             }
 
             # Set expiry date if specified
-            if cleaned_data.get("ending_on") == "date" and cleaned_data.get("ending_on_date"):
-                task_defaults["expires"] = cleaned_data.get("ending_on_date")
+            if expires_dt:
+                task_defaults["expires"] = expires_dt
 
             periodic_task, created = PeriodicTask.objects.update_or_create(
                 name=task_name,
@@ -503,9 +536,7 @@ class ToolsForm(forms.ModelForm):
             value = cleaned_data.get(dep_field)
             # Check for None or empty string (but allow 0 as valid)
             if value is None or value == '':
-                field_label = self.fields[dep_field].label or dep_field
-                self.add_error(dep_field,
-                               f"This field is required when {tool_name} is enabled.")
+                self.add_error(dep_field,f"This field is required when {tool_name} is enabled.")
 
     @transaction.atomic
     def save(self, commit: bool = True, portal=None):
@@ -542,7 +573,8 @@ class ToolsForm(forms.ModelForm):
         # Create daily schedule (midnight)
         daily_schedule, _ = CrontabSchedule.objects.get_or_create(
             minute='0', hour='0', day_of_week='*',
-            day_of_month='*', month_of_year='*'
+            day_of_month='*', month_of_year='*',
+            timezone=zoneinfo.ZoneInfo(settings.TIME_ZONE)
         )
 
         # Tool configurations for creating separate tasks
@@ -550,7 +582,7 @@ class ToolsForm(forms.ModelForm):
             {
                 'enabled': settings_instance.tool_pro_license_enabled,
                 'task_name': f'process-pro-license-{target_portal.alias}',
-                'task_function': 'process_pro_license',
+                'task_function': 'Pro License Tool',
                 'description': f'Pro License Management for {target_portal.alias}',
                 'kwargs': {
                     'portal_alias': target_portal.alias,
@@ -561,7 +593,7 @@ class ToolsForm(forms.ModelForm):
             {
                 'enabled': settings_instance.tool_inactive_user_enabled,
                 'task_name': f'process-inactive-user-{target_portal.alias}',
-                'task_function': 'process_inactive_user',
+                'task_function': 'Inactive User Tool',
                 'description': f'Inactive User Management for {target_portal.alias}',
                 'kwargs': {
                     'portal_alias': target_portal.alias,
@@ -578,7 +610,7 @@ class ToolsForm(forms.ModelForm):
             tool_configs.append({
                 'enabled': True,
                 'task_name': f'process-public-unshare-{target_portal.alias}',
-                'task_function': 'process_public_unshare',
+                'task_function': 'Public Sharing Tool',
                 'description': f'Public Item Unshare Management for {target_portal.alias}',
                 'kwargs': {
                     'portal_alias': target_portal.alias,
