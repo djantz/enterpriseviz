@@ -664,7 +664,7 @@ def refresh_portal_view(request):
         if instance_url:
             portal_query |= Q(url=instance_url)
 
-        if not portal_query:
+        if not (instance_alias or instance_url):
             logger.error("Refresh portal called without instance alias or URL.")
             return HttpResponse(status=200, headers={
                 "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Portal identifier missing."})
@@ -1226,6 +1226,10 @@ def schedule_task_view(request, instance):
             return response
         else:
             logger.warning(f"schedule_task_view: Form invalid for '{instance}'. Errors: {form.errors}")
+            response = render(request, "partials/portal_schedule_form.html",
+                              {"form": form, "enable": portal.store_password, "description": description,
+                               "results": results, "instance_alias": portal.alias})
+            return response
 
     context = {"form": form, "description": description, "results": results, "enable": portal.store_password,
                "instance_alias": portal.alias}
