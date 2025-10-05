@@ -2,7 +2,7 @@
 <calcite-dialog id="log-settings-modal" modal heading="Log Settings" scale="m" open width="m"
                 {% if form.errors %}kind="danger"{% endif %}>
 
-  <div>
+  <div id="log-settings-form-container">
     <form id="log-settings-form">
       {% csrf_token %}
       <calcite-label>

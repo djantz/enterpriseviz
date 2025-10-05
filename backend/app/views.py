@@ -45,7 +45,9 @@ from django_tables2.export.views import ExportMixin
 
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
 from .forms import ScheduleForm, SiteSettingsForm, ToolsForm, WebhookSettingsForm, PortalCredentialsForm
-from .models import PortalCreateForm, UserProfile, LogEntry
+from .models import (
+    PortalCreateForm, UserProfile, LogEntry,
+)
 from .request_context import get_django_request_context
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *
@@ -721,6 +723,7 @@ def refresh_portal_view(request):
                 auth_payload = {'username': username, 'password': password, 'url': portal.url}
                 auth_result = utils.try_connection(auth_payload)
 
+                # When credentials fail during form submission
                 if not auth_result.get("authenticated", False):
                     logger.warning(f"Auth failed for {portal.alias} during form submission.")
                     form.add_error('password',
@@ -732,10 +735,14 @@ def refresh_portal_view(request):
                         "delete": delete_flag,
                         "error_message": "Authentication failed. Please verify credentials."
                     }
-                    return render(request, "portals/portal_credentials.html", context, status=200)
+                    response = render(request, "partials/portal_credentials_form.html", context)
+                    # Retarget to the credentials modal container
+                    response["HX-Retarget"] = "#credentials-form-container"
+                    response["HX-Reswap"] = "innerHTML"
+                    return response
 
                 # Store credentials
-                logger.info(f"Authenticated to {portal.alias} as {username[0] if username else ''}...")
+                logger.info(f"Authenticated to {portal.alias} as {username}")
 
                 # Update portal type if needed
                 if portal.portal_type is None and auth_result.get("is_agol") is not None:
@@ -753,7 +760,7 @@ def refresh_portal_view(request):
                         "delete": delete_flag,
                         "error_message": "System error: Failed to secure credentials."
                     }
-                    return render(request, "portals/portal_credentials.html", context, status=500)
+                    return render(request, "portals/portal_credentials.html", context, status=200)
 
                 logger.debug(f"Credential token generated for {portal.alias}: {credential_token[:8]}...")
 
@@ -1420,7 +1427,7 @@ def metadata_view(request, instance):
                     return render(request, "portals/portal_credentials.html", context, status=200)
 
                 # Store credentials
-                logger.info(f"Authenticated to {portal.alias} as {username[0] if username else ''}...")
+                logger.info(f"Authenticated to {portal.alias} as {username}")
 
                 # Update portal type if needed
                 if portal.portal_type is None and auth_result.get("is_agol") is not None:
@@ -1802,6 +1809,7 @@ def email_settings(request):
     return render(request, template_to_render, {"form": form})
 
 
+@require_POST
 @staff_member_required
 def notify_view(request):
     """
@@ -1828,12 +1836,19 @@ def notify_view(request):
 
     logger.debug(f"Change='{change_item_description}', Maps='{map_ids_str}', Apps='{app_ids_str}'")
 
+    # Check email configuration
     site_settings = SiteSettings.objects.first()
     if not site_settings or not site_settings.email_host:
         logger.error("Email settings not configured.")
         return HttpResponse(status=200, headers={
-            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Email settings not configured."})})
+            "HX-Retarget": "#notification-form-container",
+            "HX-Reswap": "innerHTML",
+            "HX-Trigger-After-Settle": json.dumps({
+                "showDangerAlert": "Email settings not configured. Please contact administrator."
+            })
+        })
 
+    # Parse and validate selections
     selected_maps_qs = Webmap.objects.none()
     if map_ids_str:
         map_ids_list = [map_id.strip() for map_id in map_ids_str.split(',') if map_id.strip()]
@@ -1848,11 +1863,14 @@ def notify_view(request):
 
     if not selected_maps_qs.exists() and not selected_apps_qs.exists():
         logger.debug("No maps or apps selected for notification.")
-        messages.info(request, "No items were selected for notification.")
-        response = HttpResponse("")
-        response["HX-Trigger"] = json.dumps({"closeModal": True})
-        return response
+        return HttpResponse(status=200, headers={
+            "HX-Retarget": "#notification-form-container",
+            "HX-Trigger-After-Settle": json.dumps({
+                "showWarningAlert": "No items were selected for notification."
+            })
+        })
 
+    # Group items by owner
     owner_items_map = defaultdict(lambda: {"maps": [], "apps": []})
     for webmap_obj in selected_maps_qs:
         if webmap_obj.webmap_owner and webmap_obj.webmap_owner.user_email:
@@ -1861,6 +1879,16 @@ def notify_view(request):
         if app_obj.app_owner and app_obj.app_owner.user_email:
             owner_items_map[app_obj.app_owner]["apps"].append(app_obj)
 
+    if not owner_items_map:
+        logger.warning("Selected items have no valid owners with email addresses.")
+        return HttpResponse(status=200, headers={
+            "HX-Retarget": "#notification-form-container",
+            "HX-Trigger-After-Settle": json.dumps({
+                "showWarningAlert": "Selected items have no valid owners with email addresses."
+            })
+        })
+
+    # Send emails
     logger.info(f"Preparing to send notifications to {len(owner_items_map)} owners.")
     emails_sent_count = 0
     emails_failed_count = 0
@@ -1869,7 +1897,9 @@ def notify_view(request):
         try:
             owner_maps = owner_items["maps"]
             owner_apps = owner_items["apps"]
-            message, html, subject = utils.format_notification_email(owner_obj,change_item_description,owner_maps,owner_apps)
+            message, html, subject = utils.format_notification_email(
+                owner_obj, change_item_description, owner_maps, owner_apps
+            )
             success, status_msg = utils.send_email(owner_obj.user_email, subject, message, html)
             if success:
                 emails_sent_count += 1
@@ -1880,17 +1910,33 @@ def notify_view(request):
             logger.error(f"Error sending email to {owner_obj.user_email}: {e}", exc_info=True)
             emails_failed_count += 1
 
-    if emails_sent_count > 0:
-        messages.success(request, f"{emails_sent_count} notification emails sent successfully.")
-    if emails_failed_count > 0:
-        messages.warning(request, f"{emails_failed_count} notification emails failed to send. Check logs.")
-    if emails_sent_count == 0 and emails_failed_count == 0 and (
-        selected_maps_qs.exists() or selected_apps_qs.exists()):
-        messages.info(request, "No notifications were sent (e.g., selected items had no valid owners with emails).")
+    if emails_sent_count > 0 and emails_failed_count == 0:
+        # Complete success
+        response = HttpResponse("")
+        response["HX-Trigger"] = json.dumps({
+            "closeModal": True,
+            "showSuccessAlert": f"{emails_sent_count} notification email(s) sent successfully."
+        })
+        return response
 
-    response = HttpResponse("")
-    response["HX-Trigger"] = json.dumps({"closeModal": True})
-    return response
+    elif emails_sent_count > 0 and emails_failed_count > 0:
+        # Partial success. close modal but show warning
+        response = HttpResponse("")
+        response["HX-Trigger"] = json.dumps({
+            "closeModal": True,
+            "showWarningAlert": f"{emails_sent_count} sent, {emails_failed_count} failed. Check logs for details."
+        })
+        return response
+
+    else:
+        # Complete failure. keep modal open, show error
+        logger.error(f"All email notifications failed. Sent: {emails_sent_count}, Failed: {emails_failed_count}")
+        return HttpResponse(status=200, headers={
+            "HX-Retarget": "#notification-form-container",
+            "HX-Trigger-After-Settle": json.dumps({
+                "showDangerAlert": f"Failed to send all notifications. Please check logs or contact administrator."
+            })
+        })
 
 
 @staff_member_required
