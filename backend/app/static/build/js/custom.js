@@ -575,6 +575,7 @@ function setupNotifyModalStepper() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+    const currentPath = window.location.pathname;
     init_DataTables();
     init_Charts();
     initD3();
@@ -590,6 +591,10 @@ document.addEventListener("DOMContentLoaded", () => {
             console.warn("Log table URL not found on #log-table-container for init_LogFilters.");
         }
     }
+    // Initialize notify modal
+    if (currentPath.match(/\/portal\/[^/]+\/service/) || currentPath.match(/\/portal\/[^/]+\/map/) || currentPath.includes('/layer/')) {
+        initPortalNotification();
+    }
 
     const content = document.getElementById("mainbodycontent");
     if (content) {
@@ -598,34 +603,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     }
 });
-
-htmx.on('htmx:afterRequest', (e) => {
-    if (e.detail.target.id === 'mainbodycontent') {
-        init_DataTables();
-        init_Charts();
-        initD3();
-        initPortalNotification();
-        initPortalTools();
-        content = document.getElementById('mainbodycontent');
-        content.hidden = false;
-        if (document.getElementById('log-form') && document.getElementById('log_initial_visible_cols_data')) {
-            const logTableContainer = document.getElementById('log-table-container');
-            const logTableUrl = logTableContainer?.dataset.logTableUrl;
-            if (logTableUrl) {
-                init_LogFilters(logTableUrl);
-            } else if (logTableContainer) {
-                console.warn("Log table URL not found for re-init after HTMX swap.");
-            }
-        }
-    }
-    if (e.detail.target.id === 'tool_settings_modal') {
-        initPortalTools();
-    }
-    if (e.detail.target.id === 'service-table') {
-        initializeSparklines();
-    }
-
-})
 
 function externalTooltipHandler(context) {
     // Tooltip Element
@@ -682,6 +659,7 @@ function initializeSparklines() {
         const dataString = canvas.getAttribute('data-chart');
         const chartData = JSON.parse(dataString);
 
+        if (!chartData) return;
         // Extract values and labels
         const dataArray = chartData.values;
         const labels = chartData.dates || dataArray.map((_, index) => index);
@@ -796,6 +774,96 @@ document.addEventListener("calciteActionBarToggle", () => {
     actionBarExpanded = !actionBarExpanded;
 });
 
+// Map of form container IDs to their setup functions
+const FORM_SETUP_HANDLERS = {
+    'schedule-form-container': setupScheduleFormLogic,
+    'add-form-container': setupPortalFormLogic,
+    'update-form-container': setupPortalFormLogic,
+    'webhook-form-container': initWebhookSecretGenerator,
+
+};
+
+// Map of modal trigger targets to modal IDs
+const MODAL_TRIGGER_MAP = {
+    'add_portal_modal': 'add-modal',
+    'update_portal_modal': 'update-modal',
+    'schedule_portal_modal': 'schedule-modal',
+    'progress-container': 'credentials-modal',
+    'webhook_settings_modal': 'webhook-modal',
+
+};
+
+htmx.on("htmx:afterSettle", (e) => {
+    (async () => {
+        const targetId = e.detail.target.id;
+        const currentPath = window.location.pathname;
+
+        // Main content updates - reinitialize page-level components
+        if (targetId === 'mainbodycontent') {
+            init_DataTables();
+            init_Charts();
+            initD3();
+
+            const content = document.getElementById('mainbodycontent');
+            if (content) content.hidden = false;
+
+            return;
+        }
+
+        // Initialize notify modal
+        if (currentPath.match(/\/portal\/[^/]+\/service/) || currentPath.match(/\/portal\/[^/]+\/map/) || currentPath.includes('/layer/')) {
+            initPortalNotification();
+        }
+
+        // Reinitialize log filters if present
+        if (document.getElementById('log-form') && document.getElementById('log_initial_visible_cols_data')) {
+            const logTableContainer = document.getElementById('log-table-container');
+            const logTableUrl = logTableContainer?.dataset.logTableUrl;
+            if (logTableUrl) {
+                init_LogFilters(logTableUrl);
+            } else if (logTableContainer) {
+                console.warn("Log table URL not found for re-init after HTMX swap.");
+            }
+        }
+
+        // Specific component updates
+        if (targetId === 'service-table') {
+            initializeSparklines();
+            return;
+        }
+
+        // Modal opening - when entire modal HTML is loaded
+        const modalId = MODAL_TRIGGER_MAP[targetId];
+        if (modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) {
+                modal.open = true;
+                await ensureCalciteComponentsInitialized(modal);
+                setupModalHTMXListeners(modal);
+
+                // Run the form setup logic based on what's inside the modal
+                const formContainer = modal.querySelector('[id$="-form-container"]');
+                if (formContainer && FORM_SETUP_HANDLERS[formContainer.id]) {
+                    await FORM_SETUP_HANDLERS[formContainer.id](modal);
+                }
+            }
+            return;
+        }
+
+        // Form container update (validation errors, form refresh)
+        const setupHandler = FORM_SETUP_HANDLERS[targetId];
+        if (setupHandler) {
+            const modal = e.detail.target.closest("calcite-dialog");
+            if (modal) {
+                await ensureCalciteComponentsInitialized(modal);
+                await setupHandler(modal);
+            }
+            return;
+        }
+
+    })();
+});
+
 htmx.on("closeModal", function (event) {
     (async () => {
         await customElements.whenDefined("calcite-dialog");
@@ -807,54 +875,11 @@ htmx.on("closeModal", function (event) {
             modal.open = false;
         }
     })();
-
-});
-
-htmx.on("htmx:afterSettle", (e) => {
-    (async () => {
-        const modalMap = {
-            "add_portal_modal": "add-modal",
-            "update_portal_modal": "update-modal",
-            "schedule_portal_modal": "schedule-modal",
-            "progress-container": "credentials-modal"
-        };
-        const modalId = modalMap[e.detail.target.id];
-        if (!modalId) return;
-
-        const modal = document.getElementById(modalId);
-        if (!modal) return;
-
-        // Open the modal
-        modal.open = true;
-
-        // Wait for all Calcite components to be initialized
-        await ensureCalciteComponentsInitialized(modal);
-
-
-        // Attach event listeners scoped to this modal
-        setupModalHTMXListeners(modal);
-    })();
-
 });
 
 async function ensureCalciteComponentsInitialized(modal) {
     const calciteElements = modal.querySelectorAll("calcite-input, calcite-select, calcite-segmented-control");
     await Promise.all(Array.from(calciteElements).map(el => el.componentOnReady()));
-
-    // Setup form interactions after elements are ready
-    setupModalLogic(modal);
-}
-
-function setupModalLogic(modal) {
-    const modalId = modal.id;
-
-    if (["add-modal", "update-modal"].includes(modalId)) {
-        setupPortalFormLogic(modal);
-    } else if (modalId === "schedule-modal") {
-        setupScheduleFormLogic(modal);
-    } else if (modalId === "credentials-modal") {
-        setupCredentialsFormLogic(modal);
-    }
 }
 
 async function setupPortalFormLogic(modal) {
@@ -863,7 +888,6 @@ async function setupPortalFormLogic(modal) {
         return;
     }
 
-    // Wait for the Calcite component to be ready
     await storePasswordControl.componentOnReady();
 
     const storePasswordSection = modal.querySelector("#store-password-container");
@@ -886,6 +910,7 @@ async function setupPortalFormLogic(modal) {
 
     storePasswordControl.addEventListener("calciteSegmentedControlChange", toggleCredentials);
     toggleCredentials();
+
     const enableEmailControl = modal.querySelector("#enable-email");
     const adminEmailsContainer = modal.querySelector("#admin-emails-container");
 
@@ -895,7 +920,6 @@ async function setupPortalFormLogic(modal) {
             adminEmailsContainer.hidden = enabledItem.checked;
         });
     }
-
 }
 
 function setupScheduleFormLogic(modal) {
@@ -934,7 +958,6 @@ function setupScheduleFormLogic(modal) {
 
     function updateEndingOn() {
         endDateContainer.hidden = endingOn.value !== "date";
-        // endCountContainer.hidden = endingOn.value !== "count";
     }
 
     repeatType.addEventListener("calciteSelectChange", updateRepeatType);
@@ -958,7 +981,6 @@ function setupModalHTMXListeners(modal) {
         clickedButton.loading = false;
     });
 
-    // Ensure we clean up event listeners when modal closes
     modal.addEventListener("calciteDialogClose", () => {
         htmx.off(modal, "htmx:beforeRequest");
         htmx.off(modal, "htmx:afterRequest");
@@ -969,17 +991,16 @@ function updateDarkMode() {
     document.body.classList.toggle("calcite-mode-dark");
 }
 
-const modeSwitch = document.querySelector("calcite-switch#mode-switch"); // Be more specific if multiple switches
+const modeSwitch = document.querySelector("calcite-switch#mode-switch");
 if (modeSwitch) {
     modeSwitch.addEventListener("calciteSwitchChange", updateDarkMode);
 }
-
 
 async function showAlert(kind, label, message, autoClose = true) {
     const alert = document.createElement("calcite-alert");
     alert.setAttribute("kind", kind);
     alert.setAttribute("open", "");
-    alert.setAttribute("autoClose", autoClose ? "true" : "false");
+    alert.setAttribute("auto-close", autoClose ? "true" : "false");
     alert.setAttribute("label", label);
     alert.setAttribute("icon", "");
 
@@ -1054,7 +1075,6 @@ document.addEventListener('click', function (event) {
     }
 });
 
-
 function refreshActivePortal() {
     // Get the current URL
     var currentUrl = window.location.href;
@@ -1087,8 +1107,8 @@ function mergeTableRows(tableSelector, columnIndex) {
 
         if (prevCell && cell.innerText === prevCell.innerText) {
             rowspan++;
-            prevCell.rowSpan = rowspan; // Increase rowspan of previous cell
-            cell.classList.add("display-none"); // Hide duplicate cell
+            prevCell.rowSpan = rowspan;
+            cell.classList.add("display-none");
         } else {
             cell.classList.remove("display-none");
             prevCell = cell;
@@ -1110,7 +1130,7 @@ blocks?.forEach((el) => {
 function initPortalTools() {
     const switches = document.querySelectorAll('calcite-switch');
     switches.forEach(async calciteSwitch => {
-        if (calciteSwitch.componentOnReady) await calciteSwitch.componentOnReady(); // Wait for switch itself
+        if (calciteSwitch.componentOnReady) await calciteSwitch.componentOnReady();
         const hiddenInput = calciteSwitch.nextElementSibling;
         if (hiddenInput && hiddenInput.tagName === 'INPUT' && hiddenInput.type === 'hidden') {
             // Set initial value of hidden input based on switch state
@@ -1122,3 +1142,66 @@ function initPortalTools() {
         }
     });
 }
+
+function initWebhookSecretGenerator() {
+    const generateButton = document.getElementById('generate-secret-action');
+    const copyButton = document.getElementById('copy-secret-btn');
+
+    if (generateButton) {
+        generateButton.addEventListener('click', function() {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            const secretLength = 32;
+            // Check for crypto availability
+            const crypto = globalThis.crypto || window.crypto;
+            if (!crypto || !crypto.getRandomValues) {
+                console.error('Crypto API not available. This environment does not support cryptographically secure random number generation.');
+            }
+
+            // Calculate the largest multiple of chars.length that fits in 256
+            const maxValidValue = Math.floor(256 / chars.length) * chars.length;
+
+            let result = '';
+
+            while (result.length < secretLength) {
+                // Generate random bytes (we'll process them one by one)
+                const randomBytes = new Uint8Array(secretLength - result.length);
+                crypto.getRandomValues(randomBytes);
+
+                for (let i = 0; i < randomBytes.length && result.length < secretLength; i++) {
+                    const randomByte = randomBytes[i];
+
+                    // Rejection sampling: only accept bytes within maxValidValue to avoid modulo bias
+                    if (randomByte < maxValidValue) {
+                        const index = randomByte % chars.length;
+                        result += chars[index];
+                    }
+                }
+            }
+
+            // Find the webhook secret input field
+            const webhookSecretInput = document.querySelector('calcite-input[name="webhook_secret"]');
+            if (webhookSecretInput) {
+                webhookSecretInput.value = result;
+            }
+        });
+    }
+
+    if (copyButton) {
+        copyButton.addEventListener('click', function() {
+            const webhookSecretInput = document.querySelector('calcite-input[name="webhook_secret"]');
+            if (webhookSecretInput && webhookSecretInput.value) {
+                navigator.clipboard.writeText(webhookSecretInput.value).then(() => {
+                    // Show success feedback
+                    htmx.trigger(copyButton, 'showSuccessAlert', { value: 'Webhook secret copied to clipboard!' });
+                }).catch(() => {
+                    // Fallback for older browsers
+                    webhookSecretInput.select();
+                    document.execCommand('copy');
+                    htmx.trigger(copyButton, 'showSuccessAlert', { value: 'Webhook secret copied to clipboard!' });
+
+                });
+            }
+        });
+    }
+}
+

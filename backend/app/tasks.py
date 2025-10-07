@@ -44,22 +44,22 @@ def apply_site_log_level_in_worker():
     utils.apply_global_log_level()
 
 
-@shared_task(bind=True)
+@shared_task(bind=True, name="Update All")
 def update_all(self, instance, items):
     for item in items:
         if item == "webmaps":
-            update_webmaps.enqueue(instance, False)
+            update_webmaps.delay(instance, False)
         if item == "services":
-            update_services.enqueue(instance, False)
+            update_services.delay(instance, False)
         if item == "webapps":
-            update_webapps.enqueue(instance, False)
+            update_webapps.delay(instance, False)
         if item == "users":
-            update_users.enqueue(instance, False)
+            update_users.delay(instance, False)
 
 
 @shared_task(bind=True, name="Update webmaps", time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
-def update_webmaps(self, instance_alias, overwrite=False, username=None, password=None):
+def update_webmaps(self, instance_alias, overwrite=False, credential_token=None):
     """
     Update web maps for a given portal instance.
 
@@ -72,10 +72,8 @@ def update_webmaps(self, instance_alias, overwrite=False, username=None, passwor
     :type instance_alias: str
     :param overwrite: Flag indicating whether existing web maps should be overwritten ('true' for overwrite).
     :type overwrite: bool or str
-    :param username: Username for portal authentication (optional).
-    :type username: str, optional
-    :param password: Password for portal authentication (optional).
-    :type password: str, optional
+    :param credential_token: Token for temporary credentials (optional)
+    :type credential_token: str
     :return: JSON-serialized update result containing counts of inserts, updates, deletions, and any error messages.
     :rtype: str
     """
@@ -87,7 +85,7 @@ def update_webmaps(self, instance_alias, overwrite=False, username=None, passwor
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = utils.connect(instance_item, username, password)
+        target = utils.connect(instance_item, credential_token)
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
@@ -128,8 +126,7 @@ def update_webmaps(self, instance_alias, overwrite=False, username=None, passwor
             batch_tasks.append(
                 process_batch_maps.s(
                     instance_alias,
-                    username,
-                    password,
+                    credential_token,
                     batch,
                     batch_size,
                     update_time
@@ -222,18 +219,17 @@ def update_webmaps(self, instance_alias, overwrite=False, username=None, passwor
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
-def process_batch_maps(self, instance_alias, username, password, batch, batch_size, update_time):
+def process_batch_maps(self, instance_alias, credential_token, batch, batch_size, update_time):
     result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = utils.connect(instance_item, username, password)
-
+        target = utils.connect(instance_item, credential_token)
     except Exception as e:
-            logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-            result.add_error(f"Unable to connect to {instance_alias}")
-            return {"result": result.to_json()}
+        logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+        result.add_error(f"Unable to connect to {instance_alias}")
+        return {"result": result.to_json()}
 
     try:
         logger.debug(f"Retrieving web maps for batch {batch} to {batch + batch_size}")
@@ -578,7 +574,7 @@ def get_map_name(service_url, token):
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000, name="Update services")
 @celery_logging_context
-def update_services(self, instance_alias, overwrite=False, username=None, password=None):
+def update_services(self, instance_alias, overwrite=False, credential_token=None):
     """
     Update service and layer records for a given portal instance.
 
@@ -591,10 +587,8 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
     :type instance_alias: str
     :param overwrite: Flag indicating whether to delete existing service and layer records before updating.
     :type overwrite: bool
-    :param username: Username for portal authentication (optional).
-    :type username: str, optional
-    :param password: Password for portal authentication (optional).
-    :type password: str, optional
+    :param credential_token: Token for temporary credentials (optional)
+    :type credential_token: str
     :return: JSON serialized result of the update process including counts of inserts, updates, deletions, and errors.
     :rtype: str
     """
@@ -677,8 +671,7 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = utils.connect(instance_item, username, password)
-
+        target = utils.connect(instance_item, credential_token)
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
@@ -949,8 +942,7 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
                     logger.debug(f"Creating batch task for folder {folder_index+1}/{folder_count}: {folder}")
                     batch_tasks.append(
                         process_batch_services.s(instance_alias,
-                                                 username,
-                                                 password,
+                                                 credential_token,
                                                  folder,
                                                  update_time
                                                  )
@@ -1060,18 +1052,16 @@ def update_services(self, instance_alias, overwrite=False, username=None, passwo
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
-def process_batch_services(self, instance_alias, username, password, folder, update_time):
+def process_batch_services(self, instance_alias, credential_token, folder, update_time):
     result = utils.UpdateResult()
     service_usage_list = []
 
     try:
         logger.debug("Compiling regex patterns for service processing")
         regex_patterns = compile_regex_patterns()
-
         try:
             instance_item = Portal.objects.get(alias=instance_alias)
-            target = utils.connect(instance_item, username, password)
-
+            target = utils.connect(instance_item, credential_token)
             logger.debug("Retrieving GIS servers list")
             gis_servers = target.admin.servers.list()
             server_count = len(gis_servers)
@@ -1367,7 +1357,7 @@ def process_single_service(target, instance_item, service, folder, update_time, 
 
 @shared_task(bind=True, name="Update apps", time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
-def update_webapps(self, instance_alias, overwrite=False, username=None, password=None):
+def update_webapps(self, instance_alias, overwrite=False, credential_token=None):
     """
     Update web applications for the given portal instance.
 
@@ -1382,10 +1372,8 @@ def update_webapps(self, instance_alias, overwrite=False, username=None, passwor
     :type instance_item: PortalInstance
     :param overwrite: If True, delete existing application records before updating.
     :type overwrite: bool
-    :param username: Username for portal authentication (optional).
-    :type username: str, optional
-    :param password: Password for portal authentication (optional).
-    :type password: str, optional
+    :param credential_token: Token for temporary credentials (optional)
+    :type credential_token: str
     :return: JSON string summarizing the update results (inserts, updates, deletions, errors).
     :rtype: str
     """
@@ -1396,7 +1384,7 @@ def update_webapps(self, instance_alias, overwrite=False, username=None, passwor
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = utils.connect(instance_item, username, password)
+        target = utils.connect(instance_item, credential_token)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -1452,8 +1440,7 @@ def update_webapps(self, instance_alias, overwrite=False, username=None, passwor
             batch_tasks.append(
                 process_batch_apps.s(
                     instance_alias,
-                    username,
-                    password,
+                    credential_token,
                     batch,
                     batch_size,
                     update_time
@@ -1545,14 +1532,13 @@ def update_webapps(self, instance_alias, overwrite=False, username=None, passwor
 
 @shared_task(bind=True)
 @celery_logging_context
-def process_batch_apps(self, instance_alias, username, password, batch, batch_size, update_time):
+def process_batch_apps(self, instance_alias, credential_token, batch, batch_size, update_time):
     result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
-
     try:
         try:
             instance_item = Portal.objects.get(alias=instance_alias)
-            target = utils.connect(instance_item, username, password)
+            target = utils.connect(instance_item, credential_token)
 
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -2140,7 +2126,7 @@ def process_single_app(item, target, instance_item, update_time, result):
 
 @shared_task(bind=True, name="Update users", time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
-def update_users(self, instance_alias, overwrite=False, username=None, password=None):
+def update_users(self, instance_alias, overwrite=False, credential_token=None):
     """
     Update user records for the specified portal instance.
 
@@ -2157,10 +2143,8 @@ def update_users(self, instance_alias, overwrite=False, username=None, password=
     :type instance_alias: str
     :param overwrite: If True, delete existing user records before updating.
     :type overwrite: bool
-    :param username: Username for portal authentication (optional).
-    :type username: str, optional
-    :param password: Password for portal authentication (optional).
-    :type password: str, optional
+    :param credential_token: Token for temporary credentials (optional)
+    :type credential_token: str
     :return: A JSON string summarizing the update results, including counts of inserts, updates,
              deletions, and any error messages.
     :rtype: str
@@ -2171,7 +2155,7 @@ def update_users(self, instance_alias, overwrite=False, username=None, password=
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
-        target = utils.connect(instance_item, username, password)
+        target = utils.connect(instance_item, credential_token)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -2218,8 +2202,7 @@ def update_users(self, instance_alias, overwrite=False, username=None, password=
             batch_tasks.append(
                 process_batch_users.s(
                     instance_alias,
-                    username,
-                    password,
+                    credential_token,
                     batch,
                     batch_size,
                     roles,
@@ -2444,14 +2427,14 @@ def update_users(self, instance_alias, overwrite=False, username=None, password=
 
 @shared_task(bind=True)
 @celery_logging_context
-def process_batch_users(self, instance_alias, username, password, batch, batch_size, roles, update_time):
+def process_batch_users(self, instance_alias, credential_token, batch, batch_size, roles, update_time):
     result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
 
     try:
         try:
             instance_item = Portal.objects.get(alias=instance_alias)
-            target = utils.connect(instance_item, username, password)
+            target = utils.connect(instance_item, credential_token)
 
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -2552,8 +2535,6 @@ def process_batch_users(self, instance_alias, username, password, batch, batch_s
         logger.error(f"Error processing users in batch {batch} to {batch + batch_size}: {e}", exc_info=True)
         result.add_error(f"Error processing users in batch {batch} to {batch + batch_size}")
         return {"result": result.to_json()}
-    finally:
-        batch_password = None
 
 
 @shared_task(bind=True)
@@ -3114,7 +3095,7 @@ def _verify_privileges(user):
     return all(priv in user.privileges for priv in required)
 
 
-def _connect_portal(portal_alias, tool_result):
+def _connect_portal_task(portal_alias, tool_result):
     """Establish portal connection with error tracking."""
     try:
         portal_instance = Portal.objects.get(alias=portal_alias)
@@ -3134,6 +3115,10 @@ def _connect_portal(portal_alias, tool_result):
     except Portal.DoesNotExist:
         tool_result.add_error(f"Portal '{portal_alias}' not found in database")
         logger.error(f"Portal '{portal_alias}' not found in database")
+        return None, None
+    except ConnectionError as e:
+        tool_result.add_error(f"Connection error connecting to portal '{portal_alias}': {e}")
+        logger.error(f"Connection error connecting to portal '{portal_alias}': {e}", exc_info=True)
         return None, None
     except Exception as e:
         tool_result.add_error(f"Unexpected error connecting to portal '{portal_alias}'")
@@ -3217,7 +3202,7 @@ def process_pro_license_task(self, portal_alias: str, duration_days: int, warnin
 
     try:
         progress_recorder.set_progress(0, 100, "Connecting to portal...")
-        portal_instance, target = _connect_portal(portal_alias, tool_result)
+        portal_instance, target = _connect_portal_task(portal_alias, tool_result)
         if not target:
             progress_recorder.set_progress(100, 100, "Connection failed")
         else:
@@ -3262,7 +3247,7 @@ def process_inactive_user_task(self, portal_alias: str, duration_days: int, warn
 
     try:
         progress_recorder.set_progress(0, 100, "Connecting to portal...")
-        portal_instance, target = _connect_portal(portal_alias, tool_result)
+        portal_instance, target = _connect_portal_task(portal_alias, tool_result)
         if not target:
             progress_recorder.set_progress(100, 100, "Connection failed")
         else:
@@ -3309,7 +3294,7 @@ def process_public_unshare_task(self, portal_alias: str, score_threshold: int = 
 
     try:
         progress_recorder.set_progress(0, 100, "Connecting to portal...")
-        portal_instance, target = _connect_portal(portal_alias, tool_result)
+        portal_instance, target = _connect_portal_task(portal_alias, tool_result)
         if not target:
             progress_recorder.set_progress(100, 100, "Connection failed")
             return tool_result.to_json()

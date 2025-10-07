@@ -16,13 +16,11 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 # ----------------------------------------------------------------------
 from collections import defaultdict
-import json
-import logging
 
+import cron_descriptor
 from celery import current_app as celery_app  # For signaling Celery
 from celery.result import AsyncResult
 from celery_progress.backend import Progress
-import cron_descriptor
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.admin.utils import unquote
@@ -45,10 +43,12 @@ from django_filters.views import FilterView
 from django_tables2 import SingleTableMixin, RequestConfig
 from django_tables2.export.views import ExportMixin
 
-from app import utils
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
-from .forms import ScheduleForm, SiteSettingsForm, ToolsForm
-from .models import Portal, User, Webmap, Service, Layer, App, PortalCreateForm, UserProfile, LogEntry
+from .forms import ScheduleForm, SiteSettingsForm, ToolsForm, WebhookSettingsForm, PortalCredentialsForm
+from .models import (
+    PortalCreateForm, UserProfile, LogEntry,
+)
+from .request_context import get_django_request_context
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *
 
@@ -275,7 +275,7 @@ class LogTable(ExportMixin, SingleTableMixin, FilterView):
 
 
 @login_required
-def logs_page(request):
+def logs_view(request):
     """
     Renders the main application logs page or a partial for HTMX requests.
 
@@ -625,113 +625,216 @@ def index_view(request, instance=None):
 @staff_member_required
 def refresh_portal_view(request):
     """
-    Initiate refresh of portal data.
+    Initiates a background task to refresh data for a specified portal instance.
 
-    Triggers asynchronous updates of items from the specified portal.
+    This view is triggered by a POST request. It validates the portal instance and
+    the type of items to refresh. If credentials are provided in the POST, they are
+    used for authentication. If not, and the portal doesn't store credentials,
+    a credential form is rendered. Otherwise, stored credentials are used implicitly
+    by the background task. A Celery task is then dispatched to perform the refresh.
 
-    :param request: The HTTP request object
-    :type request: HttpRequest
+    Expected POST parameters:
+        - 'instance': Alias of the portal to refresh.
+        - 'items': Type of items to refresh (e.g., 'webmaps', 'services').
+        - 'url': Optional URL of the portal (alternative to 'instance').
+        - 'delete': Optional boolean ('true'/'false') to delete existing items before refresh.
+        - 'username': Optional username for portal authentication.
+        - 'password': Optional password for portal authentication.
 
-    :return: Status response or redirect
-    :rtype: HttpResponse
+    :param request: The HTTP request object.
+    :type request: django.http.HttpRequest
+    :return: Rendered HTML response, typically a progress bar partial or a credential form.
+    :rtype: django.http.HttpResponse
     """
+    logger.debug(f"Method={request.method}, user={request.user.username}, POST data: {request.POST}")
 
     if request.method != "POST":
-        return JsonResponse({"error": "Invalid request method"}, status=405)
+        logger.warning("Method not allowed for refresh_portal_view.")
+        return JsonResponse({"error": "Method not allowed"}, status=405)
 
+    # Get basic parameters first
+    instance_alias = request.POST.get("instance")
+    items_to_refresh = request.POST.get("items")
+    instance_url = request.POST.get("url")
+    delete_flag = request.POST.get("delete", "false").lower() == "true"
+
+    # Validate portal exists
     try:
-        instance_alias = request.POST.get("instance", None)
-        delete = request.POST.get("delete", False)
-        items = request.POST.get("items")
-        instance_url = request.POST.get("url", None)
+        portal_query = Q()
+        if instance_alias:
+            portal_query |= Q(alias=instance_alias)
+        if instance_url:
+            portal_query |= Q(url=instance_url)
 
-        # Validate instance
-        portal = Portal.objects.filter(Q(alias=instance_alias) | Q(url=instance_url)).first()
+        if not (instance_alias or instance_url):
+            logger.error("Refresh portal called without instance alias or URL.")
+            return HttpResponse(status=200, headers={
+                "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Portal identifier missing."})
+            })
+
+        portal = Portal.objects.filter(portal_query).first()
         if not portal:
-            logger.error(f"Portal instance '{instance_alias}' not found.")
-            response = HttpResponse(status=200)
-            response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": "Invalid portal instance."})
-            return response
-
-        # Retrieve credentials if included
-        username = request.POST.get("username", None)
-        password = request.POST.get("password", None)
-        if username and password:
-            auth = utils.try_connection(request.POST)
-            if auth.get("authenticated", False):
-                if portal.portal_type is None:
-                    portal.portal_type = "agol" if auth.get("is_agol") else "portal"
-                    portal.save()
-                # Task mapping for better maintainability
-                task_map = {
-                    "webmaps": update_webmaps,
-                    "services": update_services,
-                    "webapps": update_webapps,
-                    "users": update_users
-                }
-
-                # Validate selected task
-                task_func = task_map.get(items)
-                if not task_func:
-                    logger.warning(f"Invalid task type '{items}' for portal '{instance_alias}'.")
-                    return JsonResponse({"error": "Invalid task type selected"}, status=400)
-
-                time.sleep(1.5)
-
-                # Start the task
-                task = task_func.apply_async(args=[portal.alias, delete, username, password],
-                                             task_name=f"Update{items}")
-                logger.info(f"Started task '{task.id}' for '{items}' update on portal '{instance_alias}'.")
-
-                response_data = {
-                    "instance": portal.alias,
-                    "task_id": task.id,
-                    "progress": 0  # Initial progress
-                }
-
-                response = render(request, "partials/progress_bar.html", context=response_data)
-                response["HX-Trigger"] = json.dumps({"closeModal": True})
-                return response
-            response = HttpResponse(status=401)
-            response["HX-Trigger"] = json.dumps(
-                {"showDangerAlert": "Unable to connect to portal. Please verify credentials."})
-            return response
-
-        if not portal.store_password:
-            return render(request, "portals/portal_credentials.html", {"instance": portal, "items": items})
-
-        # Task mapping for better maintainability
-        task_map = {
-            "webmaps": update_webmaps,
-            "services": update_services,
-            "webapps": update_webapps,
-            "users": update_users
-        }
-
-        # Validate selected task
-        task_func = task_map.get(items)
-        if not task_func:
-            logger.warning(f"Invalid task type '{items}' for portal '{instance_alias}'.")
-            return JsonResponse({"error": "Invalid task type selected"}, status=400)
-
-        time.sleep(1.5)
-
-        # Start the task
-        task = task_func.apply_async(args=[portal.alias, delete, username, password], task_name=f"Update{items}")
-        logger.info(f"Started task '{task.id}' for '{items}' update on portal '{instance_alias}'.")
-        response_data = {
-            "instance": instance_alias,
-            "task_id": task.id,
-            "progress": 0  # Initial progress
-        }
-
-        return render(request, "partials/progress_bar.html", context=response_data)
+            logger.warning(f"Portal instance for '{instance_alias or instance_url}' not found.")
+            return HttpResponse(status=200, headers={
+                "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Invalid portal instance."})
+            })
 
     except Exception as e:
-        logger.exception(f"Error in refresh_portal_view: {e}")
-        response = HttpResponse(status=500)
-        response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": "Failed to start refresh task"})
+        logger.error(f"Error fetching portal '{instance_alias or instance_url}': {e}", exc_info=True)
+        return HttpResponse(status=200, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error accessing portal data."})
+        })
+
+    # Validate task type
+    task_map = {
+        "webmaps": update_webmaps,
+        "services": update_services,
+        "webapps": update_webapps,
+        "users": update_users
+    }
+    task_func = task_map.get(items_to_refresh)
+    if not task_func:
+        logger.warning(f"Invalid task type '{items_to_refresh}' for portal '{portal.alias}'.")
+        return JsonResponse({"error": "Invalid task type selected"}, status=400)
+
+    # Determine if credentials are needed
+    credentials_required = not portal.store_password
+    credential_token = None
+
+    # Check if this is a credential form submission
+    is_credential_submission = 'username' in request.POST or 'password' in request.POST
+
+    if credentials_required:
+        if is_credential_submission:
+            # Validate credential form submission
+            logger.debug(f"Processing credential form submission for portal '{portal.alias}'.")
+            form = PortalCredentialsForm(
+                request.POST,
+                portal=portal,
+                require_credentials=True
+            )
+
+            if form.is_valid():
+                username = form.cleaned_data['username']
+                password = form.cleaned_data['password']
+
+                # Test connection
+                logger.debug(f"Testing auth for {portal.alias} with user {username[0] if username else ''}...")
+                auth_payload = {'username': username, 'password': password, 'url': portal.url}
+                auth_result = utils.try_connection(auth_payload)
+
+                # When credentials fail during form submission
+                if not auth_result.get("authenticated", False):
+                    logger.warning(f"Auth failed for {portal.alias} during form submission.")
+                    form.add_error('password',
+                                   auth_result.get("error", "Authentication failed. Please verify credentials."))
+                    context = {
+                        "form": form,
+                        "instance": portal,
+                        "items": items_to_refresh,
+                        "delete": delete_flag,
+                        "error_message": "Authentication failed. Please verify credentials."
+                    }
+                    response = render(request, "partials/portal_credentials_form.html", context)
+                    # Retarget to the credentials modal container
+                    response["HX-Retarget"] = "#credentials-form-container"
+                    response["HX-Reswap"] = "innerHTML"
+                    return response
+
+                # Store credentials
+                logger.info(f"Authenticated to {portal.alias} as {username}")
+
+                # Update portal type if needed
+                if portal.portal_type is None and auth_result.get("is_agol") is not None:
+                    portal.portal_type = "agol" if auth_result["is_agol"] else "portal"
+                    portal.save(update_fields=['portal_type'])
+
+                credential_token = utils.CredentialManager.store_credentials(username, password, ttl_seconds=300)
+                if not credential_token:
+                    logger.error(f"Failed to store temporary credentials for {portal.alias}.")
+                    form.add_error(None, "System error: Failed to secure credentials.")
+                    context = {
+                        "form": form,
+                        "instance": portal,
+                        "items": items_to_refresh,
+                        "delete": delete_flag,
+                        "error_message": "System error: Failed to secure credentials."
+                    }
+                    return render(request, "portals/portal_credentials.html", context, status=200)
+
+                logger.debug(f"Credential token generated for {portal.alias}: {credential_token[:8]}...")
+
+            else:
+                # Form validation failed
+                logger.warning(f"Credential form validation failed for {portal.alias}: {form.errors}")
+                context = {
+                    "form": form,
+                    "instance": portal,
+                    "items": items_to_refresh,
+                    "delete": delete_flag,
+                    "error_message": "Please correct the errors below."
+                }
+                return render(request, "portals/portal_credentials.html", context, status=400)
+        else:
+            # Need to show credential form
+            logger.debug(f"Credentials required for {portal.alias}; rendering credential form.")
+            form = PortalCredentialsForm(
+                initial={
+                    'instance': portal.alias,
+                    'items': items_to_refresh,
+                    'delete': delete_flag
+                },
+                portal=portal,
+                require_credentials=True
+            )
+            context = {
+                "form": form,
+                "instance": portal,
+                "items": items_to_refresh,
+                "delete": delete_flag,
+            }
+            return render(request, "portals/portal_credentials.html", context)
+    else:
+        # Portal has stored credentials, proceed directly
+        logger.debug(f"Portal '{portal.alias}' has stored credentials. Proceeding to task.")
+
+    # Start the background task
+    logger.debug(f"Starting Celery task for '{portal.alias}', items: '{items_to_refresh}'")
+
+    django_ctx = get_django_request_context()
+    user_id = request.user if request.user.is_authenticated else None
+
+    task_args = [portal.alias, delete_flag, credential_token]
+    task_kwargs = {
+        '_request_id': str(django_ctx.get('request_id')),
+        '_user': user_id.username,
+        '_client_ip': django_ctx.get('client_ip'),
+        '_request_path': django_ctx.get('request_path'),
+    }
+
+    try:
+        task = task_func.apply_async(args=task_args, kwargs=task_kwargs)
+        logger.info(f"Started task '{task.id}' for '{items_to_refresh}' on portal '{portal.alias}'.")
+
+        response_data = {
+            "instance": portal.alias,
+            "task_id": task.id,
+            "progress": 0
+        }
+        response = render(request, "partials/progress_bar.html", context=response_data)
+        response["HX-Trigger"] = json.dumps({"closeModal": True})
         return response
+
+    except Exception as e:
+        logger.error(f"Failed to submit Celery task for portal '{portal.alias}': {e}", exc_info=True)
+        if credential_token:
+            utils.CredentialManager.delete_credentials(credential_token)
+            logger.info(f"Cleaned up credential token due to task submission failure.")
+        return HttpResponse(status=500, headers={
+            "HX-Trigger-After-Settle": json.dumps({
+                "showDangerAlert": "System error: Failed to start background refresh task."
+            })
+        })
 
 
 @staff_member_required
@@ -1130,6 +1233,10 @@ def schedule_task_view(request, instance):
             return response
         else:
             logger.warning(f"schedule_task_view: Form invalid for '{instance}'. Errors: {form.errors}")
+            response = render(request, "partials/portal_schedule_form.html",
+                              {"form": form, "enable": portal.store_password, "description": description,
+                               "results": results, "instance_alias": portal.alias})
+            return response
 
     context = {"form": form, "description": description, "results": results, "enable": portal.store_password,
                "instance_alias": portal.alias}
@@ -1277,56 +1384,139 @@ def metadata_view(request, instance):
         portal = get_object_or_404(Portal, alias=instance)
     except Http404:
         logger.warning(f"Portal '{instance}' not found.")
-        return HttpResponse(status=404, headers={
-            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Portal instance not found."})})
+        return HttpResponse(status=200, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Portal instance not found."})
+        })
 
-    username = request.POST.get("username")
-    password = request.POST.get("password")
-    auth_args = {}
+    # Determine if credentials are needed
+    credentials_required = not portal.store_password
+    credential_token = None
 
-    if username and password:
-        logger.debug(f"Credentials provided for {instance}.")
-        auth_result = utils.try_connection(request.POST)
-        if not auth_result.get("authenticated", False):
-            logger.warning(f"metadata_view: Auth failed for {instance} with user {username}.")
-            return HttpResponse(status=401, headers={
-                "HX-Trigger": json.dumps({"showDangerAlert": "Unable to connect. Verify credentials."})})
-        logger.info(f"Authenticated to {instance} as {username}.")
-        if portal.portal_type is None and auth_result.get("is_agol") is not None:
-            portal.portal_type = "agol" if auth_result["is_agol"] else "portal"
-            portal.save(update_fields=['portal_type'])
-        auth_args = {'username': username, 'password': password}
-    elif not portal.store_password:
-        logger.debug(f"Credentials required for {instance}, rendering form.")
-        return render(request, "portals/portal_credentials.html",
-                      {"instance": portal, "items": "metadata_report"})
+    # Check if this is a credential form submission
+    is_credential_submission = 'username' in request.POST or 'password' in request.POST
 
+    if credentials_required:
+        if is_credential_submission:
+            # Validate credential form submission
+            logger.debug(f"Processing credential form submission for portal '{portal.alias}'.")
+            form = PortalCredentialsForm(
+                request.POST,
+                portal=portal,
+                require_credentials=True
+            )
+
+            if form.is_valid():
+                username = form.cleaned_data['username']
+                password = form.cleaned_data['password']
+
+                # Test connection
+                logger.debug(f"Testing auth for {portal.alias} with user {username[0] if username else ''}...")
+                auth_payload = {'username': username, 'password': password, 'url': portal.url}
+                auth_result = utils.try_connection(auth_payload)
+
+                if not auth_result.get("authenticated", False):
+                    logger.warning(f"Auth failed for {portal.alias} during form submission.")
+                    form.add_error('password',
+                                   auth_result.get("error", "Authentication failed. Please verify credentials."))
+                    context = {
+                        "form": form,
+                        "instance": portal,
+                        "items": "metadata",
+                        "error_message": "Authentication failed. Please verify credentials."
+                    }
+                    return render(request, "portals/portal_credentials.html", context, status=200)
+
+                # Store credentials
+                logger.info(f"Authenticated to {portal.alias} as {username}")
+
+                # Update portal type if needed
+                if portal.portal_type is None and auth_result.get("is_agol") is not None:
+                    portal.portal_type = "agol" if auth_result["is_agol"] else "portal"
+                    portal.save(update_fields=['portal_type'])
+
+                credential_token = utils.CredentialManager.store_credentials(username, password, ttl_seconds=300)
+                if not credential_token:
+                    logger.error(f"Failed to store temporary credentials for {portal.alias}.")
+                    form.add_error(None, "System error: Failed to secure credentials.")
+                    context = {
+                        "form": form,
+                        "instance": portal,
+                        "items": "metadata",
+                        "error_message": "System error: Failed to secure credentials."
+                    }
+                    return render(request, "portals/portal_credentials.html", context, status=200)
+
+                logger.debug(f"Credential token generated for {portal.alias}: {credential_token[:8]}...")
+
+            else:
+                # Form validation failed
+                logger.warning(f"Credential form validation failed for {portal.alias}: {form.errors}")
+                context = {
+                    "form": form,
+                    "instance": portal,
+                    "items": "metadata",
+                    "error_message": "Please correct the errors below."
+                }
+                return render(request, "portals/portal_credentials.html", context, status=200)
+        else:
+            # Need to show credential form
+            logger.debug(f"Credentials required for {portal.alias}; rendering credential form.")
+            form = PortalCredentialsForm(
+                initial={
+                    'instance': portal.alias,
+                    'items': "metadata"
+                },
+                portal=portal,
+                require_credentials=True
+            )
+            context = {
+                "form": form,
+                "instance": portal,
+                "items": "metadata",
+            }
+            return render(request, "portals/portal_credentials.html", context)
+    else:
+        # Portal has stored credentials, proceed directly
+        logger.debug(f"Portal '{portal.alias}' has stored credentials. Proceeding to fetch metadata.")
+
+    # Fetch metadata report
     try:
         logger.debug(f"metadata_view: Fetching metadata for {instance}.")
-        metadata_report_data = utils.get_metadata(portal, **auth_args)
+
+        metadata_report_data = utils.get_metadata(portal, credential_token)
 
         if "error" in metadata_report_data:
             error_msg = metadata_report_data["error"]
             logger.warning(f"Error from get_metadata for '{instance}': {error_msg}")
-            return HttpResponse(status=500,
-                                headers={"HX-Trigger-After-Settle": json.dumps({"showDangerAlert": error_msg})})
+            return HttpResponse(status=200, headers={
+                "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": error_msg})
+            })
 
         context = {
             "portal_list": Portal.objects.values_list("alias", "portal_type", "url"),
             "current_portal": portal,
             "instance_alias": instance,
-            "metadata_items": metadata_report_data.get("metadata", []),
+            "metadata": metadata_report_data.get("metadata", []),
         }
+
         logger.debug(f"Rendering metadata for '{instance}'.")
         response = render(request, template_name, context)
-        if (username and password) or (not portal.store_password and not (username and password)):
+
+        # Close modal if credentials were provided or form was submitted
+        if credential_token or (credentials_required and is_credential_submission):
             response["HX-Trigger"] = json.dumps({"closeModal": True})
+
         return response
 
     except Exception as e:
         logger.error(f"Error processing metadata for '{instance}': {e}", exc_info=True)
+        # Clean up credential token if an error occurred
+        if credential_token:
+            utils.CredentialManager.delete_credentials(credential_token)
+            logger.info("Cleaned up credential token due to metadata processing error.")
         return HttpResponse(status=500, headers={
-            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error getting metadata report."})})
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error getting metadata report."})
+        })
 
 
 @login_required
@@ -1619,6 +1809,7 @@ def email_settings(request):
     return render(request, template_to_render, {"form": form})
 
 
+@require_POST
 @staff_member_required
 def notify_view(request):
     """
@@ -1645,12 +1836,19 @@ def notify_view(request):
 
     logger.debug(f"Change='{change_item_description}', Maps='{map_ids_str}', Apps='{app_ids_str}'")
 
+    # Check email configuration
     site_settings = SiteSettings.objects.first()
     if not site_settings or not site_settings.email_host:
         logger.error("Email settings not configured.")
         return HttpResponse(status=200, headers={
-            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Email settings not configured."})})
+            "HX-Retarget": "#notification-form-container",
+            "HX-Reswap": "innerHTML",
+            "HX-Trigger-After-Settle": json.dumps({
+                "showDangerAlert": "Email settings not configured. Please contact administrator."
+            })
+        })
 
+    # Parse and validate selections
     selected_maps_qs = Webmap.objects.none()
     if map_ids_str:
         map_ids_list = [map_id.strip() for map_id in map_ids_str.split(',') if map_id.strip()]
@@ -1665,11 +1863,14 @@ def notify_view(request):
 
     if not selected_maps_qs.exists() and not selected_apps_qs.exists():
         logger.debug("No maps or apps selected for notification.")
-        messages.info(request, "No items were selected for notification.")
-        response = HttpResponse("")
-        response["HX-Trigger"] = json.dumps({"closeModal": True})
-        return response
+        return HttpResponse(status=200, headers={
+            "HX-Retarget": "#notification-form-container",
+            "HX-Trigger-After-Settle": json.dumps({
+                "showWarningAlert": "No items were selected for notification."
+            })
+        })
 
+    # Group items by owner
     owner_items_map = defaultdict(lambda: {"maps": [], "apps": []})
     for webmap_obj in selected_maps_qs:
         if webmap_obj.webmap_owner and webmap_obj.webmap_owner.user_email:
@@ -1678,6 +1879,16 @@ def notify_view(request):
         if app_obj.app_owner and app_obj.app_owner.user_email:
             owner_items_map[app_obj.app_owner]["apps"].append(app_obj)
 
+    if not owner_items_map:
+        logger.warning("Selected items have no valid owners with email addresses.")
+        return HttpResponse(status=200, headers={
+            "HX-Retarget": "#notification-form-container",
+            "HX-Trigger-After-Settle": json.dumps({
+                "showWarningAlert": "Selected items have no valid owners with email addresses."
+            })
+        })
+
+    # Send emails
     logger.info(f"Preparing to send notifications to {len(owner_items_map)} owners.")
     emails_sent_count = 0
     emails_failed_count = 0
@@ -1686,7 +1897,9 @@ def notify_view(request):
         try:
             owner_maps = owner_items["maps"]
             owner_apps = owner_items["apps"]
-            message, html, subject = utils.format_notification_email(owner_obj,change_item_description,owner_maps,owner_apps)
+            message, html, subject = utils.format_notification_email(
+                owner_obj, change_item_description, owner_maps, owner_apps
+            )
             success, status_msg = utils.send_email(owner_obj.user_email, subject, message, html)
             if success:
                 emails_sent_count += 1
@@ -1697,17 +1910,33 @@ def notify_view(request):
             logger.error(f"Error sending email to {owner_obj.user_email}: {e}", exc_info=True)
             emails_failed_count += 1
 
-    if emails_sent_count > 0:
-        messages.success(request, f"{emails_sent_count} notification emails sent successfully.")
-    if emails_failed_count > 0:
-        messages.warning(request, f"{emails_failed_count} notification emails failed to send. Check logs.")
-    if emails_sent_count == 0 and emails_failed_count == 0 and (
-        selected_maps_qs.exists() or selected_apps_qs.exists()):
-        messages.info(request, "No notifications were sent (e.g., selected items had no valid owners with emails).")
+    if emails_sent_count > 0 and emails_failed_count == 0:
+        # Complete success
+        response = HttpResponse("")
+        response["HX-Trigger"] = json.dumps({
+            "closeModal": True,
+            "showSuccessAlert": f"{emails_sent_count} notification email(s) sent successfully."
+        })
+        return response
 
-    response = HttpResponse("")
-    response["HX-Trigger"] = json.dumps({"closeModal": True})
-    return response
+    elif emails_sent_count > 0 and emails_failed_count > 0:
+        # Partial success. close modal but show warning
+        response = HttpResponse("")
+        response["HX-Trigger"] = json.dumps({
+            "closeModal": True,
+            "showWarningAlert": f"{emails_sent_count} sent, {emails_failed_count} failed. Check logs for details."
+        })
+        return response
+
+    else:
+        # Complete failure. keep modal open, show error
+        logger.error(f"All email notifications failed. Sent: {emails_sent_count}, Failed: {emails_failed_count}")
+        return HttpResponse(status=200, headers={
+            "HX-Retarget": "#notification-form-container",
+            "HX-Trigger-After-Settle": json.dumps({
+                "showDangerAlert": f"Failed to send all notifications. Please check logs or contact administrator."
+            })
+        })
 
 
 @staff_member_required
@@ -1858,3 +2087,36 @@ def tool_run(request, instance, tool_name):
             "HX-Trigger-After-Settle": json.dumps(
                 {"showDangerAlert": "Failed to queue the tool. See logs for details."})
         })
+
+
+@staff_member_required
+def webhook_settings_view(request):
+    """Configure webhook settings for the site."""
+    site_settings, _ = SiteSettings.objects.get_or_create(pk=1)
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+
+        if action == "save":
+            form = WebhookSettingsForm(request.POST, instance=site_settings)
+            if form.is_valid():
+                form.save()
+                return HttpResponse(headers={"HX-Trigger-After-Settle": json.dumps(
+                    {"showSuccessAlert": "Webhook settings saved successfully.", "closeModal": True}
+                )})
+            else:
+                return render(request, 'partials/webhook_settings_form.html', {'form': form})
+
+    elif request.method == "DELETE":
+        site_settings.webhook_secret = ""
+        site_settings.save(update_fields=['webhook_secret'])
+        return HttpResponse(headers={"HX-Trigger-After-Settle": json.dumps(
+            {"showSuccessAlert": "Webhook secret cleared.", "closeModal": True}
+        )})
+
+    # GET request - show form
+    form = WebhookSettingsForm(instance=site_settings)
+    return render(request, 'portals/webhook_settings.html', {
+        'form': form,
+        'current_secret': bool(site_settings.webhook_secret)
+    })

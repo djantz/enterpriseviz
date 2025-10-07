@@ -27,8 +27,8 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # https://docs.djangoproject.com/en/dev/ref/settings/#caches
 CACHES = {
     "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "",
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": env.db("CACHE_URL"),
     }
 }
 

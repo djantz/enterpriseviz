@@ -43,11 +43,12 @@ urlpatterns = [
     path(r"/webhook", webhook_view, name="webhook"),
     path(r"/settings/email/", email_settings, name="email_settings"),
     path(r"/settings/logs/", log_settings_view, name='log_settings'),
-    path(r"/logs/", logs_page, name="log"),
+    path(r"/logs/", logs_view, name="log"),
     path(r"/logs/table/", LogTable.as_view(), name="log_table"),
     path(r"/notify/", notify_view, name="notify"),
     path(r"/portal/tools/<instance>/", tool_settings, name="tool_settings"),
     path(r"/portal/tools/<instance>/<tool_name>/", tool_run, name="tools_run"),
+    path(r"/settings/webhook/", webhook_settings_view, name='webhook_settings'),
 
     # The home page
     path(r"/", index_view, name="index"),
