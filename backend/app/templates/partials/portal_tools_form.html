@@ -25,36 +25,36 @@
       </div>
 
       <div class="tool-settings">
-        <calcite-label>
-          Inactivity Duration
-          <calcite-select id="tool-pro-duration" name="tool_pro_duration"
-                          value="{{ form.tool_pro_duration.value|default_if_none:'' }}">
-            <calcite-option value="30">30 days</calcite-option>
-            <calcite-option value="60">60 days</calcite-option>
-            <calcite-option value="90">90 days</calcite-option>
-            <calcite-option value="180">180 days</calcite-option>
-          </calcite-select>
-          <calcite-input-message {% if not form.tool_pro_duration.errors %}hidden{% endif %}
-                                 icon="exclamation-mark-triangle-f" status="invalid">
-            {{ form.tool_pro_duration.errors|join:" " }}
-          </calcite-input-message>
-        </calcite-label>
-        <calcite-label>
-          Warning Notification
-          <calcite-select id="tool-pro-warning" name="tool_pro_warning"
-                          value="{{ form.tool_pro_warning.value|default_if_none:'' }}">
-            <calcite-option value="3">3 days</calcite-option>
-            <calcite-option value="5">5 days</calcite-option>
-            <calcite-option value="7">7 days</calcite-option>
-            <calcite-option value="14">14 days</calcite-option>
-          </calcite-select>
-          <calcite-input-message {% if not form.tool_pro_warning.errors %}hidden{% endif %}
-                                 icon="exclamation-mark-triangle-f" status="invalid">
-            {{ form.tool_pro_warning.errors|join:" " }}
-          </calcite-input-message>
-        </calcite-label>
+        <calcite-select id="tool-pro-duration" name="tool_pro_duration"
+                        value="{{ form.tool_pro_duration.value|default_if_none:'' }}"
+                        label-text="Inactivity Duration" required
+                        {% if form.tool_pro_duration.errors %}status="invalid"{% endif %}>
+          <calcite-icon slot="label-content" id="tool-pro-duration-tooltip" icon="information" scale="s"></calcite-icon>
+        <calcite-option value="30">30 days</calcite-option>
+        <calcite-option value="60">60 days</calcite-option>
+        <calcite-option value="90">90 days</calcite-option>
+        <calcite-option value="180">180 days</calcite-option>
+        </calcite-select>
+        <calcite-input-message {% if not form.tool_pro_duration.errors %}hidden{% endif %}
+                               icon="exclamation-mark-triangle-f" status="invalid">
+          {{ form.tool_pro_duration.errors|join:" " }}
+        </calcite-input-message>
+        <calcite-select id="tool-pro-warning" name="tool_pro_warning"
+                        value="{{ form.tool_pro_warning.value|default_if_none:'' }}"
+                        label-text="Warning Notification" required
+                        {% if form.tool_pro_warning.errors %}status="invalid"{% endif %}>
+          <calcite-icon slot="label-content" id="tool-pro-warning-tooltip" icon="information" scale="s"></calcite-icon>
+        <calcite-option value="3">3 days</calcite-option>
+        <calcite-option value="5">5 days</calcite-option>
+        <calcite-option value="7">7 days</calcite-option>
+        <calcite-option value="14">14 days</calcite-option>
+        </calcite-select>
+        <calcite-input-message {% if not form.tool_pro_warning.errors %}hidden{% endif %}
+                               icon="exclamation-mark-triangle-f" status="invalid">
+          {{ form.tool_pro_warning.errors|join:" " }}
+        </calcite-input-message>
       </div>
-      <calcite-button id="run-pro-removal" scale="s"
+      <calcite-button id="run-pro-removal" scale="s" {% if not prerequisites_met %}disabled{% endif %}
                       hx-post="{% url 'enterpriseviz:tools_run' instance=form.instance.portal.alias tool_name='pro_license' %}"
                       hx-target="previous #progress-container"
                       hx-include="#tools-portal-form"
@@ -83,48 +83,48 @@
       </div>
 
       <div class="tool-settings">
-        <calcite-label>
-          Metadata Score Requirement
-          <calcite-select id="tool-public-unshare-score" name="tool_public_unshare_score"
-                          value="{{ form.tool_public_unshare_score.value|default_if_none:'' }}">
-            <calcite-option value="50">50%</calcite-option>
-            <calcite-option value="75">75%</calcite-option>
-            <calcite-option value="90">90%</calcite-option>
-            <calcite-option value="100">100%</calcite-option>
-          </calcite-select>
-          <calcite-input-message {% if not form.tool_public_unshare_score.errors %}hidden{% endif %}
-                                 icon="exclamation-mark-triangle-f" status="invalid">
-            {{ form.tool_public_unshare_score.errors|join:" " }}
-          </calcite-input-message>
-        </calcite-label>
-        <calcite-label>
-          Notification Alert Frequency Limit
-          <calcite-select id="tool_public_unshare_notify_limit" name="tool_public_unshare_notify_limit"
-                          value="{{ form.tool_public_unshare_notify_limit.value|default_if_none:'' }}">
-            <calcite-option value="1">1 hour</calcite-option>
-            <calcite-option value="4">4 hours</calcite-option>
-            <calcite-option value="12">12 hours</calcite-option>
-            <calcite-option value="24">24 hours</calcite-option>
-          </calcite-select>
-          <calcite-input-message {% if not form.tool_public_unshare_notify_limit.errors %}hidden{% endif %}
-                                 icon="exclamation-mark-triangle-f" status="invalid">
-            {{ form.tool_public_unshare_notify_limit.errors|join:" " }}
-          </calcite-input-message>
-        </calcite-label>
-        <calcite-label>
-          Trigger
-          <calcite-select id="tool-public-unshare-trigger" name="tool_public_unshare_trigger"
-                          value="{{ form.tool_public_unshare_trigger.value|default_if_none:'' }}">
-            <calcite-option value="webhook">Webhook (immediate)</calcite-option>
-            <calcite-option value="daily">Daily (delayed)</calcite-option>
-          </calcite-select>
-          <calcite-input-message {% if not form.tool_public_unshare_trigger.errors %}hidden{% endif %}
-                                 icon="exclamation-mark-triangle-f" status="invalid">
-            {{ form.tool_public_unshare_trigger.errors|join:" " }}
-          </calcite-input-message>
-        </calcite-label>
+        <calcite-select id="tool-public-unshare-score" name="tool_public_unshare_score"
+                        value="{{ form.tool_public_unshare_score.value|default_if_none:'' }}"
+                        label-text="Metadata Score Requirement" required
+                        {% if form.tool_public_unshare_score.errors %}status="invalid"{% endif %}>
+          <calcite-icon slot="label-content" id="tool-public-unshare-score-tooltip" icon="information" scale="s"></calcite-icon>
+        <calcite-option value="50">50%</calcite-option>
+        <calcite-option value="75">75%</calcite-option>
+        <calcite-option value="90">90%</calcite-option>
+        <calcite-option value="100">100%</calcite-option>
+        </calcite-select>
+        <calcite-input-message {% if not form.tool_public_unshare_score.errors %}hidden{% endif %}
+                               icon="exclamation-mark-triangle-f" status="invalid">
+          {{ form.tool_public_unshare_score.errors|join:" " }}
+        </calcite-input-message>
+        <calcite-select id="tool_public_unshare_notify_limit" name="tool_public_unshare_notify_limit"
+                        value="{{ form.tool_public_unshare_notify_limit.value|default_if_none:'' }}"
+                        label-text="Notification Alert Frequency Limit" required
+                        {% if form.tool_public_unshare_notify_limit.errors %}status="invalid"{% endif %}>
+          <calcite-icon slot="label-content" id="tool-public-unshare-notify-limit-tooltip" icon="information" scale="s"></calcite-icon>
+        <calcite-option value="1">1 hour</calcite-option>
+        <calcite-option value="4">4 hours</calcite-option>
+        <calcite-option value="12">12 hours</calcite-option>
+        <calcite-option value="24">24 hours</calcite-option>
+        </calcite-select>
+        <calcite-input-message {% if not form.tool_public_unshare_notify_limit.errors %}hidden{% endif %}
+                               icon="exclamation-mark-triangle-f" status="invalid">
+          {{ form.tool_public_unshare_notify_limit.errors|join:" " }}
+        </calcite-input-message>
+        <calcite-select id="tool-public-unshare-trigger" name="tool_public_unshare_trigger"
+                        value="{{ form.tool_public_unshare_trigger.value|default_if_none:'' }}"
+                        label-text="Trigger" required
+                        {% if form.tool_public_unshare_trigger.errors %}status="invalid"{% endif %}>
+          <calcite-icon slot="label-content" id="tool-public-unshare-trigger-tooltip" icon="information" scale="s"></calcite-icon>
+        <calcite-option value="webhook">Webhook (immediate)</calcite-option>
+        <calcite-option value="daily">Daily (delayed)</calcite-option>
+        </calcite-select>
+        <calcite-input-message {% if not form.tool_public_unshare_trigger.errors %}hidden{% endif %}
+                               icon="exclamation-mark-triangle-f" status="invalid">
+          {{ form.tool_public_unshare_trigger.errors|join:" " }}
+        </calcite-input-message>
       </div>
-      <calcite-button id="run-public-unshare" scale="s"
+      <calcite-button id="run-public-unshare" scale="s" {% if not prerequisites_met %}disabled{% endif %}
                       hx-post="{% url 'enterpriseviz:tools_run' instance=form.instance.portal.alias tool_name='public_unshare' %}"
                       hx-target="previous #progress-container"
                       hx-include="#tools-portal-form"
@@ -153,52 +153,52 @@
       </div>
 
       <div class="tool-settings">
-        <calcite-label>
-          Inactivity Duration
-          <calcite-select id="tool-inactive-user-duration" name="tool_inactive_user_duration"
-                          value="{{ form.tool_inactive_user_duration.value|default_if_none:'' }}">
-            <calcite-option value="30">30 days</calcite-option>
-            <calcite-option value="60">60 days</calcite-option>
-            <calcite-option value="90">90 days</calcite-option>
-            <calcite-option value="180">180 days</calcite-option>
-            <calcite-option value="365">365 days</calcite-option>
-          </calcite-select>
-          <calcite-input-message {% if not form.tool_inactive_user_duration.errors %}hidden{% endif %}
-                                 icon="exclamation-mark-triangle-f" status="invalid">
-            {{ form.tool_inactive_user_duration.errors|join:" " }}
-          </calcite-input-message>
-        </calcite-label>
-        <calcite-label>
-          Warning Notification
-          <calcite-select id="tool-inactive-user-warning" name="tool_inactive_user_warning"
-                          value="{{ form.tool_inactive_user_warning.value|default_if_none:'' }}">
-            <calcite-option value="3">3 days</calcite-option>
-            <calcite-option value="5">5 days</calcite-option>
-            <calcite-option value="7">7 days</calcite-option>
-            <calcite-option value="14">14 days</calcite-option>
-            <calcite-option value="30">30 days</calcite-option>
-          </calcite-select>
-          <calcite-input-message {% if not form.tool_inactive_user_warning.errors %}hidden{% endif %}
-                                 icon="exclamation-mark-triangle-f" status="invalid">
-            {{ form.tool_inactive_user_warning.errors|join:" " }}
-          </calcite-input-message>
-        </calcite-label>
-        <calcite-label>
-          Action
-          <calcite-select id="tool-inactive-user-action" name="tool_inactive_user_action"
-                          value="{{ form.tool_inactive_user_action.value|default_if_none:'' }}">
-            <calcite-option value="notify">Notify Only</calcite-option>
-            <calcite-option value="disable">Disable User</calcite-option>
-            <calcite-option value="delete">Delete User</calcite-option>
-            <calcite-option value="transfer">Transfer User Content</calcite-option>
-          </calcite-select>
-          <calcite-input-message {% if not form.tool_inactive_user_action.errors %}hidden{% endif %}
-                                 icon="exclamation-mark-triangle-f" status="invalid">
-            {{ form.tool_inactive_user_action.errors|join:" " }}
-          </calcite-input-message>
-        </calcite-label>
+        <calcite-select id="tool-inactive-user-duration" name="tool_inactive_user_duration"
+                        value="{{ form.tool_inactive_user_duration.value|default_if_none:'' }}"
+                        label-text="Inactivity Duration" required
+                        {% if form.tool_inactive_user_duration.errors %}status="invalid"{% endif %}>
+          <calcite-icon slot="label-content" id="tool-inactive-user-duration-tooltip" icon="information" scale="s"></calcite-icon>
+        <calcite-option value="30">30 days</calcite-option>
+        <calcite-option value="60">60 days</calcite-option>
+        <calcite-option value="90">90 days</calcite-option>
+        <calcite-option value="180">180 days</calcite-option>
+        <calcite-option value="365">365 days</calcite-option>
+        </calcite-select>
+        <calcite-input-message {% if not form.tool_inactive_user_duration.errors %}hidden{% endif %}
+                               icon="exclamation-mark-triangle-f" status="invalid">
+          {{ form.tool_inactive_user_duration.errors|join:" " }}
+        </calcite-input-message>
+        <calcite-select id="tool-inactive-user-warning" name="tool_inactive_user_warning"
+                        value="{{ form.tool_inactive_user_warning.value|default_if_none:'' }}"
+                        label-text="Warning Notification" required
+                        {% if form.tool_inactive_user_warning.errors %}status="invalid"{% endif %}>
+          <calcite-icon slot="label-content" id="tool-inactive-user-warning-tooltip" icon="information" scale="s"></calcite-icon>
+        <calcite-option value="3">3 days</calcite-option>
+        <calcite-option value="5">5 days</calcite-option>
+        <calcite-option value="7">7 days</calcite-option>
+        <calcite-option value="14">14 days</calcite-option>
+        <calcite-option value="30">30 days</calcite-option>
+        </calcite-select>
+        <calcite-input-message {% if not form.tool_inactive_user_warning.errors %}hidden{% endif %}
+                               icon="exclamation-mark-triangle-f" status="invalid">
+          {{ form.tool_inactive_user_warning.errors|join:" " }}
+        </calcite-input-message>
+        <calcite-select id="tool-inactive-user-action" name="tool_inactive_user_action"
+                        value="{{ form.tool_inactive_user_action.value|default_if_none:'' }}"
+                        label-text="Action" required
+                        {% if form.tool_inactive_user_action.errors %}status="invalid"{% endif %}>
+          <calcite-icon slot="label-content" id="tool-inactive-user-action-tooltip" icon="information" scale="s"></calcite-icon>
+        <calcite-option value="notify">Notify Only</calcite-option>
+        <calcite-option value="disable">Disable User</calcite-option>
+        <calcite-option value="delete">Delete User</calcite-option>
+        <calcite-option value="transfer">Transfer User Content</calcite-option>
+        </calcite-select>
+        <calcite-input-message {% if not form.tool_inactive_user_action.errors %}hidden{% endif %}
+                               icon="exclamation-mark-triangle-f" status="invalid">
+          {{ form.tool_inactive_user_action.errors|join:" " }}
+        </calcite-input-message>
       </div>
-      <calcite-button id="run-inactive-user" scale="s"
+      <calcite-button id="run-inactive-user" scale="s" {% if not prerequisites_met %}disabled{% endif %}
                       hx-post="{% url 'enterpriseviz:tools_run' instance=form.instance.portal.alias tool_name='inactive_user' %}"
                       hx-target="previous #progress-container"
                       hx-include="#tools-portal-form"
@@ -208,3 +208,28 @@
     </calcite-accordion-item>
   </calcite-accordion>
 </form>
+
+<calcite-tooltip reference-element="tool-pro-duration-tooltip">
+  <span>Number of days of ArcGIS Pro inactivity before license removal</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="tool-pro-warning-tooltip">
+  <span>Number of days before license removal to send warning notification to user</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="tool-public-unshare-score-tooltip">
+  <span>Minimum metadata completeness score required for items to remain publicly shared</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="tool-public-unshare-notify-limit-tooltip">
+  <span>Minimum time between notification alerts to prevent spam</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="tool-public-unshare-trigger-tooltip">
+  <span>When to check items: immediately via webhook or once daily</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="tool-inactive-user-duration-tooltip">
+  <span>Number of days since last login before user is considered inactive</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="tool-inactive-user-warning-tooltip">
+  <span>Number of days before action is taken to send warning notification to user</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="tool-inactive-user-action-tooltip">
+  <span>Action to take on inactive users: notify only, disable, delete, or transfer content</span>
+</calcite-tooltip>

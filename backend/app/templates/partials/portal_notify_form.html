@@ -9,7 +9,8 @@
   <calcite-stepper id="notify-stepper" layout="horizontal" scale="s">
     <calcite-stepper-item heading="Select items" selected>
       <calcite-label>Affected Maps</calcite-label>
-      <calcite-table id="maps-table" scale="s" caption="Maps" striped {% if maps %} selection-mode="multiple" {% endif %} page-size="10"
+      <calcite-table id="maps-table" scale="s" caption="Maps" striped {% if maps %}
+                     selection-mode="multiple" {% endif %} page-size="10"
                      bordered>
         <calcite-table-row slot="table-header">
           <calcite-table-header heading="Title"></calcite-table-header>
@@ -30,7 +31,8 @@
       </calcite-table>
 
       <calcite-label>Affected Apps</calcite-label>
-      <calcite-table id="apps-table" scale="s" caption="Apps" striped {% if apps %} selection-mode="multiple" {% endif %} page-size="10"
+      <calcite-table id="apps-table" scale="s" caption="Apps" striped {% if apps %}
+                     selection-mode="multiple" {% endif %} page-size="10"
                      bordered>
         <calcite-table-row slot="table-header">
           <calcite-table-header heading="Title"></calcite-table-header>
@@ -52,11 +54,11 @@
     </calcite-stepper-item>
 
     <calcite-stepper-item heading="Add info">
-      <calcite-label>Provide additional information about the change
-        <calcite-text-area name="change" id="change-text"
-                           rows="4">This email is to inform you about upcoming changes to the '{{ change_item_name }}' layer. Below is content you own that may be impacted by this change. For additional information, questions, or concerns, please contact your portal administrator.
-        </calcite-text-area>
-      </calcite-label>
+      <calcite-text-area name="change" id="change-text"
+                         rows="4" label-text="Provide additional information about the change">This email is to inform
+        you about upcoming changes to the '{{ change_item_name }}' layer. Below is content you own that may be impacted
+        by this change. For additional information, questions, or concerns, please contact your portal administrator.
+      </calcite-text-area>
     </calcite-stepper-item>
   </calcite-stepper>
 </form>
