@@ -1970,34 +1970,89 @@ def tool_settings(request, instance):
         logger.error(f"Error getting/creating settings for '{instance}': {e}", exc_info=True)
         return HttpResponse(status=500, headers={
             "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error loading tool settings."})})
+
+    # Check prerequisites
+    site_settings, _ = SiteSettings.objects.get_or_create(pk=1)
+    webhook_configured = bool(site_settings.webhook_secret)
+    email_configured = bool(site_settings.email_host)
+    prerequisites_met = webhook_configured and email_configured
+
     results = TaskResult.objects.filter(task_kwargs__icontains=f"'{instance}'", task_name__icontains="tool").order_by(
         '-date_done')[:10]
+
     if request.method == "POST":
+        # Block submission if prerequisites not met
+        if not prerequisites_met:
+            warning_messages = []
+            if not webhook_configured:
+                warning_messages.append("Webhook must be configured")
+            if not email_configured:
+                warning_messages.append("Email settings must be configured")
+
+            form = ToolsForm(instance=tool_settings_obj)
+            context = {
+                'form': form,
+                'instance_alias': instance,
+                'prerequisites_met': False,
+                'webhook_configured': webhook_configured,
+                'email_configured': email_configured
+            }
+            response = render(request, "partials/portal_tools_form.html", context, status=400)
+            response["HX-Trigger-After-Settle"] = json.dumps({
+                "showWarningAlert": f"Cannot save: {', '.join(warning_messages)}"
+            })
+            return response
+
         form = ToolsForm(request.POST, instance=tool_settings_obj)
         if form.is_valid():
             try:
                 form.save(portal=portal_instance_obj)
 
                 logger.info(f"Tool settings updated for portal '{instance}'.")
-                context = {'form': form, 'instance_alias': instance}
+                context = {
+                    'form': form,
+                    'instance_alias': instance,
+                    'prerequisites_met': True,
+                    'webhook_configured': webhook_configured,
+                    'email_configured': email_configured
+                }
                 response = render(request, "partials/portal_tools_form.html", context)
                 response["HX-Trigger-After-Settle"] = json.dumps(
                     {"showSuccessAlert": "Tool settings saved.", "closeModal": True})
                 return response
             except Exception as e:
                 logger.error(f"Error saving tool settings for '{instance}': {e}", exc_info=True)
-                context = {'form': form, 'instance_alias': instance}
+                context = {
+                    'form': form,
+                    'instance_alias': instance,
+                    'prerequisites_met': True,
+                    'webhook_configured': webhook_configured,
+                    'email_configured': email_configured
+                }
                 response = render(request, "partials/portal_tools_form.html", context, status=500)
                 response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": f"Error saving: {str(e)}"})
                 return response
         else:
             logger.warning(f"Form invalid for '{instance}'. Errors: {form.errors}")
-            return render(request, "partials/portal_tools_form.html", {"form": form, "instance_alias": instance},
-                          status=400)
+            context = {
+                'form': form,
+                'instance_alias': instance,
+                'prerequisites_met': True,
+                'webhook_configured': webhook_configured,
+                'email_configured': email_configured
+            }
+            return render(request, "partials/portal_tools_form.html", context, status=400)
     else:
         form = ToolsForm(instance=tool_settings_obj)
 
-    context = {"form": form, "instance_alias": instance, "results": results}
+    context = {
+        "form": form,
+        "instance_alias": instance,
+        "results": results,
+        "prerequisites_met": prerequisites_met,
+        "webhook_configured": webhook_configured,
+        "email_configured": email_configured
+    }
     template_name = "portals/portal_tools.html"
     return render(request, template_name, context)
 
