@@ -61,7 +61,6 @@
                          status="invalid">
     {{ form.reply_to.errors|join:" " }}
   </calcite-input-message>
-  </calcite-label>
 
   <div class="flex-container flex-column-gap-1">
     <div class="col-50">
@@ -78,7 +77,7 @@
     </div>
     <div class="col-50">
       <calcite-input type="password" id="{{ form.email_password.name }}" name="{{ form.email_password.name }}"
-                     autocomplete="off" value="{{ form.email_password.value|default_if_none:"" }}"
+                     autocomplete="off"
                      label-text="Password"
                      {% if form.email_password.errors %}status="invalid"{% endif %}></calcite-input>
       <calcite-input-message {% if not form.email_password.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
@@ -92,7 +91,7 @@
                  label-text="Send Test Email">
     <calcite-button slot="action" id="email-portal-test"
                     hx-post="{% url 'enterpriseviz:email_settings' %}"
-                    hx-include="#email-site-form" hx-vals='{"action": "test"}'
+                    hx-include="#email-site-form" hx-vals='{"action": "test_email"}'
                     hx-target="#email-site-form">
       Send
     </calcite-button>

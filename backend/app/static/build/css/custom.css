@@ -1090,7 +1090,7 @@ form calcite-segmented-control {
 }
 
 form calcite-input-time-picker {
-  display: block; !important;
+  display: block !important;
 }
 
 calcite-dialog ul {

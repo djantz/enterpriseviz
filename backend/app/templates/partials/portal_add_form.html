@@ -46,7 +46,7 @@
   <div id="store-password-container" hidden>
     <calcite-input icon="user" id="{{ form.username.name }}" name="{{ form.username.name }}" disabled
                    placeholder="Enter Portal admin username"
-                   required input="text" value="{{ form.username.value|default:'' }}"
+                   required type="text" value="{{ form.username.value|default:'' }}"
                    autocomplete="off" label-text="Username"
                    {% if form.username.errors %}status="invalid"{% endif %}>
       <calcite-icon slot="label-content" id="username-tooltip" icon="information" scale="s"></calcite-icon>

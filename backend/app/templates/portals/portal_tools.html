@@ -1,17 +1,13 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
 <calcite-dialog id="tool-modal" modal heading="Configure Tools" scale="m" open
                 {% if form.errors %}kind="danger"{% endif %}>
-  {% if not prerequisites_met %}
+  {% if not email_configured %}
     <calcite-notice slot="content-top" open kind="danger" icon width="full">
-    <div slot="title">Configuration Required</div>
-    <div slot="message">The following must be configured before tools can be enabled:
-      <ul>
-        {% if not webhook_configured %}
-          <li>Webhook secret in Site Settings</li>{% endif %}
-        {% if not email_configured %}
-          <li>Email settings in Site Settings</li>{% endif %}
-      </ul></div>
-</calcite-notice>
+      <div slot="title">Email Configuration Required</div>
+      <div slot="message">
+        Email settings must be configured in Site Settings before tools can be enabled.
+      </div>
+    </calcite-notice>
   {% endif %}
   <calcite-label>
     Portal Alias

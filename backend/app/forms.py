@@ -412,6 +412,13 @@ class SiteSettingsForm(forms.ModelForm):
         'plain_text': [25, 587]
     }
 
+    # Override the password field to not show existing value
+    email_password = forms.CharField(
+        widget=forms.PasswordInput(render_value=False),
+        required=False,
+        help_text="Leave blank to keep existing password"
+    )
+
     class Meta:
         model = SiteSettings
         fields = [
@@ -452,6 +459,7 @@ class SiteSettingsForm(forms.ModelForm):
         port = cleaned_data.get("email_port")
         encryption = cleaned_data.get("email_encryption")
         from_email = cleaned_data.get("from_email")
+        password = cleaned_data.get("email_password")
 
         # If any email field is set, require the core fields
         email_fields_set = any([host, port, encryption, from_email])
@@ -467,6 +475,10 @@ class SiteSettingsForm(forms.ModelForm):
             for field_name, error_msg in required_fields.items():
                 if not cleaned_data.get(field_name):
                     self.add_error(field_name, error_msg)
+
+            # Check if password is required (new configuration without existing password)
+            if not password and self.instance and not self.instance.email_password:
+                self.add_error("email_password", "Password is required for initial email configuration")
 
             # Port recommendations based on encryption type
             if host and port and encryption:

@@ -116,7 +116,7 @@
                         label-text="Trigger" required
                         {% if form.tool_public_unshare_trigger.errors %}status="invalid"{% endif %}>
           <calcite-icon slot="label-content" id="tool-public-unshare-trigger-tooltip" icon="information" scale="s"></calcite-icon>
-        <calcite-option value="webhook">Webhook (immediate)</calcite-option>
+          <calcite-option value="webhook" {% if not webhook_configured %}disabled{% endif %}>Webhook (immediate){% if not webhook_configured %} - Requires webhook configuration{% endif %}</calcite-option>
         <calcite-option value="daily">Daily (delayed)</calcite-option>
         </calcite-select>
         <calcite-input-message {% if not form.tool_public_unshare_trigger.errors %}hidden{% endif %}

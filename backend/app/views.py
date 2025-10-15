@@ -1742,6 +1742,11 @@ def email_settings(request):
             logger.debug("Form valid.")
             if action == "save":
                 try:
+                    # Handle empty password - keep existing if not changed
+                    if not form.cleaned_data.get("email_password"):
+                        form.cleaned_data["email_password"] = settings_instance.email_password
+                        logger.debug("Password field empty - keeping existing password.")
+
                     form.save()
                     logger.info("Email configuration saved successfully.")
                     response = render(request, "partials/portal_email_form.html", {"form": form})
@@ -1768,13 +1773,16 @@ def email_settings(request):
                     return HttpResponse(status=200, headers={
                         "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Host and Port required."})})
 
+                # Use existing password if current submission is empty
+                email_password = config.get("email_password") or settings_instance.email_password
+
                 try:
                     logger.debug(
                         f"Sending test email to {test_email_addr} using host {config['email_host']}.")
                     connection_kwargs = {
                         "host": config["email_host"], "port": config["email_port"],
                         "username": config.get("email_username") or None,
-                        "password": config.get("email_password") or None,
+                        "password": email_password or None,
                         "use_tls": (config.get("email_encryption") == "starttls"),
                         "use_ssl": (config.get("email_encryption") == "ssl"),
                         "fail_silently": False,
@@ -1975,31 +1983,23 @@ def tool_settings(request, instance):
     site_settings, _ = SiteSettings.objects.get_or_create(pk=1)
     webhook_configured = bool(site_settings.webhook_secret)
     email_configured = bool(site_settings.email_host)
-    prerequisites_met = webhook_configured and email_configured
 
     results = TaskResult.objects.filter(task_kwargs__icontains=f"'{instance}'", task_name__icontains="tool").order_by(
         '-date_done')[:10]
 
     if request.method == "POST":
-        # Block submission if prerequisites not met
-        if not prerequisites_met:
-            warning_messages = []
-            if not webhook_configured:
-                warning_messages.append("Webhook must be configured")
-            if not email_configured:
-                warning_messages.append("Email settings must be configured")
-
-            form = ToolsForm(instance=tool_settings_obj)
+        # Block submission if email not configured (required for all tools)
+        if not email_configured:
+            form = ToolsForm(request.POST, instance=tool_settings_obj)
             context = {
                 'form': form,
                 'instance_alias': instance,
-                'prerequisites_met': False,
                 'webhook_configured': webhook_configured,
-                'email_configured': email_configured
+                'email_configured': False
             }
             response = render(request, "partials/portal_tools_form.html", context, status=400)
             response["HX-Trigger-After-Settle"] = json.dumps({
-                "showWarningAlert": f"Cannot save: {', '.join(warning_messages)}"
+                "showDangerAlert": "Cannot save: Email settings must be configured"
             })
             return response
 
@@ -2012,7 +2012,6 @@ def tool_settings(request, instance):
                 context = {
                     'form': form,
                     'instance_alias': instance,
-                    'prerequisites_met': True,
                     'webhook_configured': webhook_configured,
                     'email_configured': email_configured
                 }
@@ -2025,7 +2024,6 @@ def tool_settings(request, instance):
                 context = {
                     'form': form,
                     'instance_alias': instance,
-                    'prerequisites_met': True,
                     'webhook_configured': webhook_configured,
                     'email_configured': email_configured
                 }
@@ -2037,7 +2035,6 @@ def tool_settings(request, instance):
             context = {
                 'form': form,
                 'instance_alias': instance,
-                'prerequisites_met': True,
                 'webhook_configured': webhook_configured,
                 'email_configured': email_configured
             }
@@ -2049,7 +2046,6 @@ def tool_settings(request, instance):
         "form": form,
         "instance_alias": instance,
         "results": results,
-        "prerequisites_met": prerequisites_met,
         "webhook_configured": webhook_configured,
         "email_configured": email_configured
     }
@@ -2076,8 +2072,18 @@ def tool_run(request, instance, tool_name):
     if not form.is_valid():
         error_msg = ". ".join([f"{field}: {', '.join(errors)}" for field, errors in form.errors.items()])
         logger.warning(f"Invalid parameters for tool '{tool_name}': {form.errors.as_json()}")
-        return HttpResponse(status=400, headers={
+        return HttpResponse(status=200, headers={
             "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Invalid tool parameters: {error_msg}"})
+        })
+
+    site_settings, _ = SiteSettings.objects.get_or_create(pk=1)
+
+    # Check email configuration
+    if not bool(site_settings.email_host):
+        return HttpResponse(status=400, headers={
+            "HX-Trigger-After-Settle": json.dumps({
+                "showDangerAlert": "Cannot run tool. Email settings must be configured first."
+            })
         })
 
     TOOL_CONFIG_MAP = {
