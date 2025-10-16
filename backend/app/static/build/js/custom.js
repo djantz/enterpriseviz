@@ -780,6 +780,7 @@ const FORM_SETUP_HANDLERS = {
     'add-form-container': setupPortalFormLogic,
     'update-form-container': setupPortalFormLogic,
     'webhook-form-container': initWebhookSecretGenerator,
+    'tools-form-container': initPortalTools,
 
 };
 
@@ -790,6 +791,7 @@ const MODAL_TRIGGER_MAP = {
     'schedule_portal_modal': 'schedule-modal',
     'progress-container': 'credentials-modal',
     'webhook_settings_modal': 'webhook-modal',
+    'tool_settings_modal': 'tool-modal',
 
 };
 
