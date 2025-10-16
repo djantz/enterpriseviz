@@ -1085,7 +1085,8 @@ calcite-navigation-user {
 form calcite-input,
 form calcite-select,
 form calcite-input-time-picker,
-form calcite-segmented-control {
+form calcite-segmented-control,
+form calcite-notice {
   margin-block-end: var(--calcite-label-margin-bottom, 0.75rem);
 }
 

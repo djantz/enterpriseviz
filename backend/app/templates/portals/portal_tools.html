@@ -66,7 +66,7 @@
     Cancel
   </calcite-button>
 
-  <calcite-button id="tools-portal-save" slot="footer-end" {% if not prerequisites_met %}disabled{% endif %}
+  <calcite-button id="tools-portal-save" slot="footer-end" {% if not email_configured %}disabled{% endif %}
                   hx-post="{% url 'enterpriseviz:tool_settings' instance=form.instance.portal.alias %}"
                   hx-target="#tools-form-container"
                   hx-include="#tools-form-container form"
