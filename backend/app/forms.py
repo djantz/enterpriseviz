@@ -590,45 +590,38 @@ class ToolsForm(forms.ModelForm):
         )
 
         # Tool configurations for creating separate tasks
-        tool_configs = [
-            {
-                'enabled': settings_instance.tool_pro_license_enabled,
-                'task_name': f'process-pro-license-{target_portal.alias}',
-                'task_function': 'Pro License Tool',
-                'description': f'Pro License Management for {target_portal.alias}',
-                'kwargs': {
-                    'portal_alias': target_portal.alias,
-                    'duration_days': settings_instance.tool_pro_duration,
-                    'warning_days': settings_instance.tool_pro_warning,
-                }
-            },
-            {
-                'enabled': settings_instance.tool_inactive_user_enabled,
-                'task_name': f'process-inactive-user-{target_portal.alias}',
-                'task_function': 'Inactive User Tool',
-                'description': f'Inactive User Management for {target_portal.alias}',
-                'kwargs': {
-                    'portal_alias': target_portal.alias,
-                    'duration_days': settings_instance.tool_inactive_user_duration,
-                    'warning_days': settings_instance.tool_inactive_user_warning,
-                    'action': settings_instance.tool_inactive_user_action,
-                }
-            },
-        ]
-
-        # Add public unshare tool for daily trigger only
-        if (settings_instance.tool_public_unshare_enabled and
-            settings_instance.tool_public_unshare_trigger == 'daily'):
-            tool_configs.append({
-                'enabled': True,
-                'task_name': f'process-public-unshare-{target_portal.alias}',
-                'task_function': 'Public Sharing Tool',
-                'description': f'Public Item Unshare Management for {target_portal.alias}',
-                'kwargs': {
-                    'portal_alias': target_portal.alias,
-                    'score_threshold': settings_instance.tool_public_unshare_score,
-                }
-            })
+        tool_configs = [{
+            'enabled': settings_instance.tool_pro_license_enabled,
+            'task_name': f'process-pro-license-{target_portal.alias}',
+            'task_function': 'Pro License Tool',
+            'description': f'Pro License Management for {target_portal.alias}',
+            'kwargs': {
+                'portal_alias': target_portal.alias,
+                'duration_days': settings_instance.tool_pro_duration,
+                'warning_days': settings_instance.tool_pro_warning,
+            }
+        }, {
+            'enabled': settings_instance.tool_inactive_user_enabled,
+            'task_name': f'process-inactive-user-{target_portal.alias}',
+            'task_function': 'Inactive User Tool',
+            'description': f'Inactive User Management for {target_portal.alias}',
+            'kwargs': {
+                'portal_alias': target_portal.alias,
+                'duration_days': settings_instance.tool_inactive_user_duration,
+                'warning_days': settings_instance.tool_inactive_user_warning,
+                'action': settings_instance.tool_inactive_user_action,
+            }
+        }, {
+            'enabled': (settings_instance.tool_public_unshare_enabled and
+                        settings_instance.tool_public_unshare_trigger == 'daily'),
+            'task_name': f'process-public-unshare-{target_portal.alias}',
+            'task_function': 'Public Sharing Tool',
+            'description': f'Public Item Unshare Management for {target_portal.alias}',
+            'kwargs': {
+                'portal_alias': target_portal.alias,
+                'score_threshold': settings_instance.tool_public_unshare_score,
+            }
+        }]
 
         # Create or update/delete tasks
         for config in tool_configs:
