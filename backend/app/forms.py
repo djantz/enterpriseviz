@@ -412,6 +412,13 @@ class SiteSettingsForm(forms.ModelForm):
         'plain_text': [25, 587]
     }
 
+    # Override the password field to not show existing value
+    email_password = forms.CharField(
+        widget=forms.PasswordInput(render_value=False),
+        required=False,
+        help_text="Leave blank to keep existing password"
+    )
+
     class Meta:
         model = SiteSettings
         fields = [
@@ -452,6 +459,7 @@ class SiteSettingsForm(forms.ModelForm):
         port = cleaned_data.get("email_port")
         encryption = cleaned_data.get("email_encryption")
         from_email = cleaned_data.get("from_email")
+        password = cleaned_data.get("email_password")
 
         # If any email field is set, require the core fields
         email_fields_set = any([host, port, encryption, from_email])
@@ -467,6 +475,10 @@ class SiteSettingsForm(forms.ModelForm):
             for field_name, error_msg in required_fields.items():
                 if not cleaned_data.get(field_name):
                     self.add_error(field_name, error_msg)
+
+            # Check if password is required (new configuration without existing password)
+            if not password and self.instance and not self.instance.email_password:
+                self.add_error("email_password", "Password is required for initial email configuration")
 
             # Port recommendations based on encryption type
             if host and port and encryption:
@@ -578,45 +590,38 @@ class ToolsForm(forms.ModelForm):
         )
 
         # Tool configurations for creating separate tasks
-        tool_configs = [
-            {
-                'enabled': settings_instance.tool_pro_license_enabled,
-                'task_name': f'process-pro-license-{target_portal.alias}',
-                'task_function': 'Pro License Tool',
-                'description': f'Pro License Management for {target_portal.alias}',
-                'kwargs': {
-                    'portal_alias': target_portal.alias,
-                    'duration_days': settings_instance.tool_pro_duration,
-                    'warning_days': settings_instance.tool_pro_warning,
-                }
-            },
-            {
-                'enabled': settings_instance.tool_inactive_user_enabled,
-                'task_name': f'process-inactive-user-{target_portal.alias}',
-                'task_function': 'Inactive User Tool',
-                'description': f'Inactive User Management for {target_portal.alias}',
-                'kwargs': {
-                    'portal_alias': target_portal.alias,
-                    'duration_days': settings_instance.tool_inactive_user_duration,
-                    'warning_days': settings_instance.tool_inactive_user_warning,
-                    'action': settings_instance.tool_inactive_user_action,
-                }
-            },
-        ]
-
-        # Add public unshare tool for daily trigger only
-        if (settings_instance.tool_public_unshare_enabled and
-            settings_instance.tool_public_unshare_trigger == 'daily'):
-            tool_configs.append({
-                'enabled': True,
-                'task_name': f'process-public-unshare-{target_portal.alias}',
-                'task_function': 'Public Sharing Tool',
-                'description': f'Public Item Unshare Management for {target_portal.alias}',
-                'kwargs': {
-                    'portal_alias': target_portal.alias,
-                    'score_threshold': settings_instance.tool_public_unshare_score,
-                }
-            })
+        tool_configs = [{
+            'enabled': settings_instance.tool_pro_license_enabled,
+            'task_name': f'process-pro-license-{target_portal.alias}',
+            'task_function': 'Pro License Tool',
+            'description': f'Pro License Management for {target_portal.alias}',
+            'kwargs': {
+                'portal_alias': target_portal.alias,
+                'duration_days': settings_instance.tool_pro_duration,
+                'warning_days': settings_instance.tool_pro_warning,
+            }
+        }, {
+            'enabled': settings_instance.tool_inactive_user_enabled,
+            'task_name': f'process-inactive-user-{target_portal.alias}',
+            'task_function': 'Inactive User Tool',
+            'description': f'Inactive User Management for {target_portal.alias}',
+            'kwargs': {
+                'portal_alias': target_portal.alias,
+                'duration_days': settings_instance.tool_inactive_user_duration,
+                'warning_days': settings_instance.tool_inactive_user_warning,
+                'action': settings_instance.tool_inactive_user_action,
+            }
+        }, {
+            'enabled': (settings_instance.tool_public_unshare_enabled and
+                        settings_instance.tool_public_unshare_trigger == 'daily'),
+            'task_name': f'process-public-unshare-{target_portal.alias}',
+            'task_function': 'Public Sharing Tool',
+            'description': f'Public Item Unshare Management for {target_portal.alias}',
+            'kwargs': {
+                'portal_alias': target_portal.alias,
+                'score_threshold': settings_instance.tool_public_unshare_score,
+            }
+        }]
 
         # Create or update/delete tasks
         for config in tool_configs:

@@ -759,7 +759,7 @@ canvas#line-chart {
 }
 
 ul, pre {
-  color: var(--calcite-color-text-1);
+  /*color: var(--calcite-color-text-1);*/
   padding-left: 1rem;
 }
 
@@ -1080,4 +1080,20 @@ calcite-navigation-user {
 
 .accordion-actions-end {
   padding-right: 0.75rem;
+}
+
+form calcite-input,
+form calcite-select,
+form calcite-input-time-picker,
+form calcite-segmented-control,
+form calcite-notice {
+  margin-block-end: var(--calcite-label-margin-bottom, 0.75rem);
+}
+
+form calcite-input-time-picker {
+  display: block !important;
+}
+
+calcite-dialog ul {
+  margin-bottom: 0;
 }

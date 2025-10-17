@@ -5,14 +5,12 @@
   <div id="log-settings-form-container">
     <form id="log-settings-form">
       {% csrf_token %}
-      <calcite-label>
-        Application Log Level
-        <calcite-select name="level" id="log-level-select">
-          {% for level_name in log_levels %}
-            <calcite-option value="{{ level_name }}" {% if level_name == current_log_level %}selected{% endif %}>{{ level_name }}</calcite-option>
-          {% endfor %}
-        </calcite-select>
-      </calcite-label>
+      <calcite-select name="level" id="log-level-select" label-text="Application Log Level">
+        {% for level_name in log_levels %}
+          <calcite-option value="{{ level_name }}"
+                          {% if level_name == current_log_level %}selected{% endif %}>{{ level_name }}</calcite-option>
+        {% endfor %}
+      </calcite-select>
     </form>
   </div>
 

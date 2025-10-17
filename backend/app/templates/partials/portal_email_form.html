@@ -4,97 +4,115 @@
   {% csrf_token %}
   <div class="flex-container flex-column-gap-1">
     <div class="col-50">
-      <calcite-label>
-        SMTP Server Address
-        <calcite-input type="text" id="{{ form.email_host.name }}" name="{{ form.email_host.name }}"
-                       autocomplete="off" value="{{ form.email_host.value|default_if_none:"" }}"></calcite-input>
-        <calcite-input-message {% if not form.email_host.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                               status="invalid">
-          {{ form.email_host.errors|join:" " }}
-        </calcite-input-message>
-      </calcite-label>
+      <calcite-input type="text" id="{{ form.email_host.name }}" name="{{ form.email_host.name }}"
+                     autocomplete="off" value="{{ form.email_host.value|default_if_none:"" }}"
+                     label-text="SMTP Server Address" required
+                     {% if form.email_host.errors %}status="invalid"{% endif %}>
+        <calcite-icon slot="label-content" id="address-tooltip" icon="information" scale="s"></calcite-icon>
+      </calcite-input>
+      <calcite-input-message {% if not form.email_host.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+                             status="invalid">
+        {{ form.email_host.errors|join:" " }}
+      </calcite-input-message>
     </div>
     <div class="col-50">
-      <calcite-label>
-        SMTP Port
-        <calcite-input type="number" id="{{ form.email_port.name }}" name="{{ form.email_port.name }}"
-                       autocomplete="off" value="{{ form.email_port.value|default_if_none:"" }}" number-button-type="none"></calcite-input>
-        <calcite-input-message {% if not form.email_port.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                               status="invalid">
-          {{ form.email_port.errors|join:" " }}
-        </calcite-input-message>
-      </calcite-label>
+      <calcite-input type="number" id="{{ form.email_port.name }}" name="{{ form.email_port.name }}"
+                     autocomplete="off" value="{{ form.email_port.value|default_if_none:"" }}"
+                     number-button-type="none" label-text="SMTP Port" required
+                     {% if form.email_port.errors %}status="invalid"{% endif %}>
+        <calcite-icon slot="label-content" id="port-tooltip" icon="information" scale="s"></calcite-icon>
+      </calcite-input>
+      <calcite-input-message {% if not form.email_port.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+                             status="invalid">
+        {{ form.email_port.errors|join:" " }}
+      </calcite-input-message>
     </div>
   </div>
 
-  <calcite-label>
-    Encryption Method
-    <calcite-select name="{{ form.email_encryption.name }}" id="repeat-type" value="{{ form.email_encryption.value }}">
-      <calcite-option value="plain_text">Plain Text</calcite-option>
-      <calcite-option value="starttls">StartTLS</calcite-option>
-      <calcite-option value="ssl">SSL</calcite-option>
-    </calcite-select>
-    <calcite-input-message {% if not form.email_encryption.errors %}hidden{% endif %}
-                           icon="exclamation-mark-triangle-f" status="invalid">
-      {{ form.email_encryption.errors|join:" " }}
-    </calcite-input-message>
-  </calcite-label>
+  <calcite-select name="{{ form.email_encryption.name }}" id="repeat-type" value="{{ form.email_encryption.value }}"
+                  label-text="Encryption Method" required>
+    <calcite-icon slot="label-content" id="encryption-tooltip" icon="information" scale="s"></calcite-icon>
+    <calcite-option value="plain_text">Plain Text</calcite-option>
+    <calcite-option value="starttls">StartTLS</calcite-option>
+    <calcite-option value="ssl">SSL</calcite-option>
+  </calcite-select>
+  <calcite-input-message {% if not form.email_encryption.errors %}hidden{% endif %}
+                         icon="exclamation-mark-triangle-f" status="invalid">
+    {{ form.email_encryption.errors|join:" " }}
+  </calcite-input-message>
 
-  <calcite-label>
-    Sender Address
-    <calcite-input type="email" id="{{ form.from_email.name }}" name="{{ form.from_email.name }}"
-                   autocomplete="off" value="{{ form.from_email.value|default_if_none:"" }}"></calcite-input>
-    <calcite-input-message {% if not form.from_email.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                           status="invalid">
-      {{ form.from_email.errors|join:" " }}
-    </calcite-input-message>
-  </calcite-label>
-  <calcite-label>
-    Reply To (optional)
-    <calcite-input type="email" id="{{ form.reply_to.name }}" name="{{ form.reply_to.name }}"
-                   autocomplete="off" value="{{ form.reply_to.value|default_if_none:"" }}"></calcite-input>
-    <calcite-input-message {% if not form.reply_to.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                           status="invalid">
-      {{ form.reply_to.errors|join:" " }}
-    </calcite-input-message>
-  </calcite-label>
+  <calcite-input type="email" id="{{ form.from_email.name }}" name="{{ form.from_email.name }}"
+                 autocomplete="off" value="{{ form.from_email.value|default_if_none:"" }}"
+                 label-text="Sender Address" required
+                 {% if form.from_email.errors %}status="invalid"{% endif %}>
+    <calcite-icon slot="label-content" id="sender-tooltip" icon="information" scale="s"></calcite-icon>
+  </calcite-input>
+  <calcite-input-message {% if not form.from_email.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+                         status="invalid">
+    {{ form.from_email.errors|join:" " }}
+  </calcite-input-message>
+  <calcite-input type="email" id="{{ form.reply_to.name }}" name="{{ form.reply_to.name }}"
+                 autocomplete="off" value="{{ form.reply_to.value|default_if_none:"" }}"
+                 label-text="Reply To"
+                 {% if form.reply_to.errors %}status="invalid"{% endif %}>
+    <calcite-icon slot="label-content" id="reply-tooltip" icon="information" scale="s"></calcite-icon>
+  </calcite-input>
+  <calcite-input-message {% if not form.reply_to.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+                         status="invalid">
+    {{ form.reply_to.errors|join:" " }}
+  </calcite-input-message>
 
-<div class="flex-container flex-column-gap-1">
+  <div class="flex-container flex-column-gap-1">
     <div class="col-50">
-  <calcite-label>
-    Username (optional)
-    <calcite-input type="text" id="{{ form.email_username.name }}" name="{{ form.email_username.name }}"
-                   autocomplete="off" value="{{ form.email_username.value|default_if_none:"" }}"></calcite-input>
-    <calcite-input-message {% if not form.email_username.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                           status="invalid">
-      {{ form.email_username.errors|join:" " }}
-    </calcite-input-message>
-  </calcite-label>
+      <calcite-input type="text" id="{{ form.email_username.name }}" name="{{ form.email_username.name }}"
+                     autocomplete="off" value="{{ form.email_username.value|default_if_none:"" }}"
+                     label-text="Username"
+                     {% if form.email_username.errors %}status="invalid"{% endif %}>
+        <calcite-icon slot="label-content" id="username-tooltip" icon="information" scale="s"></calcite-icon>
+      </calcite-input>
+      <calcite-input-message {% if not form.email_username.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+                             status="invalid">
+        {{ form.email_username.errors|join:" " }}
+      </calcite-input-message>
     </div>
-<div class="col-50">
-  <calcite-label>
-    Password (optional)
-    <calcite-input type="password" id="{{ form.email_password.name }}" name="{{ form.email_password.name }}"
-                   autocomplete="off" value="{{ form.email_password.value|default_if_none:"" }}"></calcite-input>
-    <calcite-input-message {% if not form.email_password.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                           status="invalid">
-      {{ form.email_password.errors|join:" " }}
-    </calcite-input-message>
-  </calcite-label>
-</div>
-</div>
+    <div class="col-50">
+      <calcite-input type="password" id="{{ form.email_password.name }}" name="{{ form.email_password.name }}"
+                     autocomplete="off"
+                     label-text="Password"
+                     {% if form.email_password.errors %}status="invalid"{% endif %}></calcite-input>
+      <calcite-input-message {% if not form.email_password.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
+                             status="invalid">
+        {{ form.email_password.errors|join:" " }}
+      </calcite-input-message>
+    </div>
+  </div>
 
-  <calcite-label>
-    Send Test Email
-    <calcite-input type="email" id="test-email" name="test_email" placeholder="Enter an email address">
-      <calcite-button slot="action" id="email-portal-test"
-                  hx-post="{% url 'enterpriseviz:email_settings' %}"
-                  hx-include="#email-site-form" hx-vals='{"action": "test"}'
-                  hx-target="#email-site-form">
-        Send
-      </calcite-button>
-    </calcite-input>
-
-  </calcite-label>
+  <calcite-input type="email" id="test-email" name="test_email" placeholder="Enter an email address"
+                 label-text="Send Test Email">
+    <calcite-button slot="action" id="email-portal-test"
+                    hx-post="{% url 'enterpriseviz:email_settings' %}"
+                    hx-include="#email-site-form" hx-vals='{"action": "test_email"}'
+                    hx-target="#email-site-form">
+      Send
+    </calcite-button>
+  </calcite-input>
 
 </form>
+<calcite-tooltip reference-element="address-tooltip" close-on-click placement="bottom-start">
+  <span>The hostname or IP address of your SMTP email server</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="port-tooltip" close-on-click placement="bottom-start">
+  <span>The port number for SMTP connection (typically 25, 465, or 587)</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="encryption-tooltip" close-on-click placement="bottom-start">
+  <span>Select the encryption method supported by your SMTP server</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="sender-tooltip" close-on-click placement="bottom-start">
+  <span>The email address that will appear as the sender of outgoing emails</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="reply-tooltip" close-on-click placement="bottom-start">
+  <span>Optional: Email address where replies should be directed</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="username-tooltip" close-on-click placement="bottom-start">
+  <span>Username for SMTP authentication (if required by your server)</span>
+</calcite-tooltip>

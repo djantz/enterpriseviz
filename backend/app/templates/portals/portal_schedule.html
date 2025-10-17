@@ -3,14 +3,20 @@
                 {% if form.errors or not enable %}kind="danger"{% endif %}>
 
   {% if description %}
-    <div slot="content-top">A schedule exists for this portal: {{ description }}</div>
+    <calcite-notice slot="content-top" open kind="info" icon width="full">
+      <div slot="title">Existing Schedule</div>
+      <div slot="message">{{ description }}
+      </div>
+    </calcite-notice>
   {% endif %}
 
   {% if not enable %}
-    <div slot="content-top">
-      <calcite-icon class="danger-icon" preload="true" icon="exclamation-mark-triangle-f"></calcite-icon>
-      The ability to schedule updates is dependent on storing a username and password for the portal.
-    </div>
+    <calcite-notice slot="content-top" open kind="danger" icon width="full">
+      <div slot="title">Configuration Required</div>
+      <div slot="message">The ability to schedule updates is dependent on storing a username and password for the
+        portal.
+      </div>
+    </calcite-notice>
   {% endif %}
   <calcite-tabs>
     <calcite-tab-nav slot="title-group">
@@ -20,49 +26,50 @@
       <calcite-tab-title>Results</calcite-tab-title>
     </calcite-tab-nav>
     <calcite-tab selected>
-  <div id="schedule-form-container">
-    {% include "partials/portal_schedule_form.html" %}
+      <div id="schedule-form-container">
+        {% include "partials/portal_schedule_form.html" %}
 
-    <div id="form-errors">
-      {% if form.errors %}
-        <ul>
-          {% for field in form %}
-            {% for error in field.errors %}
-              <li>{{ field.label }}: {{ error }}</li>
-            {% endfor %}
-          {% endfor %}
-        </ul>
-      {% endif %}
-    </div>
-  </div>
-  </calcite-tab>
+        <div id="form-errors">
+          {% if form.errors %}
+            <ul>
+              {% for field in form %}
+                {% for error in field.errors %}
+                  <li>{{ field.label }}: {{ error }}</li>
+                {% endfor %}
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </div>
+      </div>
+    </calcite-tab>
     <calcite-tab>
-    <calcite-label>Run History (last 24 hours)</calcite-label>
-    <calcite-table caption="Run History (last 24 hours)" bordered striped>
-      <calcite-table-row slot="table-header">
-        <calcite-table-header heading="Task Name"></calcite-table-header>
-        <calcite-table-header heading="Status"></calcite-table-header>
-        <calcite-table-header heading="Result"></calcite-table-header>
-        <calcite-table-header heading="Start Time"></calcite-table-header>
-        <calcite-table-header heading="End Time"></calcite-table-header>
-      </calcite-table-row>
-      {% if results %}
-        {% for item in results %}
-          <calcite-table-row>
-            <calcite-table-cell>{{ item.task_name }}</calcite-table-cell>
-            <calcite-table-cell>{{ item.status }}</calcite-table-cell>
-            <calcite-table-cell>{% for key, val in item.result_as_dict.items %}<strong>{{ key }}:</strong> {{ val }}, {% endfor %}</calcite-table-cell>
-            <calcite-table-cell>{{ item.date_created|date:'M j, Y h:i A' }}</calcite-table-cell>
-            <calcite-table-cell>{{ item.date_done|date:'M j, Y h:i A' }}</calcite-table-cell>
-          </calcite-table-row>
-        {% endfor %}
-      {% else %}
-        <calcite-table-row>
-          <calcite-table-cell col-span="5">No runs in the last 24 hours.</calcite-table-cell>
+      <calcite-label>Run History (last 24 hours)</calcite-label>
+      <calcite-table caption="Run History (last 24 hours)" bordered striped>
+        <calcite-table-row slot="table-header">
+          <calcite-table-header heading="Task Name"></calcite-table-header>
+          <calcite-table-header heading="Status"></calcite-table-header>
+          <calcite-table-header heading="Result"></calcite-table-header>
+          <calcite-table-header heading="Start Time"></calcite-table-header>
+          <calcite-table-header heading="End Time"></calcite-table-header>
         </calcite-table-row>
-      {% endif %}
-    </calcite-table>
-</calcite-tab>
+        {% if results %}
+          {% for item in results %}
+            <calcite-table-row>
+              <calcite-table-cell>{{ item.task_name }}</calcite-table-cell>
+              <calcite-table-cell>{{ item.status }}</calcite-table-cell>
+              <calcite-table-cell>{% for key, val in item.result_as_dict.items %}<strong>{{ key }}:</strong> {{ val }}
+                , {% endfor %}</calcite-table-cell>
+              <calcite-table-cell>{{ item.date_created|date:'M j, Y h:i A' }}</calcite-table-cell>
+              <calcite-table-cell>{{ item.date_done|date:'M j, Y h:i A' }}</calcite-table-cell>
+            </calcite-table-row>
+          {% endfor %}
+        {% else %}
+          <calcite-table-row>
+            <calcite-table-cell col-span="5">No runs in the last 24 hours.</calcite-table-cell>
+          </calcite-table-row>
+        {% endif %}
+      </calcite-table>
+    </calcite-tab>
   </calcite-tabs>
   <calcite-button id="schedule-portal-delete" slot="footer-start" appearance="solid" kind="danger" icon-start="trash"
                   {% if not description %}disabled{% endif %}
