@@ -15,8 +15,7 @@
   <div class="flex-container flex-column-gap-1">
     <div class="width-50">
       <calcite-input-date-picker id="beginning-on" name="beginning_on"
-                                 value="
-                                   {% if form.beginning_on.value|format_date %}{{ form.beginning_on.value|format_date }}{% else %}{% now "Y-m-d" %}{% endif %}"
+                                 value="{% if form.beginning_on.value|format_date %}{{ form.beginning_on.value|format_date }}{% else %}{% now "Y-m-d" %}{% endif %}"
                                  label-text="Beginning on" required>
         <calcite-icon slot="label-content" id="beginning-on-tooltip" icon="information" scale="s"></calcite-icon>
       </calcite-input-date-picker>
@@ -84,8 +83,7 @@
         <div class="flex-container flex-align-center">
           <calcite-input-time-picker disabled id="between-hours-start-minute" name="between_hours_start_minute"
                                      class="col-50"
-                                     position="bottom" value="
-            {% if form.between_hours_start_minute.value %}{{ form.between_hours_start_minute.value }}{% else %}00:00{% endif %}"></calcite-input-time-picker>
+                                     position="bottom" value="{% if form.between_hours_start_minute.value %}{{ form.between_hours_start_minute.value }}{% else %}00:00{% endif %}"></calcite-input-time-picker>
           <calcite-input-message {% if not form.between_hours_start_minute.errors %}hidden{% endif %}
                                  icon="exclamation-mark-triangle-f" status="invalid">
             {{ form.between_hours_start_minute.errors|join:" " }}
