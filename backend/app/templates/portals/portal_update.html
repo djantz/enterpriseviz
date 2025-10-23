@@ -1,16 +1,27 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
-<calcite-dialog modal id="update-modal" heading="Update Portal">
+<calcite-dialog modal open id="update-modal" heading="Update Portal"
+                width="m"
+                label="Update portal credentials and settings">
   <div id="update-form-container">
     {% include "partials/portal_update_form.html" %}
   </div>
-  <calcite-button id="update-portal-cancel" data-action="close-modal" icon-start="circle-disallowed" slot="footer-end" appearance="outline">
+
+  <calcite-button id="update-portal-cancel" data-action="close-modal"
+                  icon-start="circle-disallowed"
+                  slot="footer-end"
+                  appearance="outline"
+                  kind="neutral"
+                  label="Cancel without saving changes">
     Cancel
   </calcite-button>
-  <calcite-button id="update-portal-save" icon-start="save" slot="footer-end"
+  <calcite-button id="update-portal-save"
+                  icon-start="save"
+                  slot="footer-end"
                   hx-post="{% url 'enterpriseviz:update_portal' instance=instance %}"
                   hx-target="#update-form-container"
                   hx-include="#update-portal-form"
-                  hx-swap="innerHTML">
+                  hx-swap="innerHTML"
+                  label="Save portal changes">
     Save
   </calcite-button>
 </calcite-dialog>

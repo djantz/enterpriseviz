@@ -78,26 +78,31 @@
     <calcite-shell>
       <calcite-navigation slot="header">
         <calcite-progress slot="progress" type="indeterminate" id="loading" data-loading loading
-                          data-loading-delay></calcite-progress>
+                          data-loading-delay label="Loading content" role="status" aria-live="polite"
+                          aria-atomic="true"></calcite-progress>
         <calcite-navigation-logo slot="logo" heading="EnterpriseViz"
                                  icon="map-pin" preload="true">
         </calcite-navigation-logo>
         <calcite-navigation-user id="nav-user" slot="user" full-name="{{ user.get_full_name }}"
-                                 username="{{ user.get_username }}"></calcite-navigation-user>
+                                 username="{{ user.get_username }}" label="User Menu"></calcite-navigation-user>
       </calcite-navigation>
       <calcite-shell-panel slot="panel-start" position="start" id="shell-panel-start" display-mode="overlay"
                            collapsed
-                           width="m">
-        <calcite-action-bar slot="action-bar">
-          <calcite-action id="home" icon="home" title="Home" text="Home"
+                           width="m" label="Navigation panel">
+        <calcite-action-bar slot="action-bar" label="Main navigation">
+          <calcite-action id="home" icon="home" text="Home" label="Home"
                           hx-get="{% url 'enterpriseviz:index' %}" hx-target="#mainbodycontent"
                           hx-push-url="{% url 'enterpriseviz:index' %}"></calcite-action>
-          <calcite-action id="portals" data-action-id="portals" icon="all-servers" text="Portals"></calcite-action>
+          <calcite-action id="portals" data-action-id="portals" icon="all-servers" text="Portals"
+                          label="Portals"></calcite-action>
 
           <calcite-action-group slot="actions-end">
-            <calcite-action id="manage" data-action-id="manage" text="Manage" icon="system-management"></calcite-action>
-            <calcite-action data-action-id="settings" id="settings" text="Settings" icon="gear"></calcite-action>
+            <calcite-action id="manage" data-action-id="manage" text="Manage" icon="system-management"
+                            label="Manage"></calcite-action>
+            <calcite-action data-action-id="settings" id="settings" text="Settings" icon="gear"
+                            label="Settings"></calcite-action>
           </calcite-action-group>
+          <calcite-tooltip slot="expand-tooltip"><span>Toggle Action Bar</span></calcite-tooltip>
         </calcite-action-bar>
 
         <calcite-panel heading="Portals" height-scale="m" data-panel-id="portals" hidden>
@@ -108,7 +113,7 @@
             {% include 'app/manage_panel.html' %}
             <calcite-fab scale="m" text-enabled text="Add Portal" icon="plus" slot="fab"
                          id="add-portal" hx-get="{% url 'enterpriseviz:add_portal' %}" hx-trigger="click"
-                         hx-target="#add_portal_modal">
+                         hx-target="#add_portal_modal" label="Add Portal">
             </calcite-fab>
           </calcite-panel>
         {% endif %}
@@ -116,24 +121,24 @@
           {% include 'app/settings_panel.html' %}
         </calcite-panel>
       </calcite-shell-panel>
-      <calcite-panel>
-        <div id="mainbodycontent" hx-history-elt hidden>
+      <calcite-panel id="main-content-panel">
+        <div id="mainbodycontent" hx-history-elt hidden role="main" aria-live="polite">
           {% block content %}
           {% endblock content %}
         </div>
       </calcite-panel>
 
     </calcite-shell>
-    <calcite-tooltip reference-element="home" placement="left" overlay-positioning="fixed" close-on-click="true">
+    <calcite-tooltip reference-element="home" placement="left" overlay-positioning="fixed" close-on-click>
       <span>Home</span>
     </calcite-tooltip>
-    <calcite-tooltip reference-element="portals" placement="left" overlay-positioning="fixed" close-on-click="true">
+    <calcite-tooltip reference-element="portals" placement="left" overlay-positioning="fixed" close-on-click>
       <span>Change the selected portal</span>
     </calcite-tooltip>
-    <calcite-tooltip reference-element="manage" placement="left" overlay-positioning="fixed" close-on-click="true">
+    <calcite-tooltip reference-element="manage" placement="left" overlay-positioning="fixed" close-on-click>
       <span>Update and delete portals. Schedule automatic updates.</span>
     </calcite-tooltip>
-    <calcite-tooltip reference-element="settings" placement="left" overlay-positioning="fixed" close-on-click="true">
+    <calcite-tooltip reference-element="settings" placement="left" overlay-positioning="fixed" close-on-click>
       <span>Change user settings</span>
     </calcite-tooltip>
     <div id="email_settings_modal"></div>
@@ -142,33 +147,59 @@
     <div id="schedule_portal_modal" hx-target="this"></div>
     <div id="tool_settings_modal" hx-target="this"></div>
     <div id="webhook_settings_modal"></div>
-    <div id="alert-container" hx-target="this"></div>
-    <calcite-popover label="Log in credentials" reference-element="nav-user" placement="bottom" pointer-disabled
+    <div id="alert-container" hx-target="this" role="alert" aria-live="polite" aria-atomic="true"></div>
+    <calcite-popover label="User navigation menu" reference-element="nav-user" placement="bottom" pointer-disabled
                      scale="s" auto-close>
       <p class="padding-1-6-0 margin-0"></p>
-      <calcite-button kind="neutral" scale="s" icon-start="user" class="margin-0-12-12">
+      <calcite-button kind="neutral" scale="s" icon-start="user" class="margin-0-12-12" label="Profile">
         Profile
       </calcite-button>
       {% if user.is_superuser %}
         <calcite-button kind="neutral" scale="s" icon-start="dashboard" class="margin-0-12-12"
-                        href="/enterpriseviz/admin/">
+                        href="/enterpriseviz/admin/" label="Admin">
           Admin
         </calcite-button>
       {% endif %}
       {% if user.is_authenticated %}
         <calcite-button kind="neutral" scale="s" icon-start="sign-out" class="margin-0-12-12"
-                        href="/enterpriseviz/logout/">
+                        href="/enterpriseviz/logout/" label="Sign Out">
           Sign-Out
         </calcite-button>
       {% else %}
         <calcite-button kind="neutral" scale="s" icon-start="sign-in" class="margin-0-12-12"
-                        href="/enterpriseviz/login/">
+                        href="/enterpriseviz/login/" label="Sign In">
           Sign-In
         </calcite-button>
       {% endif %}
     </calcite-popover>
   </div>
+  {% if user.is_superuser %}
+  <!-- Reusable Delete Confirmation Sheet -->
+  <calcite-sheet label="Confirm Deletion" position="block-end" display-mode="float" id="delete-confirm-sheet"
+                 height="s" width="s" class="delete-confirm-sheet">
+    <calcite-panel heading="Confirm Deletion" heading-level="2">
+      <calcite-notice open kind="danger" icon="exclamation-mark-triangle" width="full">
+        <div slot="title">
+          <div id="delete-confirm-message">Are you sure you want to proceed with this deletion?</div>
+        </div>
+        <div slot="message">
+          <div id="delete-confirm-details"></div>
+        </div>
+      </calcite-notice>
 
+      <div style="display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem;">
+        <calcite-button id="delete-confirm-yes" width="full" kind="danger" icon-start="trash"
+                        label="Confirm deletion">
+          Delete
+        </calcite-button>
+        <calcite-button id="delete-confirm-no" width="full" kind="neutral" appearance="outline"
+                        label="Cancel deletion">
+          Cancel
+        </calcite-button>
+      </div>
+    </calcite-panel>
+  </calcite-sheet>
+  {% endif %}
 {% endblock body %}
 </body>
 {% block javascripts %}
@@ -196,7 +227,7 @@
           crossorigin="anonymous"></script>
   <script src="https://cdn.datatables.net/plug-ins/1.13.4/sorting/datetime-moment.js"></script>
 
-  <script type="module" src="https://js.arcgis.com/calcite-components/3.3.2/calcite.esm.js"></script>
+  <script type="module" src="https://js.arcgis.com/calcite-components/3.3.3/calcite.esm.js"></script>
 
   <script src="https://cdn.jsdelivr.net/npm/d3@3.0.0/d3.min.js"
           integrity="sha256-b69VTDu5tPmoLspoBD0rxTFiimxoTONDLrAgF68zU8c=" crossorigin="anonymous"></script>

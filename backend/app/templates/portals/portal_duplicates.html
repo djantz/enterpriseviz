@@ -5,17 +5,23 @@
       <div class="x_panel">
         <div class="x_title">
           <h2>
-            <calcite-icon icon="map" preload="true" scale="m"></calcite-icon>
-            <div>Duplicate Web Maps</div>
+            <calcite-icon icon="map" preload="true" scale="s" aria-hidden="true"></calcite-icon>
+            <div class="icon_space">Duplicate Web Maps</div>
           </h2>
-          <ul class="nav navbar-right panel_toolbox">
-            <li><a class="collapse-link">
-              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-            </a>
+          <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+            <li>
+              <calcite-button appearance="transparent" kind="neutral" scale="s"
+                              class="collapse-link"
+                              icon-start="chevron-up"
+                              label="Collapse panel">
+              </calcite-button>
             </li>
-            <li><a class="close-link">
-              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-            </a>
+            <li>
+              <calcite-button appearance="transparent" kind="neutral" scale="s"
+                              class="close-link"
+                              icon-start="x"
+                              label="Close panel">
+              </calcite-button>
             </li>
           </ul>
           <div class="clearfix"></div>
@@ -25,16 +31,17 @@
             {% if instance and updated.webmap_updated %}This list was last updated
               {{ updated.webmap_updated }}{% endif %}
           </p>
-          <table id="duplicate-webmap" class="table table-striped wrap" width="100%">
+          <table id="duplicate-webmap" class="table table-striped wrap" width="100%"
+                 aria-label="Webmap duplicates">
             <thead>
             <tr>
-              <th>Match</th>
-              <th>Webmap Title</th>
-              <th>Description</th>
-              <th>Owner</th>
-              <th>Access</th>
-              <th>Modified</th>
-              <th>Views</th>
+              <th scope="col">Match</th>
+              <th scope="col">Webmap Title</th>
+              <th scope="col">Description</th>
+              <th scope="col">Owner</th>
+              <th scope="col">Access</th>
+              <th scope="col">Modified</th>
+              <th scope="col">Views</th>
             </tr>
             </thead>
             <tbody>
@@ -68,7 +75,11 @@
                 <td>{{ item.0.webmap_snippet | safe }}</td>
                 <td>{{ item.0.webmap_owner }}</td>
                 <td>{{ item.0.webmap_access }}</td>
-                <td>{{ item.0.webmap_modified }}</td>
+                <td>
+                  <time datetime="{{ item.0.webmap_modified|date:'c' }}">
+                    {{ item.0.webmap_modified|date:'M j, Y h:i A' }}
+                  </time>
+                </td>
                 <td>{{ item.0.webmap_views }}</td>
               </tr>
               <tr>
@@ -76,7 +87,11 @@
                 <td>{{ item.1.webmap_snippet | safe }}</td>
                 <td>{{ item.1.webmap_owner }}</td>
                 <td>{{ item.1.webmap_access }}</td>
-                <td>{{ item.1.webmap_modified }}</td>
+                <td>
+                  <time datetime="{{ item.1.webmap_modified|date:'c' }}">
+                    {{ item.1.webmap_modified|date:'M j, Y h:i A' }}
+                  </time>
+                </td>
                 <td>{{ item.1.webmap_views }}</td>
               </tr>
             {% endfor %}
@@ -92,17 +107,23 @@
       <div class="x_panel">
         <div class="x_title">
           <h2>
-            <calcite-icon icon="layer-map-service" preload="true" scale="s"></calcite-icon>
+            <calcite-icon icon="layer-map-service" preload="true" scale="s" aria-hidden="true"></calcite-icon>
             <div class="icon_space">Duplicate Services</div>
           </h2>
-          <ul class="nav navbar-right panel_toolbox">
-            <li><a class="collapse-link">
-              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-            </a>
+          <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+            <li>
+              <calcite-button appearance="transparent" kind="neutral" scale="s"
+                              class="collapse-link"
+                              icon-start="chevron-up"
+                              label="Collapse panel">
+              </calcite-button>
             </li>
-            <li><a class="close-link">
-              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-            </a>
+            <li>
+              <calcite-button appearance="transparent" kind="neutral" scale="s"
+                              class="close-link"
+                              icon-start="x"
+                              label="Close panel">
+              </calcite-button>
             </li>
           </ul>
           <div class="clearfix"></div>
@@ -112,15 +133,16 @@
             {% if instance and updated.service_updated %}This list was last updated
               {{ updated.service_updated }}{% endif %}
           </p>
-          <table id="duplicate-services" class="table table-striped wrap" width="100%">
+          <table id="duplicate-services" class="table table-striped wrap" width="100%"
+                 aria-label="Service duplicates">
             <thead>
             <tr>
-              <th>Match</th>
-              <th>Name</th>
-              <th>URL</th>
-              <th>Layers</th>
-              <th>Owner</th>
-              <th>Access</th>
+              <th scope="col">Match</th>
+              <th scope="col">Name</th>
+              <th scope="col">URL</th>
+              <th scope="col">Layers</th>
+              <th scope="col">Owner</th>
+              <th scope="col">Access</th>
             </tr>
             </thead>
             <tbody>
@@ -153,17 +175,23 @@
       <div class="x_panel">
         <div class="x_title">
           <h2>
-            <calcite-icon icon="layers" preload="true" scale="s"></calcite-icon>
+            <calcite-icon icon="layers" preload="true" scale="s" aria-hidden="true"></calcite-icon>
             <div class="icon_space">Duplicate Layers</div>
           </h2>
-          <ul class="nav navbar-right panel_toolbox">
-            <li><a class="collapse-link">
-              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-            </a>
+          <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+            <li>
+              <calcite-button appearance="transparent" kind="neutral" scale="s"
+                              class="collapse-link"
+                              icon-start="chevron-up"
+                              label="Collapse panel">
+              </calcite-button>
             </li>
-            <li><a class="close-link">
-              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-            </a>
+            <li>
+              <calcite-button appearance="transparent" kind="neutral" scale="s"
+                              class="close-link"
+                              icon-start="x"
+                              label="Close panel">
+              </calcite-button>
             </li>
           </ul>
           <div class="clearfix"></div>
@@ -173,12 +201,12 @@
             {% if instance and updated.layer_updated %}This list was last updated
               {{ updated.layer_updated }}{% endif %}
           </p>
-          <table id="duplicate-layer" class="table table-striped wrap" width="100%">
+          <table id="duplicate-layer" class="table table-striped wrap" width="100%" aria-label="Layer duplicates">
             <thead>
             <tr>
-              <th>Match</th>
-              <th>Layer Name</th>
-              <th>Service</th>
+              <th scope="col">Match</th>
+              <th scope="col">Layer Name</th>
+              <th scope="col">Service</th>
             </tr>
             </thead>
             <tbody>
@@ -205,18 +233,24 @@
       <div class="x_panel">
         <div class="x_title">
           <h2>
-            <calcite-icon icon="browser-map" preload="true" scale="s"></calcite-icon>
+            <calcite-icon icon="browser-map" preload="true" scale="s" aria-hidden="true"></calcite-icon>
             <div class="icon_space">Duplicate Apps<small>
               Dashboard, ExB, Form, StoryMap, WAB</small></div>
           </h2>
-          <ul class="nav navbar-right panel_toolbox">
-            <li><a class="collapse-link">
-              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-            </a>
+          <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+            <li>
+              <calcite-button appearance="transparent" kind="neutral" scale="s"
+                              class="collapse-link"
+                              icon-start="chevron-up"
+                              label="Collapse panel">
+              </calcite-button>
             </li>
-            <li><a class="close-link">
-              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-            </a>
+            <li>
+              <calcite-button appearance="transparent" kind="neutral" scale="s"
+                              class="close-link"
+                              icon-start="x"
+                              label="Close panel">
+              </calcite-button>
             </li>
           </ul>
           <div class="clearfix"></div>
@@ -226,16 +260,16 @@
             {% if instance and updated.app_updated %}This list was last updated
               {{ updated.app_updated }}{% endif %}
           </p>
-          <table id="duplicate-apps" class="table table-striped wrap" width="100%">
+          <table id="duplicate-apps" class="table table-striped wrap" width="100%" aria-label="App duplicates">
             <thead>
             <tr>
-              <th>Match</th>
-              <th>Webmap Title</th>
-              <th>Description</th>
-              <th>Owner</th>
-              <th>Access</th>
-              <th>Modified</th>
-              <th>Views</th>
+              <th scope="col">Match</th>
+              <th scope="col">Webmap Title</th>
+              <th scope="col">Description</th>
+              <th scope="col">Owner</th>
+              <th scope="col">Access</th>
+              <th scope="col">Modified</th>
+              <th scope="col">Views</th>
             </tr>
             </thead>
             <tbody>
@@ -246,7 +280,11 @@
                 <td>{{ item.0.app_snippet | safe }}</td>
                 <td>{{ item.0.app_owner }}</td>
                 <td>{{ item.0.app_access }}</td>
-                <td>{{ item.0.app_modified }}</td>
+                <td>
+                  <time datetime="{{ item.0.app_modified|date:'c' }}">
+                    {{ item.0.app_modified|date:'M j, Y h:i A' }}
+                  </time>
+                </td>
                 <td>{{ item.0.app_views }}</td>
               </tr>
               <tr>
@@ -254,7 +292,11 @@
                 <td>{{ item.1.app_snippet | safe }}</td>
                 <td>{{ item.1.app_owner }}</td>
                 <td>{{ item.1.app_access }}</td>
-                <td>{{ item.1.app_modified }}</td>
+                <td>
+                  <time datetime="{{ item.1.app_modified|date:'c' }}">
+                    {{ item.1.app_modified|date:'M j, Y h:i A' }}
+                  </time>
+                </td>
                 <td>{{ item.1.app_views }}</td>
               </tr>
             {% endfor %}

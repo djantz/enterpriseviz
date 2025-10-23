@@ -1,24 +1,31 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
-<div id="settings-container">
+<div id="settings-container" role="region" aria-label="Application settings">
   <calcite-action id="email-action" text="Email" icon="envelope" text-enabled
-                  hx-get="{% url 'enterpriseviz:email_settings' %}" hx-target="#email_settings_modal"></calcite-action>
+                  hx-get="{% url 'enterpriseviz:email_settings' %}"
+                  hx-target="#email_settings_modal"
+                  label="Configure email settings"></calcite-action>
   <calcite-action id="webhook-action" text="Webhook" icon="key" text-enabled
-                  hx-get="{% url 'enterpriseviz:webhook_settings' %}" hx-target="#webhook_settings_modal"></calcite-action>
+                  hx-get="{% url 'enterpriseviz:webhook_settings' %}"
+                  hx-target="#webhook_settings_modal"
+                  label="Configure webhook settings"></calcite-action>
   <calcite-action id="log-viewer-action" text="Logs" icon="access-string-results" text-enabled
                   hx-get="{% url 'enterpriseviz:log' %}"
                   hx-target="#mainbodycontent"
-                  hx-push-url="true">
+                  hx-push-url="true"
+                  label="View application logs">
   </calcite-action>
+
   <calcite-tooltip reference-element="email-action" placement="left" overlay-positioning="fixed"
-                   close-on-click="true">
-    <span>Configure email settings</span>
+                   close-on-click>
+    <span>Configure email settings for notifications</span>
   </calcite-tooltip>
-  <calcite-tooltip reference-element="webhook-action" placement="left" overlay-positioning="fixed">
-    <span>Configure webhook settings</span>
+  <calcite-tooltip reference-element="webhook-action" placement="left" overlay-positioning="fixed"
+                   close-on-click>
+    <span>Configure webhook settings for integrations</span>
   </calcite-tooltip>
   <calcite-tooltip reference-element="log-viewer-action" placement="left" overlay-positioning="fixed"
-                   close-on-click="true">
-    <span>View application logs</span>
+                   close-on-click>
+    <span>View application logs and errors</span>
   </calcite-tooltip>
 
 </div>
@@ -28,32 +35,34 @@
                  hx-post="{% url 'enterpriseviz:mode_toggle' %}"
                  hx-target="#mode-switch" hx-push-url="false">
     Theme:
-    <calcite-icon icon="brightness" preload="true" scale="s"></calcite-icon>
-    <calcite-switch {% if user.profile.mode == 'dark' %}
-      checked {% endif %}id="mode-switch" label="Mode switch"></calcite-switch>
-    <calcite-icon icon="moon" preload="true" scale="s"></calcite-icon>
-    <calcite-tooltip reference-element="mode-switch" placement="left" overlay-positioning="fixed" close-on-click="true">
-      <span>Change between light and dark mode</span>
-    </calcite-tooltip>
-
-
+    <calcite-icon icon="brightness" preload="true" scale="s" aria-hidden="true"></calcite-icon>
+    <calcite-switch {% if user.profile.mode == 'dark' %}checked{% endif %}
+                    id="mode-switch"
+                    label="Toggle between light and dark theme"></calcite-switch>
+    <calcite-icon icon="moon" preload="true" scale="s" aria-hidden="true"></calcite-icon>
   </calcite-label>
+  <calcite-tooltip reference-element="mode-switch" placement="left" overlay-positioning="fixed"
+                   close-on-click>
+    <span>Switch between light and dark theme</span>
+  </calcite-tooltip>
+
   <calcite-label layout="inline-space-between"
                  hx-post="{% url 'enterpriseviz:usage_toggle' %}"
                  hx-target="#usage-switch" hx-push-url="false">
     Service Usage:
-    <calcite-icon icon="content-none" preload="true" scale="s"></calcite-icon>
-    <calcite-switch {% if user.profile.service_usage is True %}
-      checked {% endif %}id="usage-switch" label="Service usage switch"></calcite-switch>
-    <calcite-icon icon="graph-time-series" preload="true" scale="s"></calcite-icon>
+    <calcite-icon icon="content-none" preload="true" scale="s" aria-hidden="true"></calcite-icon>
+    <calcite-switch {% if user.profile.service_usage is True %}checked{% endif %}
+                    id="usage-switch"
+                    label="Toggle service usage graphs"></calcite-switch>
+    <calcite-icon icon="graph-time-series" preload="true" scale="s" aria-hidden="true"></calcite-icon>
   </calcite-label>
-  <calcite-tooltip reference-element="usage-switch" placement="left" overlay-positioning="fixed" close-on-click="true">
-    <span>Enable or disable service usage graphs</span>
+  <calcite-tooltip reference-element="usage-switch" placement="left" overlay-positioning="fixed"
+                   close-on-click>
+    <span>Show or hide service usage graphs in dependency views</span>
   </calcite-tooltip>
 </div>
 
 <calcite-button kind="neutral" scale="m" icon-start="sign-out" slot="footer" width="full"
-                href="{% url 'enterpriseviz:logout' %}"
->
+                href="{% url 'enterpriseviz:logout' %}" label="Sign out of EnterpriseViz">
   Sign-Out
 </calcite-button>

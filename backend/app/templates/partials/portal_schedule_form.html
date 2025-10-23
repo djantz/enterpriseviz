@@ -1,22 +1,21 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
 {% load filter %}
-<form id="schedule-portal-form" class="calcite-form" autocomplete="off">
+<form id="schedule-portal-form" class="calcite-form" autocomplete="off" aria-label="Schedule portal updates">
   {% csrf_token %}
   <calcite-input type="text" id="{{ form.instance.name }}" name="{{ form.instance.name }}"
-                 placeholder="Portal Alias" read-only="true"
+                 placeholder="Portal Alias" read-only
                  autocomplete="off" value="{{ form.instance.value }}" label-text="Portal Alias"
-                 required
-                 {% if form.instance.errors %}status="invalid"{% endif %}></calcite-input>
-  <calcite-input-message {% if not form.instance.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                         status="invalid">
-    {{ form.instance.errors|join:" " }}
-  </calcite-input-message>
+                 required label="Portal Alias"
+                 status="{% if form.instance.errors %}invalid{% else %}idle{% endif %}"
+                 validation-message="{{ form.instance.errors|join:' ' }}"
+                 validation-icon="{% if form.instance.errors %}exclamation-mark-triangle{% endif %}"></calcite-input>
 
   <div class="flex-container flex-column-gap-1">
     <div class="width-50">
       <calcite-input-date-picker id="beginning-on" name="beginning_on"
                                  value="{% if form.beginning_on.value|format_date %}{{ form.beginning_on.value|format_date }}{% else %}{% now "Y-m-d" %}{% endif %}"
-                                 label-text="Beginning on" required>
+                                 label-text="Beginning On" required label="Beginning On"
+                                 min="{% now "Y-m-d" %}">
         <calcite-icon slot="label-content" id="beginning-on-tooltip" icon="information" scale="s"></calcite-icon>
       </calcite-input-date-picker>
       <calcite-input-message {% if not form.beginning_on.errors %}hidden{% endif %}
@@ -26,43 +25,43 @@
     </div>
     <div class="width-50">
       <calcite-select name="{{ form.repeat_type.name }}" id="repeat-type" value="{{ form.repeat_type.value }}"
-                      label-text="Repeat Type" required>
+                      label-text="Repeat Type" label="Repeat Type" required
+                      status="{% if form.repeat_type.errors %}invalid{% else %}idle{% endif %}"
+                      validation-message="{{ form.repeat_type.errors|join:' ' }}"
+                      validation-icon="{% if form.repeat_type.errors %}exclamation-mark-triangle{% endif %}">
         <calcite-icon slot="label-content" id="repeat-type-tooltip" icon="information" scale="s"></calcite-icon>
-        <calcite-option value="minute">Minute</calcite-option>
-        <calcite-option value="hour">Hour</calcite-option>
-        <calcite-option value="day">Day</calcite-option>
-        <calcite-option value="week">Week</calcite-option>
-        <calcite-option value="month">Month</calcite-option>
+        <calcite-option value="minute" label="Every Minute">Minute</calcite-option>
+        <calcite-option value="hour" label="Every Hour">Hour</calcite-option>
+        <calcite-option value="day" label="Every Day">Day</calcite-option>
+        <calcite-option value="week" label="Every Week">Week</calcite-option>
+        <calcite-option value="month" label="Every Month">Month</calcite-option>
       </calcite-select>
-      <calcite-input-message {% if not form.repeat_type.errors %}hidden{% endif %}
-                             icon="exclamation-mark-triangle-f" status="invalid">
-        {{ form.repeat_type.errors|join:" " }}
-      </calcite-input-message>
     </div>
   </div>
 
-  <div id="repeat-minute" hidden>
+  <div id="repeat-minute" hidden aria-hidden="true">
     <div class="">
       <calcite-select id="repeat-interval-minute" name="repeat_interval_minute"
-                      value="{{ form.repeat_interval_minute.value }}" label-text="Repeat Interval" required>
+                      value="{{ form.repeat_interval_minute.value }}" label-text="Repeat Interval" required
+                      status="{% if form.repeat_interval_minute.errors %}invalid{% else %}idle{% endif %}"
+                      validation-message="{{ form.repeat_interval_minute.errors|join:' ' }}"
+                      validation-icon="{% if form.repeat_interval_minute.errors %}exclamation-mark-triangle{% endif %}"
+                      label="Repeat Interval">
         <calcite-icon slot="label-content" id="repeat-interval-minute-tooltip" icon="information"
                       scale="s"></calcite-icon>
-        <calcite-option value="15">15 - Every fifteen minutes</calcite-option>
-        <calcite-option value="30">30 - Every thirty minutes</calcite-option>
+        <calcite-option value="15" label="Every 15 minutes">15 - Every fifteen minutes</calcite-option>
+        <calcite-option value="30" label="Every 30 minutes">30 - Every thirty minutes</calcite-option>
       </calcite-select>
-      <calcite-input-message {% if not form.repeat_interval_minute.errors %}hidden{% endif %}
-                             icon="exclamation-mark-triangle-f" status="invalid">
-        {{ form.repeat_interval_minute.errors|join:" " }}
-      </calcite-input-message>
     </div>
 
-    <div id="days-of-week-container">
+    <fieldset id="days-of-week-minute-fieldset">
       <calcite-label>On Days</calcite-label>
-      <div class="flex-container flex-justify-between">
+      <div class="flex-container flex-justify-between" role="group" aria-labelledby="days-of-week-minute-legend">
+        <span id="days-of-week-minute-legend" class="sr-only">Select days of the week for minute-based schedule</span>
         {% for value, label in form.fields.day_of_week_minute.choices %}
           <calcite-label layout="inline">
             <calcite-checkbox name="day_of_week_minute" value="{{ value }}"
-              {% if value in form.day_of_week_minute.value %} checked {% endif %}></calcite-checkbox>
+              {% if value in form.day_of_week_minute.value %}checked{% endif %}></calcite-checkbox>
             {{ label }}</calcite-label>
         {% endfor %}
       </div>
@@ -70,80 +69,80 @@
                              icon="exclamation-mark-triangle-f" status="invalid">
         {{ form.day_of_week_minute.errors|join:" " }}
       </calcite-input-message>
-    </div>
-    <div id="between-hours-container" class="display-grid">
+    </fieldset>
+
+    <fieldset id="between-hours-minute-fieldset" class="display-grid">
       <calcite-label alignment="start" layout="default">
         <div class="flex-container flex-align-center flex-justify-between">
-          Between hours
-          <calcite-label layout="inline" class="no-margin-bottom">
-            All day
-            <calcite-switch id="all-day-minute" checked scale="m"></calcite-switch>
-          </calcite-label>
-        </div>
-        <div class="flex-container flex-align-center">
-          <calcite-input-time-picker disabled id="between-hours-start-minute" name="between_hours_start_minute"
-                                     class="col-50"
-                                     position="bottom" value="{% if form.between_hours_start_minute.value %}{{ form.between_hours_start_minute.value }}{% else %}00:00{% endif %}"></calcite-input-time-picker>
-          <calcite-input-message {% if not form.between_hours_start_minute.errors %}hidden{% endif %}
-                                 icon="exclamation-mark-triangle-f" status="invalid">
-            {{ form.between_hours_start_minute.errors|join:" " }}
-          </calcite-input-message>
-          <calcite-input-time-picker disabled id="between-hours-end-minute" name="between_hours_end_minute"
-                                     class="col-50 margin-inline-start-1"
-                                     position="bottom"
-                                     value="{{ form.between_hours_end_minute.value }}"></calcite-input-time-picker>
-          <calcite-input-message {% if not form.between_hours_end_minute.errors %}hidden{% endif %}
-                                 icon="exclamation-mark-triangle-f" status="invalid">
-            {{ form.between_hours_end_minute.errors|join:" " }}
-          </calcite-input-message>
+          Between Hours
+        <calcite-label layout="inline" class="no-margin-bottom">
+          All Day
+          <calcite-switch id="all-day-minute" checked scale="m" label="Run all day"></calcite-switch>
+        </calcite-label>
         </div>
       </calcite-label>
-    </div>
+      <div class="flex-container flex-align-center">
+        <calcite-input-time-picker disabled id="between-hours-start-minute" name="between_hours_start_minute"
+                                   class="col-50" label-text="Start Time" label="Start Time"
+                                   position="bottom" value="{% if form.between_hours_start_minute.value %}{{ form.between_hours_start_minute.value }}{% else %}00:00{% endif %}"
+                                   status="{% if form.between_hours_start_minute.errors %}invalid{% else %}idle{% endif %}"
+                                   validation-message="{{ form.between_hours_start_minute.errors|join:' ' }}"
+                                   validation-icon="{% if form.between_hours_start_minute.errors %}exclamation-mark-triangle{% endif %}">
+        </calcite-input-time-picker>
+        <calcite-input-time-picker disabled id="between-hours-end-minute" name="between_hours_end_minute"
+                                   class="col-50 margin-inline-start-1" label-text="End Time"
+                                   position="bottom" label="End Time"
+                                   value="{{ form.between_hours_end_minute.value }}"
+                                   status="{% if form.between_hours_end_minute.errors %}invalid{% else %}idle{% endif %}"
+                                   validation-message="{{ form.between_hours_end_minute.errors|join:' ' }}"
+                                   validation-icon="{% if form.between_hours_end_minute.errors %}exclamation-mark-triangle{% endif %}">
+        </calcite-input-time-picker>
+      </div>
+    </fieldset>
   </div>
 
   <div id="repeat-hour" hidden>
     <div class="flex-container flex-column-gap-1">
       <div class="width-50">
         <calcite-select id="repeat-interval-hour" name="repeat_interval_hour"
-                        value="{{ form.repeat_interval_hour.value }}" label-text="Repeat Interval" required>
+                        value="{{ form.repeat_interval_hour.value }}" label-text="Repeat Interval" required
+                        status="{% if form.repeat_interval_hour.errors %}invalid{% else %}idle{% endif %}"
+                        validation-message="{{ form.repeat_interval_hour.errors|join:' ' }}" label="Repeat Interval"
+                        validation-icon="{% if form.repeat_interval_hour.errors %}exclamation-mark-triangle{% endif %}">
           <calcite-icon slot="label-content" id="repeat-interval-hour-tooltip" icon="information"
                         scale="s"></calcite-icon>
-          <calcite-option value="1">1 - Every one hour</calcite-option>
-          <calcite-option value="2">2 - Every two hours</calcite-option>
-          <calcite-option value="3">3 - Every three hours</calcite-option>
-          <calcite-option value="4">4 - Every four hours</calcite-option>
-          <calcite-option value="6">6 - Every six hours</calcite-option>
-          <calcite-option value="12">12 - Every twelve hours</calcite-option>
+          <calcite-option value="1" label="Every 1 hour">1 - Every one hour</calcite-option>
+          <calcite-option value="2" label="Every 2 hours">2 - Every two hours</calcite-option>
+          <calcite-option value="3" label="Every 3 hours">3 - Every three hours</calcite-option>
+          <calcite-option value="4" label="Every 4 hours">4 - Every four hours</calcite-option>
+          <calcite-option value="6" label="Every 6 hours">6 - Every six hours</calcite-option>
+          <calcite-option value="12" label="Every 12 hours">12 - Every twelve hours</calcite-option>
         </calcite-select>
-        <calcite-input-message {% if not form.repeat_interval_hour.errors %}hidden{% endif %}
-                               icon="exclamation-mark-triangle-f" status="invalid">
-          {{ form.repeat_interval_hour.errors|join:" " }}
-        </calcite-input-message>
       </div>
       <div class="width-50">
         <calcite-select id="on-minute-hour" name="on_minute_hour" value="{{ form.on_minute_hour.value }}"
-                        label-text="On Minute" required>
+                        label-text="On Minute" required label="On Minute"
+                        status="{% if form.on_minute_hour.errors %}invalid{% else %}idle{% endif %}"
+                        validation-message="{{ form.on_minute_hour.errors|join:' ' }}"
+                        validation-icon="{% if form.on_minute_hour.errors %}exclamation-mark-triangle{% endif %}">
           <calcite-icon slot="label-content" id="on-minute-tooltip" icon="information" scale="s"></calcite-icon>
-          <calcite-option value="0">0 - (HH:00)</calcite-option>
-          <calcite-option value="5">5 - (HH:05)</calcite-option>
-          <calcite-option value="15">15 - (HH:15)</calcite-option>
-          <calcite-option value="30">30 - (HH:30)</calcite-option>
-          <calcite-option value="45">45 - (HH:45)</calcite-option>
+          <calcite-option value="0" label="On the hour">0 - (HH:00)</calcite-option>
+          <calcite-option value="5" label="5 minutes past">5 - (HH:05)</calcite-option>
+          <calcite-option value="15" label="15 minutes past">15 - (HH:15)</calcite-option>
+          <calcite-option value="30" label="30 minutes past">30 - (HH:30)</calcite-option>
+          <calcite-option value="45" label="45 minutes past">45 - (HH:45)</calcite-option>
         </calcite-select>
-        <calcite-input-message {% if not form.on_minute_hour.errors %}hidden{% endif %}
-                               icon="exclamation-mark-triangle-f" status="invalid">
-          {{ form.on_minute_hour.errors|join:" " }}
-        </calcite-input-message>
       </div>
     </div>
 
-    <div id="days-of-week-container">
+    <fieldset id="days-of-week-hour-fieldset">
       <calcite-label>On Days</calcite-label>
-      <div class="flex-container flex-justify-between">
+      <div class="flex-container flex-justify-between" role="group" aria-labelledby="days-of-week-hour-legend">
+        <span id="days-of-week-hour-legend" class="sr-only">Select days of the week for hour-based schedule</span>
         {% for value, label in form.fields.day_of_week_hour.choices %}
           <calcite-label layout="inline">
             <calcite-checkbox name="day_of_week_hour" value="{{ value }}" {% if value in form.day_of_week_hour.value %}
-                              checked {% endif %}></calcite-checkbox>
+                              checked{% endif %}></calcite-checkbox>
             {{ label }}</calcite-label>
         {% endfor %}
       </div>
@@ -151,81 +150,79 @@
                              icon="exclamation-mark-triangle-f" status="invalid">
         {{ form.day_of_week_hour.errors|join:" " }}
       </calcite-input-message>
-    </div>
-    <div id="between-hours-container" class="display-grid">
+    </fieldset>
+
+    <fieldset id="between-hours-hour-fieldset">
       <calcite-label alignment="start" layout="default">
         <div class="flex-container flex-align-center flex-justify-between">
-          Between hours
-          <calcite-label layout="inline" class="no-margin-bottom">
-            All day
-            <calcite-switch id="all-day-hour" checked scale="m"></calcite-switch>
-          </calcite-label>
-        </div>
-        <div class="flex-container flex-align-center">
-          <calcite-input-time-picker disabled id="between-hours-start-hour" name="between_hours_start_hour"
-                                     class="col-50"
-                                     position="bottom"
-                                     value="{{ form.between_hours_start_hour.value }}"></calcite-input-time-picker>
-          <calcite-input-message {% if not form.between_hours_start_hour.errors %}hidden{% endif %}
-                                 icon="exclamation-mark-triangle-f" status="invalid">
-            {{ form.between_hours_start_hour.errors|join:" " }}
-          </calcite-input-message>
-          <calcite-input-time-picker disabled id="between-hours-end-hour" name="between_hours_end_hour"
-                                     class="col-50 margin-inline-start-1"
-                                     position="bottom"
-                                     value="{{ form.between_hours_end_hour.value }}"></calcite-input-time-picker>
-          <calcite-input-message {% if not form.between_hours_end_hour.errors %}hidden{% endif %}
-                                 icon="exclamation-mark-triangle-f" status="invalid">
-            {{ form.between_hours_end_hour.errors|join:" " }}
-          </calcite-input-message>
+          Between Hours
+        <calcite-label layout="inline" class="no-margin-bottom">
+          All Day
+          <calcite-switch id="all-day-hour" checked scale="m" label="Run all day"></calcite-switch>
+        </calcite-label>
         </div>
       </calcite-label>
-    </div>
+      <div class="flex-container flex-align-center">
+        <calcite-input-time-picker disabled id="between-hours-start-hour" name="between_hours_start_hour"
+                                   class="col-50" label-text="Start Time" label="Start Time"
+                                   position="bottom"
+                                   value="{{ form.between_hours_start_hour.value }}"
+                                   status="{% if form.between_hours_start_hour.errors %}invalid{% else %}idle{% endif %}"
+                                   validation-message="{{ form.between_hours_start_hour.errors|join:' ' }}"
+                                   validation-icon="{% if form.between_hours_start_hour.errors %}exclamation-mark-triangle{% endif %}"></calcite-input-time-picker>
+        <calcite-input-time-picker disabled id="between-hours-end-hour" name="between_hours_end_hour"
+                                   class="col-50 margin-inline-start-1" label-text="End Time"
+                                   position="bottom" label="End Time"
+                                   value="{{ form.between_hours_end_hour.value }}"
+                                   status="{% if form.between_hours_end_hour.errors %}invalid{% else %}idle{% endif %}"
+                                   validation-message="{{ form.between_hours_end_hour.errors|join:' ' }}"
+                                   validation-icon="{% if form.between_hours_end_hour.errors %}exclamation-mark-triangle{% endif %}">
+        </calcite-input-time-picker>
+      </div>
+    </fieldset>
   </div>
 
   <div id="repeat-day" hidden>
     <div class="flex-container flex-column-gap-1">
       <div class="width-50">
-        <calcite-select id="repeat-interval-day" name="repeat_interval_day"
-                        value="{{ form.repeat_interval_day.value }}" label-text="Repeat Interval" required>
+        <calcite-select id="repeat-interval-day" name="repeat_interval_day" label="Repeat Interval"
+                        value="{{ form.repeat_interval_day.value }}" label-text="Repeat Interval" required
+                        status="{% if form.repeat_interval_day.errors %}invalid{% else %}idle{% endif %}"
+                        validation-message="{{ form.repeat_interval_day.errors|join:' ' }}"
+                        validation-icon="{% if form.repeat_interval_day.errors %}exclamation-mark-triangle{% endif %}">
           <calcite-icon slot="label-content" id="repeat-interval-day-tooltip" icon="information"
                         scale="s"></calcite-icon>
-          <calcite-option value="1">1 - Every day</calcite-option>
-          <calcite-option value="2">2 - Every two days</calcite-option>
-          <calcite-option value="3">3 - Every three days</calcite-option>
-          <calcite-option value="4">4 - Every four days</calcite-option>
-          <calcite-option value="5">5 - Every five days</calcite-option>
-          <calcite-option value="6">6 - Every six days</calcite-option>
-          <calcite-option value="7">7 - Every seven days</calcite-option>
-          <calcite-option value="14">14 - Every fourteen days</calcite-option>
+          <calcite-option value="1" label="Every day">1 - Every day</calcite-option>
+          <calcite-option value="2" label="Every 2 days">2 - Every two days</calcite-option>
+          <calcite-option value="3" label="Every 3 days">3 - Every three days</calcite-option>
+          <calcite-option value="4" label="Every 4 days">4 - Every four days</calcite-option>
+          <calcite-option value="5" label="Every 5 days">5 - Every five days</calcite-option>
+          <calcite-option value="6" label="Every 6 days">6 - Every six days</calcite-option>
+          <calcite-option value="7" label="Every week">7 - Every seven days</calcite-option>
+          <calcite-option value="14" label="Every 2 weeks">14 - Every fourteen days</calcite-option>
         </calcite-select>
-        <calcite-input-message {% if not form.repeat_interval_day.errors %}hidden{% endif %}
-                               icon="exclamation-mark-triangle-f" status="invalid">
-          {{ form.repeat_interval_day.errors|join:" " }}
-        </calcite-input-message>
       </div>
       <div class="width-50">
-        <calcite-input-time-picker name="time_day" id="time-day"
+        <calcite-input-time-picker name="time_day" id="time-day" label="Time"
                                    value="{{ form.time_day.value }}" label-text="Time"
-                                   required>
+                                   required status="{% if form.time_day.errors %}invalid{% else %}idle{% endif %}"
+                                   validation-message="{{ form.time_day.errors|join:' ' }}"
+                                   validation-icon="{% if form.time_day.errors %}exclamation-mark-triangle{% endif %}">
           <calcite-icon slot="label-content" id="time-day-tooltip" icon="information" scale="s"></calcite-icon>
         </calcite-input-time-picker>
-        <calcite-input-message {% if not form.time_day.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                               status="invalid">
-          {{ form.time_day.errors|join:" " }}
-        </calcite-input-message>
       </div>
     </div>
   </div>
 
   <div id="repeat-week" hidden>
-    <div id="days-of-week-container">
+    <fieldset id="days-of-week-week-fieldset">
       <calcite-label>On Days</calcite-label>
-      <div class="flex-container flex-justify-between">
+      <div class="flex-container flex-justify-between" role="group" aria-labelledby="days-of-week-week-legend">
+        <span id="days-of-week-week-legend" class="sr-only">Select days of the week for weekly schedule</span>
         {% for value, label in form.fields.day_of_week_week.choices %}
           <calcite-label layout="inline">
             <calcite-checkbox name="day_of_week_week" value="{{ value }}" {% if value in form.day_of_week_week.value %}
-                              checked {% endif %}></calcite-checkbox>
+                              checked{% endif %}></calcite-checkbox>
             {{ label }}</calcite-label>
         {% endfor %}
       </div>
@@ -233,160 +230,161 @@
                              icon="exclamation-mark-triangle-f" status="invalid">
         {{ form.day_of_week_week.errors|join:" " }}
       </calcite-input-message>
-    </div>
+    </fieldset>
     <div id="time-container">
       <calcite-input-time-picker value="{{ form.time_week.value }}" name="time_week"
-                                 id="time-week" label-text="Time" required>
+                                 id="time-week" label-text="Time" required label="Time"
+                                 status="{% if form.time_week.errors %}invalid{% else %}idle{% endif %}"
+                                 validation-message="{{ form.time_week.errors|join:' ' }}"
+                                 validation-icon="{% if form.time_week.errors %}exclamation-mark-triangle{% endif %}">
         <calcite-icon slot="label-content" id="time-week-tooltip" icon="information" scale="s"></calcite-icon>
       </calcite-input-time-picker>
-      <calcite-input-message {% if not form.time_week.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                             status="invalid">
-        {{ form.time_week.errors|join:" " }}
-      </calcite-input-message>
     </div>
-
   </div>
 
   <div id="repeat-month" hidden>
     <div class="flex-container flex-column-gap-1">
       <div class="width-50">
-        <calcite-select id="repeat-interval-month" name="repeat_interval_month"
-                        value="{{ form.repeat_interval_month.value }}" label-text="Repeat Interval" required>
+        <calcite-select id="repeat-interval-month" name="repeat_interval_month" label="Repeat Interval"
+                        value="{{ form.repeat_interval_month.value }}" label-text="Repeat Interval" required
+                        status="{% if form.repeat_interval_month.errors %}invalid{% else %}idle{% endif %}"
+                        validation-message="{{ form.repeat_interval_month.errors|join:' ' }}"
+                        validation-icon="{% if form.repeat_interval_month.errors %}exclamation-mark-triangle{% endif %}">
           <calcite-icon slot="label-content" id="repeat-interval-month-tooltip" icon="information"
                         scale="s"></calcite-icon>
-          <calcite-option value="1">1 - Every month</calcite-option>
-          <calcite-option value="2">2 - Every two months</calcite-option>
-          <calcite-option value="3">3 - Every three months</calcite-option>
-          <calcite-option value="4">4 - Every four months</calcite-option>
-          <calcite-option value="5">5 - Every five months</calcite-option>
-          <calcite-option value="6">6 - Every six months</calcite-option>
+          <calcite-option value="1" label="Every month">1 - Every month</calcite-option>
+          <calcite-option value="2" label="Every 2 months">2 - Every two months</calcite-option>
+          <calcite-option value="3" label="Every 3 months">3 - Every three months</calcite-option>
+          <calcite-option value="4" label="Every 4 months">4 - Every four months</calcite-option>
+          <calcite-option value="5" label="Every 5 months">5 - Every five months</calcite-option>
+          <calcite-option value="6" label="Every 6 months">6 - Every six months</calcite-option>
         </calcite-select>
-        <calcite-input-message {% if not form.repeat_interval_month.errors %}hidden{% endif %}
-                               icon="exclamation-mark-triangle-f" status="invalid">
-          {{ form.repeat_interval_month.errors|join:" " }}
-        </calcite-input-message>
       </div>
       <div class="width-50">
         <calcite-input type="number" name="{{ form.day_of_month.name }}" id="day-of-month" min="1" max="31"
                        value="{{ form.day_of_month.value }}" label-text="Day of Month" required
-                       {% if form.day_of_month.errors %}status="invalid"{% endif %}>
+                       number-button-type="vertical" label="Day of Month"
+                       status="{% if form.day_of_month.errors %}invalid{% else %}idle{% endif %}"
+                       validation-message="{{ form.day_of_month.errors|join:' ' }}"
+                       validation-icon="{% if form.day_of_month.errors %}exclamation-mark-triangle{% endif %}">
           <calcite-icon slot="label-content" id="day-of-month-tooltip" icon="information" scale="s"></calcite-icon>
         </calcite-input>
-        <calcite-input-message {% if not form.day_of_month.errors %}hidden{% endif %}
-                               icon="exclamation-mark-triangle-f" status="invalid">
-          {{ form.day_of_month.errors|join:" " }}
-        </calcite-input-message>
       </div>
     </div>
     <div id="time-container">
       <calcite-input-time-picker value="{{ form.time_month.value }}" name="time_month"
-                                 id="time-month" label-text="Time" required>
+                                 id="time-month" label-text="Time" required label="Time"
+                                 status="{% if form.time_month.errors %}invalid{% else %}idle{% endif %}"
+                                 validation-message="{{ form.time_month.errors|join:' ' }}"
+                                 validation-icon="{% if form.time_month.errors %}exclamation-mark-triangle{% endif %}">
         <calcite-icon slot="label-content" id="time-month-tooltip" icon="information" scale="s"></calcite-icon>
       </calcite-input-time-picker>
-      <calcite-input-message {% if not form.time_month.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                             status="invalid">
-        {{ form.time_month.errors|join:" " }}
-      </calcite-input-message>
     </div>
   </div>
-  <div class="flex-container">
-    <div class="col-50">
-      <calcite-select name="ending_on" id="ending-on" value="{{ form.ending_on.value }}" label-text="End On" required>
+
+  <div class="flex-container flex-column-gap-1">
+    <div class="width-50">
+      <calcite-select name="ending_on" id="ending-on" value="{{ form.ending_on.value }}" label-text="End On" required
+                      status="{% if form.ending_on.errors %}invalid{% else %}idle{% endif %}"
+                      validation-message="{{ form.ending_on.errors|join:' ' }}"
+                      validation-icon="{% if form.ending_on.errors %}exclamation-mark-triangle{% endif %}"
+                      label="End On">
         <calcite-icon slot="label-content" id="ending-on-tooltip" icon="information" scale="s"></calcite-icon>
-        <calcite-option value="never">Never</calcite-option>
-        <calcite-option value="date">Date</calcite-option>
-        {#        <calcite-option value="count">Count</calcite-option>#}
+        <calcite-option value="never" label="Never end">Never</calcite-option>
+        <calcite-option value="date" label="End on specific date">Date</calcite-option>
       </calcite-select>
-      <calcite-input-message {% if not form.ending_on.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                             status="invalid">
-        {{ form.ending_on.errors|join:" " }}
-      </calcite-input-message>
     </div>
-    <div id="end-date-container" class="col-50" hidden>
+    <div id="end-date-container" class="width-50" hidden>
       <calcite-input-date-picker type="date" name="ending_on_date" id="ending-on-date"
                                  {% if form.ending_on_date.value is None %}value=""
                                  {% else %}value="{{ form.ending_on_date.value }}"{% endif %}
-                                 label-text="End Date" required>
+                                 label-text="End Date" required
+                                 min="{% now "Y-m-d" %}" label="End Date"
+                                 status="{% if form.ending_on_date.errors %}invalid{% else %}idle{% endif %}"
+                                 validation-message="{{ form.ending_on_date.errors|join:' ' }}"
+                                 validation-icon="{% if form.ending_on_date.errors %}exclamation-mark-triangle{% endif %}">
         <calcite-icon slot="label-content" id="ending-on-date-tooltip" icon="information" scale="s"></calcite-icon>
       </calcite-input-date-picker>
-      <calcite-input-message {% if not form.ending_on_date.errors %}hidden{% endif %}
-                             icon="exclamation-mark-triangle-f"
-                             status="invalid">
-        {{ form.ending_on_date.errors|join:" " }}
-      </calcite-input-message>
     </div>
-
-
-    {#    <calcite-label id="end-count-container" hidden class="col-50 margin-left-1">#}
-    {#      End Count#}
-    {#      <calcite-input type="number" name="ending_on_count" min="1"#}
-    {#                     value="{{ form.ending_on_count.value }}"></calcite-input>#}
-    {#      <calcite-input-message {% if not form.ending_on_count.errors %}hidden{% endif %}#}
-    {#                             icon="exclamation-mark-triangle-f"#}
-    {#                             status="invalid">#}
-    {#        {{ form.ending_on_count.errors|join:" " }}#}
-    {#      </calcite-input-message>#}
-    {#    </calcite-label>#}
   </div>
 
-  <calcite-combobox placeholder="Select items" id="{{ form.items.name }}" name="{{ form.items.name }}"
-                    value="" label-text="Items" required>
-  <calcite-icon slot="label-content" id="items-tooltip" icon="information" scale="s"></calcite-icon>
-    <calcite-combobox-item icon="map" value="webmaps" heading="Maps"
-      {% if 'webmaps' in form.items.value %} selected {% endif %}></calcite-combobox-item>
+  <calcite-combobox placeholder="Select items to refresh" id="{{ form.items.name }}" name="{{ form.items.name }}"
+                    selection-mode="multiple" label-text="Items" required label="Items"
+                    status="{% if form.items.errors %}invalid{% else %}idle{% endif %}"
+                    validation-message="{{ form.items.errors|join:' ' }}"
+                    validation-icon="{% if form.items.errors %}exclamation-mark-triangle{% endif %}">
+    <calcite-icon slot="label-content" id="items-tooltip" icon="information" scale="s"></calcite-icon>
+    <calcite-combobox-item icon="map" value="webmaps" text-label="Maps"
+      {% if 'webmaps' in form.items.value %}selected{% endif %}></calcite-combobox-item>
     <calcite-combobox-item icon="layer-map-service" value="services"
-                           heading="Services/Layers"{% if 'services' in form.items.value %}
-                           selected {% endif %}></calcite-combobox-item>
-    <calcite-combobox-item icon="browser" value="webapps" heading="Apps"
-      {% if 'webapps' in form.items.value %} selected {% endif %}></calcite-combobox-item>
-    <calcite-combobox-item icon="users" value="users" heading="Users"
-      {% if 'users' in form.items.value %} selected {% endif %}></calcite-combobox-item>
+                           text-label="Services/Layers"{% if 'services' in form.items.value %}
+                           selected{% endif %}></calcite-combobox-item>
+    <calcite-combobox-item icon="browser" value="webapps" text-label="Apps"
+      {% if 'webapps' in form.items.value %}selected{% endif %}></calcite-combobox-item>
+    <calcite-combobox-item icon="users" value="users" text-label="Users"
+      {% if 'users' in form.items.value %}selected{% endif %}></calcite-combobox-item>
   </calcite-combobox>
-  <calcite-input-message {% if not form.items.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                         status="invalid">
-    {{ form.items.errors|join:" " }}
-  </calcite-input-message>
+
+  {% if form.non_field_errors %}
+  <calcite-notice open status="danger" icon>
+    <div slot="message">{{ form.non_field_errors|join:" " }}</div>
+  </calcite-notice>
+  {% endif %}
 </form>
 
-<calcite-tooltip reference-element="beginning-on-tooltip">
-  <span>The date when the schedule should start</span>
+<calcite-tooltip reference-element="beginning-on-tooltip" close-on-click placement="bottom-start">
+  <span>The date when the schedule should start (cannot be in the past)</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="repeat-type-tooltip">
+<calcite-tooltip reference-element="repeat-type-tooltip" close-on-click placement="bottom-start">
   <span>Select the frequency unit for the schedule (minute, hour, day, week, or month)</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="repeat-interval-minute-tooltip">
+<calcite-tooltip reference-element="repeat-interval-minute-tooltip" close-on-click placement="bottom-start">
   <span>How often the schedule runs within the selected minute interval</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="repeat-interval-hour-tooltip">
+<calcite-tooltip reference-element="repeat-interval-hour-tooltip" close-on-click placement="bottom-start">
   <span>How often the schedule runs within the selected hour interval</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="on-minute-tooltip">
+<calcite-tooltip reference-element="on-minute-tooltip" close-on-click placement="bottom-start">
   <span>The minute of the hour when the schedule should run</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="repeat-interval-day-tooltip">
+<calcite-tooltip reference-element="repeat-interval-day-tooltip" close-on-click placement="bottom-start">
   <span>How often the schedule runs within the selected day interval</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="time-day-tooltip">
+<calcite-tooltip reference-element="time-day-tooltip" close-on-click placement="bottom-start">
   <span>The time of day when the schedule should run</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="time-week-tooltip">
+<calcite-tooltip reference-element="time-week-tooltip" close-on-click placement="bottom-start">
   <span>The time when the schedule should run on selected days</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="repeat-interval-month-tooltip">
+<calcite-tooltip reference-element="repeat-interval-month-tooltip" close-on-click placement="bottom-start">
   <span>How often the schedule runs within the selected month interval</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="day-of-month-tooltip">
-  <span>The day of the month when the schedule should run (1-31)</span>
+<calcite-tooltip reference-element="day-of-month-tooltip" close-on-click placement="bottom-start">
+  <span>The day of the month when the schedule should run (1-31). Note: Months with fewer days will use the last day of that month.</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="time-month-tooltip">
+<calcite-tooltip reference-element="time-month-tooltip" close-on-click placement="bottom-start">
   <span>The time when the schedule should run on the selected day of the month</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="ending-on-tooltip">
-  <span>Choose when the schedule should stop running</span>
+<calcite-tooltip reference-element="ending-on-tooltip" close-on-click placement="bottom-start">
+  <span>Choose when the schedule should stop running (never or on a specific date)</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="ending-on-date-tooltip">
-  <span>The date when the schedule should stop running</span>
+<calcite-tooltip reference-element="ending-on-date-tooltip" close-on-click placement="bottom-start">
+  <span>The date when the schedule should stop running (cannot be before the start date)</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="items-tooltip">
-  <span>Choose which items will be refreshed</span>
+<calcite-tooltip reference-element="items-tooltip" close-on-click placement="bottom-start">
+  <span>Select which portal items will be refreshed on this schedule (can select multiple)</span>
 </calcite-tooltip>
+
+<style>
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+</style>

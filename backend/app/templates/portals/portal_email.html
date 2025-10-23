@@ -6,14 +6,31 @@
     {% include "partials/portal_email_form.html" %}
   </div>
 
-  <calcite-button id="email-portal-delete" slot="footer-start" appearance="solid" kind="danger" icon-start="trash"
+{#  <calcite-button id="email-portal-delete" slot="footer-start" appearance="solid"#}
+{#                  kind="danger" icon-start="trash"#}
+{#                  {% if not description %}disabled{% endif %}#}
+{#                  hx-delete="{% url 'enterpriseviz:email_settings' %}"#}
+{#                  hx-target="#email-site-form" hx-include="#email-site-form"#}
+{#                  label="Delete existing configuration">#}
+{#    Delete#}
+{#  </calcite-button>#}
+  <calcite-button id="email-portal-delete" slot="footer-start" appearance="solid" kind="danger"
+                  icon-start="trash"
                   {% if not description %}disabled{% endif %}
-                  hx-delete="{% url 'enterpriseviz:email_settings' %}"
-                  hx-target="#email-site-form" hx-include="#email-site-form">
+                  data-confirm-delete
+                  data-delete-url="{% url 'enterpriseviz:email_settings' %}"
+                  data-delete-method="DELETE"
+                  data-delete-target="#email-form-container"
+                  data-delete-message="Are you sure you want to delete this schedule?"
+                  data-delete-details="The scheduled updates will stop running."
+                  data-delete-button="Delete Schedule"
+                  label="Delete schedule permanently">
     Delete
   </calcite-button>
 
-  <calcite-button id="email-portal-cancel" data-action="close-modal" slot="footer-end" appearance="outline" icon-start="circle-disallowed">
+  <calcite-button id="email-portal-cancel" data-action="close-modal" slot="footer-end"
+                  appearance="outline" icon-start="circle-disallowed"
+                  label="Cancel without saving changes">
     Cancel
   </calcite-button>
 
@@ -21,7 +38,7 @@
                   hx-post="{% url 'enterpriseviz:email_settings' %}"
                   hx-target="#email-site-form" hx-swap="innerHTML"
                   hx-include="#email-site-form" hx-vals='{"action": "save"}'
-                  icon-start="save">
+                  icon-start="save" label="Save email configuration">">
     Register
   </calcite-button>
 

@@ -22,14 +22,14 @@
 {% block content %}
   <div class="clearfix"></div>
   {% if not instance %}
-    <calcite-notice open icon="question" closable auto-close kind="info">
+    <calcite-notice open icon closable auto-close kind="info">
       <div slot="title">This page displays items from all added Portals</div>
       <div slot="message">Visit a specific Portal instance on the left to view additional details.</div>
     </calcite-notice>
   {% endif %}
   <div class="clearfix"></div>
   {% if instance %}
-    <calcite-notice open icon="question" closable auto-close kind="info">
+    <calcite-notice open icon closable auto-close kind="info">
       <div slot="title">This page displays items from the selected Portal instance</div>
       <div slot="message">Clicking "Details" button will display dependencies of that item</div>
     </calcite-notice>
@@ -91,7 +91,8 @@
                               hx-swap="show:window:top"
                               {% else %}
                               hx-target="#credentials-input"
-                              {% endif %}>
+                              {% endif %}
+                              label="Get Portal Duplicates">
                 Find duplicate items
 
               </calcite-button>
@@ -109,7 +110,8 @@
                               hx-swap="show:window:top"
                               {% else %}
                               hx-target="#credentials-input"
-                              {% endif %}>
+                              {% endif %}
+                              label="Get Metadata Report">
                 Metadata report
               </calcite-button>
               <calcite-tooltip reference-element="metadata" placement="bottom">
@@ -121,10 +123,10 @@
                     hx-push-url="false">
                 {% csrf_token %}
                 {{ form.as_p }}
-                <calcite-input type="text" id="layerId_input" name="layerId_input" placeholder="Layer by ID" scale="s"
+                <calcite-input type="text" id="layerId_input" name="layerId_input" placeholder="Input full service URL with layer ID" scale="s"
                                width="s" autocomplete="off" label="LayerId input">
                   <calcite-button icon-start="search" slot="action" scale="s" kind="inverse" width="auto"
-                                  type="submit" name="ID" value="ID" form="layerId">
+                                  type="submit" name="ID" value="ID" form="layerId" label="Search by ID">
                     Search by Specific URL
                   </calcite-button>
                 </calcite-input>
@@ -151,16 +153,22 @@
             <calcite-icon icon="map" preload="true" scale="s"></calcite-icon>
             <div class="icon_space">{% if instance %}{{ instance }}{% else %}All{% endif %} Web Maps</div>
           </h2>
-          <ul class="nav navbar-right panel_toolbox">
-            <li><a class="collapse-link">
-              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-            </a>
-            </li>
-            <li><a class="close-link">
-              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-            </a>
-            </li>
-          </ul>
+          <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="collapse-link"
+                                icon-start="chevron-up"
+                                label="Collapse panel">
+                </calcite-button>
+              </li>
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="close-link"
+                                icon-start="x"
+                                label="Close panel">
+                </calcite-button>
+              </li>
+            </ul>
           <div class="clearfix"></div>
         </div>
         <div class="x_content">
@@ -176,20 +184,26 @@
                                 hx-post="{% url 'enterpriseviz:refresh_portal' %}"
                                 hx-vals='{"instance": "{{ instance }}", "items": "webmaps"}'
                                 hx-target="previous #progress-container"
-                                hx-swap="innerHTML">Refresh
+                                hx-swap="innerHTML" label="Refresh web maps">Refresh
                 </calcite-button>
               {% endif %}
             {% endif %}
           </div>
           <div class="clearfix"></div>
           <div class="height-6px"></div>
-          <calcite-button download scale="s" kind="inverse" icon-start="file-csv" {% if instance %}href="
-              {% url 'enterpriseviz:table' instance=instance name='webmap' %}{% export_url 'csv' %}"{% else %}
-                          href="{% url 'enterpriseviz:table' name='webmap' %}{% export_url 'csv' %}"{% endif %}>CSV
+          <calcite-button download scale="s" kind="inverse" icon-start="file-csv"
+                          {% if instance %}href="{% url 'enterpriseviz:table' instance=instance name='webmap' %}{% export_url 'csv' %}"
+                          {% else %}
+                          href="{% url 'enterpriseviz:table' name='webmap' %}{% export_url 'csv' %}"
+                          {% endif %}
+                          label="Download web maps as CSV">CSV
           </calcite-button>
-          <calcite-button download scale="s" kind="inverse" icon-start="file-excel" {% if instance %}href="
-              {% url 'enterpriseviz:table' instance=instance name='webmap' %}{% export_url 'xlsx' %}"{% else %}
-                          href="{% url 'enterpriseviz:table' name='webmap' %}{% export_url 'xlsx' %}"{% endif %}>Excel
+          <calcite-button download scale="s" kind="inverse" icon-start="file-excel"
+                          {% if instance %}href="{% url 'enterpriseviz:table' instance=instance name='webmap' %}{% export_url 'xlsx' %}"
+                          {% else %}
+                          href="{% url 'enterpriseviz:table' name='webmap' %}{% export_url 'xlsx' %}"
+                          {% endif %}
+                          label="Download web maps as Excel">Excel
           </calcite-button>
 
           <div id="datatable-webmap_filter" class="table_filter">
@@ -199,7 +213,7 @@
                            hx-trigger="keyup delay:500ms changed, search"
                            hx-target="#webmap-table"
                            hx-swap="innerHTML"
-                           hx-indicator="#webmap-table-progress" autocomplete="off"></calcite-input>
+                           hx-indicator="#webmap-table-progress" autocomplete="off" label="Search web maps"></calcite-input>
           </div>
           <div id="webmap-table-progress" class="progress">
             <div class="indeterminate"></div>
@@ -229,16 +243,22 @@
             <calcite-icon icon="layer-map-service" preload="true" scale="s"></calcite-icon>
             <div class="icon_space">{% if instance %}{{ instance }}{% else %}All{% endif %} Services</div>
           </h2>
-          <ul class="nav navbar-right panel_toolbox">
-            <li><a class="collapse-link">
-              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-            </a>
-            </li>
-            <li><a class="close-link">
-              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-            </a>
-            </li>
-          </ul>
+          <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="collapse-link"
+                                icon-start="chevron-up"
+                                label="Collapse panel">
+                </calcite-button>
+              </li>
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="close-link"
+                                icon-start="x"
+                                label="Close panel">
+                </calcite-button>
+              </li>
+            </ul>
           <div class="clearfix"></div>
         </div>
         <div class="x_content">
@@ -252,19 +272,25 @@
                               hx-post="{% url 'enterpriseviz:refresh_portal' %}"
                               hx-vals='{"instance": "{{ instance }}", "items": "services"}'
                               hx-target="previous #progress-container"
-                              hx-swap="innerHTML">Refresh
+                              hx-swap="innerHTML" label="Refresh services">Refresh
               </calcite-button>
             {% endif %}
           {% endif %}
           <div class="clearfix"></div>
           <div class="height-6px"></div>
-          <calcite-button scale="s" kind="inverse" icon-start="file-csv" {% if instance %}href="
-              {% url 'enterpriseviz:table' instance=instance name='service' %}{% export_url 'csv' %}"{% else %}
-                          href="{% url 'enterpriseviz:table' name='service' %}{% export_url 'csv' %}"{% endif %}>CSV
+          <calcite-button scale="s" kind="inverse" icon-start="file-csv"
+                          {% if instance %}href="{% url 'enterpriseviz:table' instance=instance name='service' %}{% export_url 'csv' %}"
+                          {% else %}
+                          href="{% url 'enterpriseviz:table' name='service' %}{% export_url 'csv' %}"
+                          {% endif %}
+                          label="Download services as CSV">CSV
           </calcite-button>
-          <calcite-button scale="s" kind="inverse" icon-start="file-excel" {% if instance %}href="
-              {% url 'enterpriseviz:table' instance=instance name='service' %}{% export_url 'xlsx' %}"{% else %}
-                          href="{% url 'enterpriseviz:table' name='service' %}{% export_url 'xlsx' %}"{% endif %}>Excel
+          <calcite-button scale="s" kind="inverse" icon-start="file-excel"
+                          {% if instance %}href="{% url 'enterpriseviz:table' instance=instance name='service' %}{% export_url 'xlsx' %}"
+                          {% else %}
+                          href="{% url 'enterpriseviz:table' name='service' %}{% export_url 'xlsx' %}"
+                          {% endif %}
+                          label="Download services as Excel">Excel
           </calcite-button>
           <div id="datatable-service_filter" class="table_filter">
             <calcite-input prefix-text="Search" status="idle" scale="s" name="search"
@@ -273,7 +299,7 @@
                            hx-trigger="keyup delay:500ms changed, search"
                            hx-target="#service-table"
                            hx-swap="innerHTML"
-                           hx-indicator="#service-table-progress"></calcite-input>
+                           hx-indicator="#service-table-progress" label="Search services"></calcite-input>
           </div>
           <div id="service-table-progress" class="progress">
             <div class="indeterminate"></div>
@@ -298,16 +324,22 @@
             <calcite-icon icon="layers" preload="true" scale="s"></calcite-icon>
             <div class="icon_space">{% if instance %}{{ instance }}{% else %}All{% endif %} Layers</div>
           </h2>
-          <ul class="nav navbar-right panel_toolbox">
-            <li><a class="collapse-link">
-              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-            </a>
-            </li>
-            <li><a class="close-link">
-              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-            </a>
-            </li>
-          </ul>
+          <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="collapse-link"
+                                icon-start="chevron-up"
+                                label="Collapse panel">
+                </calcite-button>
+              </li>
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="close-link"
+                                icon-start="x"
+                                label="Close panel">
+                </calcite-button>
+              </li>
+            </ul>
           <div class="clearfix"></div>
         </div>
         <div class="x_content">
@@ -317,13 +349,19 @@
           </p>
           <div class="clearfix"></div>
           <div class="height-6px"></div>
-          <calcite-button scale="s" kind="inverse" icon-start="file-csv" {% if instance %}href="
-              {% url 'enterpriseviz:table' instance=instance name='layer' %}{% export_url 'csv' %}"{% else %}
-                          href="{% url 'enterpriseviz:table' name='layer' %}{% export_url 'csv' %}"{% endif %}>CSV
+          <calcite-button scale="s" kind="inverse" icon-start="file-csv"
+                          {% if instance %}href="{% url 'enterpriseviz:table' instance=instance name='layer' %}{% export_url 'csv' %}"
+                          {% else %}
+                          href="{% url 'enterpriseviz:table' name='layer' %}{% export_url 'csv' %}"
+                          {% endif %}
+                          label="Download layers as CSV">CSV
           </calcite-button>
-          <calcite-button scale="s" kind="inverse" icon-start="file-excel" {% if instance %}href="
-              {% url 'enterpriseviz:table' instance=instance name='layer' %}{% export_url 'xlsx' %}"{% else %}
-                          href="{% url 'enterpriseviz:table' name='layer' %}{% export_url 'xlsx' %}"{% endif %}>Excel
+          <calcite-button scale="s" kind="inverse" icon-start="file-excel"
+                          {% if instance %}href="{% url 'enterpriseviz:table' instance=instance name='layer' %}{% export_url 'xlsx' %}"
+                          {% else %}
+                          href="{% url 'enterpriseviz:table' name='layer' %}{% export_url 'xlsx' %}"
+                          {% endif %}
+                          label="Download layers as Excel">Excel
           </calcite-button>
 
           <div id="datatable-layer_filter" class="table_filter">
@@ -333,7 +371,7 @@
                            hx-trigger="keyup delay:500ms changed, search"
                            hx-target="#layer-table"
                            hx-swap="innerHTML"
-                           hx-indicator="#layer-table-progress" autocomplete="off"></calcite-input>
+                           hx-indicator="#layer-table-progress" autocomplete="off" label="Search layers"></calcite-input>
           </div>
           <div id="layer-table-progress" class="progress">
             <div class="indeterminate"></div>
@@ -365,16 +403,22 @@
             <div class="icon_space">{% if instance %}{{ instance }}{% else %}All{% endif %} Apps<small>
               Dashboard, ExB, Form, StoryMap, WAB</small></div>
           </h2>
-          <ul class="nav navbar-right panel_toolbox">
-            <li><a class="collapse-link">
-              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-            </a>
-            </li>
-            <li><a class="close-link">
-              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-            </a>
-            </li>
-          </ul>
+          <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="collapse-link"
+                                icon-start="chevron-up"
+                                label="Collapse panel">
+                </calcite-button>
+              </li>
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="close-link"
+                                icon-start="x"
+                                label="Close panel">
+                </calcite-button>
+              </li>
+            </ul>
           <div class="clearfix"></div>
         </div>
         <div class="x_content">
@@ -388,19 +432,25 @@
                               hx-post="{% url 'enterpriseviz:refresh_portal' %}"
                               hx-vals='{"instance": "{{ instance }}", "items": "webapps"}'
                               hx-target="previous #progress-container"
-                              hx-swap="innerHTML">Refresh
+                              hx-swap="innerHTML" label="Refresh applications">Refresh
               </calcite-button>
             {% endif %}
           {% endif %}
           <div class="clearfix"></div>
           <div class="height-6px"></div>
-          <calcite-button scale="s" kind="inverse" icon-start="file-csv" {% if instance %}href="
-              {% url 'enterpriseviz:table' instance=instance name='app' %}{% export_url 'csv' %}"{% else %}
-                          href="{% url 'enterpriseviz:table' name='app' %}{% export_url 'csv' %}"{% endif %}>CSV
+          <calcite-button scale="s" kind="inverse" icon-start="file-csv"
+                          {% if instance %}href="{% url 'enterpriseviz:table' instance=instance name='app' %}{% export_url 'csv' %}"
+                          {% else %}
+                          href="{% url 'enterpriseviz:table' name='app' %}{% export_url 'csv' %}"
+                          {% endif %}
+                          label="Download apps as CSV">CSV
           </calcite-button>
-          <calcite-button scale="s" kind="inverse" icon-start="file-excel" {% if instance %}href="
-              {% url 'enterpriseviz:table' instance=instance name='app' %}{% export_url 'xlsx' %}"{% else %}
-                          href="{% url 'enterpriseviz:table' name='app' %}{% export_url 'xlsx' %}"{% endif %}>Excel
+          <calcite-button scale="s" kind="inverse" icon-start="file-excel"
+                          {% if instance %}href="{% url 'enterpriseviz:table' instance=instance name='app' %}{% export_url 'xlsx' %}"
+                          {% else %}
+                          href="{% url 'enterpriseviz:table' name='app' %}{% export_url 'xlsx' %}"
+                          {% endif %}
+                          label="Download apps as Excel">Excel
           </calcite-button>
 
           <div id="datatable-app_filter" class="table_filter">
@@ -410,7 +460,7 @@
                            hx-trigger="keyup delay:500ms changed, search"
                            hx-target="#app-table"
                            hx-swap="innerHTML"
-                           hx-indicator="#app-table-progress" autocomplete="off"></calcite-input>
+                           hx-indicator="#app-table-progress" autocomplete="off" label="Search apps"></calcite-input>
           </div>
           <div id="app-table-progress" class="progress">
             <div class="indeterminate"></div>
@@ -440,17 +490,22 @@
             <calcite-icon icon="users" preload="true" scale="s"></calcite-icon>
             <div class="icon_space">{% if instance %}{{ instance }}{% else %}All{% endif %} Users</div>
           </h2>
-          </span>
-          <ul class="nav navbar-right panel_toolbox">
-            <li><a class="collapse-link">
-              <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-            </a>
-            </li>
-            <li><a class="close-link">
-              <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-            </a>
-            </li>
-          </ul>
+          <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="collapse-link"
+                                icon-start="chevron-up"
+                                label="Collapse panel">
+                </calcite-button>
+              </li>
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="close-link"
+                                icon-start="x"
+                                label="Close panel">
+                </calcite-button>
+              </li>
+            </ul>
           <div class="clearfix"></div>
         </div>
         <div class="x_content">
@@ -464,19 +519,25 @@
                               hx-post="{% url 'enterpriseviz:refresh_portal' %}"
                               hx-vals='{"instance": "{{ instance }}", "items": "users"}'
                               hx-target="previous #progress-container"
-                              hx-swap="innerHTML">Refresh
+                              hx-swap="innerHTML" label="Refresh users">Refresh
               </calcite-button>
             {% endif %}
           {% endif %}
           <div class="clearfix"></div>
           <div class="height-6px"></div>
-          <calcite-button scale="s" kind="inverse" icon-start="file-csv" {% if instance %}href="
-              {% url 'enterpriseviz:table' instance=instance name='user' %}{% export_url 'csv' %}"{% else %}
-                          href="{% url 'enterpriseviz:table' name='user' %}{% export_url 'csv' %}"{% endif %}>CSV
+          <calcite-button scale="s" kind="inverse" icon-start="file-csv"
+                          {% if instance %}href="{% url 'enterpriseviz:table' instance=instance name='user' %}{% export_url 'csv' %}"
+                          {% else %}
+                          href="{% url 'enterpriseviz:table' name='user' %}{% export_url 'csv' %}"
+                          {% endif %}
+                          label="Download users as CSV">CSV
           </calcite-button>
-          <calcite-button scale="s" kind="inverse" icon-start="file-excel" {% if instance %}href="
-              {% url 'enterpriseviz:table' instance=instance name='user' %}{% export_url 'xlsx' %}"{% else %}
-                          href="{% url 'enterpriseviz:table' name='user' %}{% export_url 'xlsx' %}"{% endif %}>Excel
+          <calcite-button scale="s" kind="inverse" icon-start="file-excel"
+                          {% if instance %}href="{% url 'enterpriseviz:table' instance=instance name='user' %}{% export_url 'xlsx' %}"
+                          {% else %}
+                          href="{% url 'enterpriseviz:table' name='user' %}{% export_url 'xlsx' %}"
+                          {% endif %}
+                          label="Download users as Excel">Excel
           </calcite-button>
 
           <div id="datatable-users_filter" class="table_filter">
@@ -486,7 +547,7 @@
                            hx-trigger="keyup delay:500ms changed, search"
                            hx-target="#user-table"
                            hx-swap="innerHTML"
-                           hx-indicator="#user-table-progress" autocomplete="off"></calcite-input>
+                           hx-indicator="#user-table-progress" autocomplete="off" label="Seach users"></calcite-input>
           </div>
           <div id="user-table-progress" class="progress">
             <div class="indeterminate"></div>

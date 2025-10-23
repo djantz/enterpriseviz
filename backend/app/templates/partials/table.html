@@ -51,7 +51,7 @@
 
 
 {% block pagination %}
-  {% if table.page and table.paginator.num_pages > 1 %} {# Show pagination only if needed #}
+  {% if table.page and table.paginator.num_pages > 0 %} {# Show pagination only if needed #}
     <div class="table-pagination-controls row"> {# Class for styling pagination area #}
       <div class="col-6 align-start">
         Showing {{ table.page.start_index }} to {{ table.page.end_index }} of {{ table.paginator.count }} records
