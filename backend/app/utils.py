@@ -896,10 +896,7 @@ def get_duplicates(portal_model_instance, similarity_threshold=70):
 
             similarity = fuzz.token_sort_ratio(name1.lower(), name2.lower())
             if similarity >= score_threshold:
-                item1_disp = {"id": item1.pk, "title": name1,
-                              "url": getattr(item1, 'url_field_name', '#')}
-                item2_disp = {"id": item2.pk, "title": name2, "url": getattr(item2, 'url_field_name', '#')}
-                duplicates_found.append((item1_disp, item2_disp, similarity))
+                duplicates_found.append((item1, item2, similarity))
         return sorted(duplicates_found, key=lambda x: x[2], reverse=True)
 
     try:

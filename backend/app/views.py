@@ -399,10 +399,10 @@ def portal_service_view(request, instance=None, url=None):
 
         if hasattr(request.user, "profile") and getattr(request.user.profile, "service_usage", False):
             logger.debug(f"Fetching usage report for service {details.get('item')}")
-            item_for_usage = details.get("item")
-            if item_for_usage:
-                usage_input = [item_for_usage] if not isinstance(item_for_usage, list) else item_for_usage
-                usage = utils.get_usage_report(usage_input)
+            item = details.get("item")
+            service_item = Service.objects.filter(service_name=item)
+            if service_item:
+                usage = utils.get_usage_report(service_item)
                 if "error" in usage:
                     logger.warning(f"Error in usage report: {usage['error']}")
                 else:
@@ -1641,8 +1641,8 @@ def webhook_view(request):
 
 
 VALID_LOG_LEVELS = {
-    "DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING,
-    "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL,
+    "CRITICAL": logging.CRITICAL, "ERROR": logging.ERROR, "WARNING": logging.WARNING,
+    "INFO": logging.INFO, "DEBUG": logging.DEBUG
 }
 LOG_LEVEL_NAMES = list(VALID_LOG_LEVELS.keys())
 
