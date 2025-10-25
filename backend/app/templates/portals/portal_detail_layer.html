@@ -168,7 +168,7 @@
               <div class="datatables-filter" id="datatable-services-filter"></div>
             </div>
             <table id="datatable-services" class="table table-striped wrap"
-                   width="100%" aria-label="Services using this layer">
+                   width="100%" aria-label="Services using this layer" hx-boost="true">
               <thead>
               <tr>
                 <th scope="col" class="details">Details</th>
@@ -187,7 +187,7 @@
                   <td>
                     <calcite-button {% if service.portal_instance.alias is None %}
                       disabled {% endif %} scale="s" kind="inverse"
-                      hx-get="/enterpriseviz/portal/{{ service.portal_instance.alias }}/service/{{ service.service_name|urlencode:'' }}"
+                      href="/enterpriseviz/portal/{{ service.portal_instance.alias }}/service/{{ service.service_name|urlencode:'' }}"
                       hx-target="#mainbodycontent"
                       hx-push-url="/enterpriseviz/portal/{{ service.portal_instance.alias }}/service/{{ service.service_name|urlencode:'' }}"
                       hx-swap="show:window:top"
@@ -285,7 +285,7 @@
               <div class="datatables-filter" id="datatable-maps-filter"></div>
             </div>
             <table id="datatable-maps" class="table table-striped wrap" width="100%"
-                   aria-label="Web maps using this layer">
+                   aria-label="Web maps using this layer" hx-boost="true">
               <thead>
               <tr>
                 <th scope="col" class="details">Details</th>
@@ -305,7 +305,7 @@
                   <td>
                     <calcite-button {% if map.portal_instance.alias is None %}
                       disabled {% endif %} scale="s" kind="inverse"
-                      hx-get="/enterpriseviz/portal/{{ map.portal_instance.alias }}/map/{{ map.webmap_id }}"
+                      href="/enterpriseviz/portal/{{ map.portal_instance.alias }}/map/{{ map.webmap_id }}"
                       hx-target="#mainbodycontent"
                       hx-push-url="/enterpriseviz/portal/{{ map.portal_instance.alias }}/map/{{ map.webmap_id }}"
                       hx-swap="show:window:top"

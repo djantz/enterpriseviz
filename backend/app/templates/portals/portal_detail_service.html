@@ -163,7 +163,7 @@
               <div class="datatables-filter" id="datatable-maps-filter"></div>
             </div>
             <table id="datatable-maps" class="table table-striped wrap" width="100%"
-                   aria-label="Web Maps using this service">
+                   aria-label="Web Maps using this service" hx-boost="true">
               <thead>
               <tr>
                 <th scope="col" class="details">Details</th>
@@ -183,7 +183,7 @@
                   <td>
                     <calcite-button
                       scale="s" kind="inverse"
-                      hx-get="/enterpriseviz/portal/{{ map.portal_instance.alias }}/map/{{ map.webmap_id }}"
+                      href="/enterpriseviz/portal/{{ map.portal_instance.alias }}/map/{{ map.webmap_id }}"
                       hx-target="#mainbodycontent"
                       hx-push-url="/enterpriseviz/portal/{{ map.portal_instance.alias }}/map/{{ map.webmap_id }}"
                       hx-swap="show:window:top"

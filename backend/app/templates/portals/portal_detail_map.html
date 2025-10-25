@@ -154,7 +154,7 @@
               <div class="datatables-filter" id="datatable-services-filter"></div>
             </div>
             <table id="datatable-services" class="table table-striped wrap" width="100%"
-                   aria-label="Services used in this webmap">
+                   aria-label="Services used in this webmap" hx-boost="true">
               <thead>
               <tr>
                 <th scope="col" class="details">Details</th>
@@ -174,7 +174,7 @@
                   <td>
                     <calcite-button {% if service.portal_instance.alias is None %}
                       disabled {% endif %} scale="s" kind="inverse"
-                      hx-get="/enterpriseviz/portal/{{ service.portal_instance.alias }}/service/{{ service.service_name|urlencode:'' }}"
+                      href="/enterpriseviz/portal/{{ service.portal_instance.alias }}/service/{{ service.service_name|urlencode:'' }}"
                       hx-target="#mainbodycontent"
                       hx-swap="innerHTML show:window:top"
                       hx-push-url="/enterpriseviz/portal/{{ service.portal_instance.alias }}/service/{{ service.service_name|urlencode:'' }}"
@@ -230,7 +230,7 @@
           </div>
           <div class="x_content">
             <table id="datatable-layers" class="table table-striped wrap" width="100%"
-                   aria-label="Layers in this webmap">
+                   aria-label="Layers in this webmap" hx-boost="true">
               <thead>
               <tr>
                 <th scope="col">Name</th>
