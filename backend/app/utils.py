@@ -663,12 +663,35 @@ def layer_details(dbserver, database, version, name):
         logger.debug(
             f"Found {services.count()} services, {maps.count()} maps, {len(apps_combined)} apps for Layer '{name}'.")
 
-        for service_item in services:
-            tree["children"].append({
-                "name": service_item.service_name, "type": "Service",
-                "url": service_item.service_url_as_list()[0] if service_item.service_url_as_list() else None,
-                "instance": service_item.portal_instance.alias if service_item.portal_instance else "N/A"
-            })
+        for service in services:
+            service_data = {
+                "name": service.service_name,
+                "url": service.service_url,
+                "instance": service.portal_instance.alias if service.portal_instance else None,
+                "children": []
+            }
+
+            for map_instance in service.maps.all():
+                map_data = {
+                    "name": map_instance.webmap_title,
+                    "url": map_instance.webmap_url,
+                    "instance": map_instance.portal_instance.alias if map_instance.portal_instance else None,
+                    "children": []
+                }
+
+                for app in map_instance.app_map_set.all():
+                    if app.app_id:
+                        app_data = {
+                            "name": app.app_id.app_title,
+                            "url": app.app_id.app_url,
+                            "instance": app.app_id.portal_instance.alias if app.app_id.portal_instance else None,
+                            "children": []
+                        }
+                        map_data["children"].append(app_data)
+
+                service_data["children"].append(map_data)
+
+            tree["children"].append(service_data)
 
         return {
             "tree": tree, "services": services, "maps": maps, "apps": apps_combined,
