@@ -29,7 +29,7 @@
           {% else %}
             <calcite-table-row>
               <calcite-table-cell col-span="2">
-                <calcite-notice open status="info" icon scale="s">
+                <calcite-notice open kind="info" icon scale="s">
                   <div slot="message">No impacted maps.</div>
                 </calcite-notice>
               </calcite-table-cell>
@@ -58,7 +58,7 @@
           {% else %}
             <calcite-table-row>
               <calcite-table-cell col-span="2">
-                <calcite-notice open status="info" icon scale="s">
+                <calcite-notice open kind="info" icon scale="s">
                   <div slot="message">No impacted apps.</div>
                 </calcite-notice>
               </calcite-table-cell>
@@ -76,14 +76,14 @@
                          placeholder="Provide additional information about the change"
                          resize="vertical">This email is to inform you about upcoming changes to the '{{ change_item_name }}' layer. Below is content you own that may be impacted by this change. For additional information, questions, or concerns, please contact your portal administrator.
       </calcite-text-area>
-      <calcite-input-message icon="information" status="info">
+      <calcite-input-message icon="information" kind="info">
         This message will be sent to the owners of all selected maps and apps.
       </calcite-input-message>
     </calcite-stepper-item>
   </calcite-stepper>
 
   {% if form.non_field_errors %}
-    <calcite-notice open status="danger" icon>
+    <calcite-notice open kind="danger" icon>
       <div slot="message">{{ form.non_field_errors|join:" " }}</div>
     </calcite-notice>
   {% endif %}

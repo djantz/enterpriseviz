@@ -49,7 +49,7 @@
                          validation-icon="{% if form.password.errors %}exclamation-mark-triangle{% endif %}"></calcite-input>
 
           {% if form.non_field_errors %}
-            <calcite-notice open icon status="danger">
+            <calcite-notice open icon kind="danger">
               <div slot="message">{{ form.non_field_errors|join:" " }}</div>
             </calcite-notice>
           {% endif %}

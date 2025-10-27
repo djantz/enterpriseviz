@@ -15,7 +15,7 @@
     </calcite-button>
   </calcite-input>
 
-  <calcite-notice open status="info" icon>
+  <calcite-notice open kind="info" icon>
     <div slot="title">Security Information</div>
     <div slot="message">
       This secret is used to validate webhook requests from ArcGIS Portal.
@@ -28,7 +28,7 @@
   </calcite-notice>
 
   {% if form.non_field_errors %}
-  <calcite-notice open status="danger" icon>
+  <calcite-notice open kind="danger" icon>
     <div slot="message">{{ form.non_field_errors|join:" " }}</div>
   </calcite-notice>
   {% endif %}

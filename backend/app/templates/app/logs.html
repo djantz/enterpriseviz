@@ -59,7 +59,7 @@
                   <input type="hidden" name="{{ field.html_name }}" id="level_hidden_input"
                          value="{{ field.value|join:','|default:'' }}" aria-hidden="true">
                   {% for error in field.errors %}
-                    <calcite-notice open status="danger" icon>
+                    <calcite-notice open kind="danger" icon>
                       <div slot="message">{{ error }}</div>
                     </calcite-notice>
                   {% endfor %}
@@ -90,7 +90,7 @@
                   <input type="hidden" name="{{ field.html_name }}" id="time_range_hidden_input"
                          value="{{ field.value|default:'' }}" aria-hidden="true">
                   {% for error in field.errors %}
-                    <calcite-notice open status="danger" icon>
+                    <calcite-notice open kind="danger" icon>
                       <div slot="message">{{ error }}</div>
                     </calcite-notice>
                   {% endfor %}
@@ -109,7 +109,7 @@
                     label="Search logs">
                   </calcite-input-text>
                   {% for error in field.errors %}
-                    <calcite-notice open status="danger" icon>
+                    <calcite-notice open kind="danger" icon>
                       <div slot="message">{{ error }}</div>
                     </calcite-notice>
                   {% endfor %}

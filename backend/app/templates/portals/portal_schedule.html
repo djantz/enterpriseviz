@@ -31,7 +31,7 @@
 
         {% if form.errors %}
         <div id="form-errors" role="alert">
-          <calcite-notice open status="danger" icon>
+          <calcite-notice open kind="danger" icon>
             <div slot="title">Form Errors</div>
             <div slot="message">
               <ul style="margin: 0; padding-left: 1.5rem;">
@@ -100,7 +100,7 @@
           {% else %}
             <calcite-table-row>
               <calcite-table-cell col-span="5">
-                <calcite-notice open icon status="info" scale="s">
+                <calcite-notice open icon kind="info" scale="s">
                   <div slot="message">No runs in the last 24 hours.</div>
                 </calcite-notice>
               </calcite-table-cell>

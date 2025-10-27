@@ -19,12 +19,12 @@
       </calcite-select>
 
       {% if form.non_field_errors %}
-      <calcite-notice open status="danger" icon>
+      <calcite-notice open kind="danger" icon>
         <div slot="message">{{ form.non_field_errors|join:" " }}</div>
       </calcite-notice>
       {% endif %}
 
-      <calcite-notice open icon status="info">
+      <calcite-notice open icon kind="info">
         <div slot="title">Log Level Information</div>
         <div slot="message">
           Changing the log level affects what information is recorded in application logs.

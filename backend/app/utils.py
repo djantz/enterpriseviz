@@ -667,6 +667,7 @@ def layer_details(dbserver, database, version, name):
             service_data = {
                 "name": service.service_name,
                 "url": service.service_url,
+                "url": service.service_url_as_list()[0] if service.service_url_as_list() else None,
                 "instance": service.portal_instance.alias if service.portal_instance else None,
                 "children": []
             }

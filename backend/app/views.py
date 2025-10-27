@@ -400,9 +400,9 @@ def portal_service_view(request, instance=None, url=None):
         if hasattr(request.user, "profile") and getattr(request.user.profile, "service_usage", False):
             logger.debug(f"Fetching usage report for service {details.get('item')}")
             item = details.get("item")
-            service_item = Service.objects.filter(service_name=item)
-            if service_item:
-                usage = utils.get_usage_report(service_item)
+            service_qs = Service.objects.filter(pk=item.pk) if item else Service.objects.none()
+            if service_qs.exists():
+                usage = utils.get_usage_report(service_qs)
                 if "error" in usage:
                     logger.warning(f"Error in usage report: {usage['error']}")
                 else:
@@ -819,7 +819,7 @@ def refresh_portal_view(request):
         response_data = {
             "instance": portal.alias,
             "task_id": task.id,
-            "progress": 0
+            "value": 0
         }
         response = render(request, "partials/progress_bar.html", context=response_data)
         response["HX-Trigger"] = json.dumps({"closeModal": True})
@@ -2135,7 +2135,7 @@ def tool_run(request, instance, tool_name):
         response_data = {
             "instance": instance,
             "task_id": task.id,
-            "progress": 0,
+            "value": 0,
             "task_name": tool_display_name,
         }
 

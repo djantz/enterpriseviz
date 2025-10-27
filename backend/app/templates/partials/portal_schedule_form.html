@@ -284,7 +284,8 @@
 
   <div class="flex-container flex-column-gap-1">
     <div class="width-50">
-      <calcite-select name="ending_on" id="ending-on" value="{{ form.ending_on.value }}" label-text="End On" required
+      <calcite-select name="{{ form.ending_on.name }}" id="ending-on" value="{{ form.ending_on.value }}"
+                      label-text="End On" required
                       status="{% if form.ending_on.errors %}invalid{% else %}idle{% endif %}"
                       validation-message="{{ form.ending_on.errors|join:' ' }}"
                       validation-icon="{% if form.ending_on.errors %}exclamation-mark-triangle{% endif %}"
@@ -326,7 +327,7 @@
   </calcite-combobox>
 
   {% if form.non_field_errors %}
-  <calcite-notice open status="danger" icon>
+  <calcite-notice open kind="danger" icon>
     <div slot="message">{{ form.non_field_errors|join:" " }}</div>
   </calcite-notice>
   {% endif %}

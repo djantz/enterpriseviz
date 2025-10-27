@@ -718,7 +718,7 @@ calcite-modal#add-modal {
 
 .link {
   fill: none;
-  stroke: var(--calcite-color-foreground-3);
+  stroke: var(--calcite-color-border-1);
   stroke-width: 1px;
 }
 
