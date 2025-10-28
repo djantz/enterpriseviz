@@ -1,8 +1,6 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
 <calcite-dialog id="webhook-modal" modal heading="Configure Webhook Settings" scale="m" open
-                width="m"
-                label="Configure webhook secret for portal integrations"
-                {% if form.errors %}kind="danger"{% endif %}>
+                width="m" {% if form.errors %}kind="danger"{% endif %}>
 
   <div id="webhook-form-container">
     {% include "partials/webhook_settings_form.html" %}

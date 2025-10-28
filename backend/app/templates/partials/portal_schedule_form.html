@@ -39,7 +39,7 @@
     </div>
   </div>
 
-  <div id="repeat-minute" hidden aria-hidden="true">
+  <div id="repeat-minute" hidden>
     <div class="">
       <calcite-select id="repeat-interval-minute" name="repeat_interval_minute"
                       value="{{ form.repeat_interval_minute.value }}" label-text="Repeat Interval" required
@@ -54,15 +54,14 @@
       </calcite-select>
     </div>
 
-    <fieldset id="days-of-week-minute-fieldset">
-      <calcite-label>On Days</calcite-label>
-      <div class="flex-container flex-justify-between" role="group" aria-labelledby="days-of-week-minute-legend">
-        <span id="days-of-week-minute-legend" class="sr-only">Select days of the week for minute-based schedule</span>
+    <fieldset id="days-of-week-minute-fieldset" role="group" aria-labelledby="days-of-week-minute-legend">
+      <calcite-label layout="inline-space-between">On Days
+        <calcite-icon id="days-of-week-minute-tooltip" icon="information" scale="s"></calcite-icon>
+      </calcite-label>
+      <div class="flex-container flex-justify-between">
         {% for value, label in form.fields.day_of_week_minute.choices %}
-          <calcite-label layout="inline">
-            <calcite-checkbox name="day_of_week_minute" value="{{ value }}"
-              {% if value in form.day_of_week_minute.value %}checked{% endif %}></calcite-checkbox>
-            {{ label }}</calcite-label>
+          <calcite-checkbox name="day_of_week_minute" value="{{ value }}"
+            {% if value in form.day_of_week_minute.value %}checked{% endif %} label-text="{{ label }}"></calcite-checkbox>
         {% endfor %}
       </div>
       <calcite-input-message {% if not form.day_of_week_minute.errors %}hidden{% endif %}
@@ -135,15 +134,14 @@
       </div>
     </div>
 
-    <fieldset id="days-of-week-hour-fieldset">
-      <calcite-label>On Days</calcite-label>
-      <div class="flex-container flex-justify-between" role="group" aria-labelledby="days-of-week-hour-legend">
-        <span id="days-of-week-hour-legend" class="sr-only">Select days of the week for hour-based schedule</span>
+    <fieldset id="days-of-week-hour-fieldset" role="group" aria-labelledby="days-of-week-hour-legend">
+      <calcite-label layout="inline-space-between">On Days
+        <calcite-icon id="days-of-week-hour-tooltip" icon="information" scale="s"></calcite-icon>
+      </calcite-label>
+      <div class="flex-container flex-justify-between">
         {% for value, label in form.fields.day_of_week_hour.choices %}
-          <calcite-label layout="inline">
-            <calcite-checkbox name="day_of_week_hour" value="{{ value }}" {% if value in form.day_of_week_hour.value %}
-                              checked{% endif %}></calcite-checkbox>
-            {{ label }}</calcite-label>
+          <calcite-checkbox name="day_of_week_hour" value="{{ value }}" {% if value in form.day_of_week_hour.value %}
+                            checked{% endif %} label-text="{{ label }}"></calcite-checkbox>
         {% endfor %}
       </div>
       <calcite-input-message {% if not form.day_of_week_hour.errors %}hidden{% endif %}
@@ -215,15 +213,14 @@
   </div>
 
   <div id="repeat-week" hidden>
-    <fieldset id="days-of-week-week-fieldset">
-      <calcite-label>On Days</calcite-label>
-      <div class="flex-container flex-justify-between" role="group" aria-labelledby="days-of-week-week-legend">
-        <span id="days-of-week-week-legend" class="sr-only">Select days of the week for weekly schedule</span>
+    <fieldset id="days-of-week-week-fieldset" role="group" aria-labelledby="days-of-week-week-legend">
+      <calcite-label layout="inline-space-between">On Days
+        <calcite-icon id="days-of-week-week-tooltip" icon="information" scale="s"></calcite-icon>
+      </calcite-label>
+      <div class="flex-container flex-justify-between">
         {% for value, label in form.fields.day_of_week_week.choices %}
-          <calcite-label layout="inline">
             <calcite-checkbox name="day_of_week_week" value="{{ value }}" {% if value in form.day_of_week_week.value %}
-                              checked{% endif %}></calcite-checkbox>
-            {{ label }}</calcite-label>
+                              checked{% endif %} label-text="{{ label }}"></calcite-checkbox>
         {% endfor %}
       </div>
       <calcite-input-message {% if not form.day_of_week_week.errors %}hidden{% endif %}
@@ -342,8 +339,14 @@
 <calcite-tooltip reference-element="repeat-interval-minute-tooltip" close-on-click placement="bottom-start">
   <span>How often the schedule runs within the selected minute interval</span>
 </calcite-tooltip>
+<calcite-tooltip reference-element="days-of-week-minute-tooltip" close-on-click placement="bottom-start">
+  <span>The days of the week the schedule should run for the selected minute interval</span>
+</calcite-tooltip>
 <calcite-tooltip reference-element="repeat-interval-hour-tooltip" close-on-click placement="bottom-start">
   <span>How often the schedule runs within the selected hour interval</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="days-of-week-hour-tooltip" close-on-click placement="bottom-start">
+  <span>The days of the week the schedule should run for the selected hour interval</span>
 </calcite-tooltip>
 <calcite-tooltip reference-element="on-minute-tooltip" close-on-click placement="bottom-start">
   <span>The minute of the hour when the schedule should run</span>
@@ -353,6 +356,9 @@
 </calcite-tooltip>
 <calcite-tooltip reference-element="time-day-tooltip" close-on-click placement="bottom-start">
   <span>The time of day when the schedule should run</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="days-of-week-week-tooltip" close-on-click placement="bottom-start">
+  <span>The days of the week the schedule should run for the selected week interval</span>
 </calcite-tooltip>
 <calcite-tooltip reference-element="time-week-tooltip" close-on-click placement="bottom-start">
   <span>The time when the schedule should run on selected days</span>

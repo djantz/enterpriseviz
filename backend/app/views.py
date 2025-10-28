@@ -819,7 +819,8 @@ def refresh_portal_view(request):
         response_data = {
             "instance": portal.alias,
             "task_id": task.id,
-            "value": 0
+            "value": 0,
+            "progress": {"state": "PENDING", "complete": False}
         }
         response = render(request, "partials/progress_bar.html", context=response_data)
         response["HX-Trigger"] = json.dumps({"closeModal": True})
@@ -2136,6 +2137,7 @@ def tool_run(request, instance, tool_name):
             "instance": instance,
             "task_id": task.id,
             "value": 0,
+            "progress": {"state": "PENDING", "complete": False},
             "task_name": tool_display_name,
         }
 

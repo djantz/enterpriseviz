@@ -1,6 +1,5 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
 <calcite-dialog id="tool-modal" modal heading="Configure Tools" scale="m" open
-                label="Configure portal administration tools"
                 {% if form.errors %}kind="danger"{% endif %}>
   {% if not email_configured %}
     <calcite-notice slot="content-top" open kind="danger" icon width="full">
