@@ -33,7 +33,7 @@
           <calcite-notice open kind="danger" icon>
             <div slot="title">Form Errors</div>
             <div slot="message">
-              <ul style="margin: 0; padding-left: 1.5rem;">
+              <ul>
                 {% for field in form %}
                   {% for error in field.errors %}
                     <li>{{ field.label }}: {{ error }}</li>
@@ -71,7 +71,7 @@
                 </calcite-table-cell>
                 <calcite-table-cell>
                   {% if item.result_as_dict %}
-                    <ul style="margin: 0; padding-left: 1rem; list-style: none;">
+                    <ul>
                       {% for key, val in item.result_as_dict.items %}
                         <li><strong>{{ key }}:</strong> {{ val }}</li>
                       {% endfor %}

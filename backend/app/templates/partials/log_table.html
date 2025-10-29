@@ -14,7 +14,7 @@
             tabindex="0"
             aria-sort="{% if column.is_ordered %}{% if column.order_by_alias.is_descending %}descending{% else %}ascending{% endif %}{% else %}none{% endif %}"
             hx-get="{{ request.path }}?{% querystring table.prefixed_order_by_field=column.order_by_alias.next %}"
-            hx-trigger="click, keydown[key=='Enter' || key==' ']"
+            hx-trigger="click, keydown"
             hx-target="#log-table-container"
             hx-swap="innerHTML"
             aria-label="Sort by {{ column.header }}{% if column.is_ordered %}, currently sorted {% if column.order_by_alias.is_descending %}descending{% else %}ascending{% endif %}{% endif %}"

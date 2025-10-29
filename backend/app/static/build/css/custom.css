@@ -1155,3 +1155,10 @@ calcite-dialog ul {
 .delete-confirm-sheet calcite-panel calcite-button:first-of-type {
   margin-block-end: 0;
 }
+
+.delete-confirm-buttons {
+  gap: 0.5rem;
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+}

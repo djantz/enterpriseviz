@@ -25,7 +25,7 @@
                   {% else %}
                     hx-get="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_order_by_field=column.order_by_alias.next %}"
                   {% endif %}
-                    hx-trigger="click, keydown[key=='Enter' || key==' ']"
+                    hx-trigger="click, keydown"
                     hx-target="#{{ target_id }}"
                     hx-swap="innerHTML"
                     hx-indicator="#{{ table_name }}-table-progress"
