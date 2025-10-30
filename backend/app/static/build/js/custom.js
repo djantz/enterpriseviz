@@ -1,6 +1,5 @@
 $('.collapse-link').on('click', function () {
     var $BOX_PANEL = $(this).closest('.x_panel');
-    var $ICON = $(this).find('calcite-icon');
     var $BOX_CONTENT = $BOX_PANEL.find('.x_content');
 
     $BOX_CONTENT.slideToggle(200, function () {
@@ -11,9 +10,9 @@ $('.collapse-link').on('click', function () {
         }
     });
 
-    var currentIcon = $ICON.attr('icon');
+    var currentIcon = $(this).attr('icon-start');
     var newIcon = (currentIcon === 'chevron-up') ? 'chevron-down' : 'chevron-up';
-    $ICON.attr('icon', newIcon);
+    $(this).attr('icon-start', newIcon);
 });
 
 
@@ -1335,3 +1334,16 @@ function initWebhookSecretGenerator() {
         pendingDeleteConfig = null;
     });
 })();
+
+document.addEventListener('htmx:load', function(event) {
+    // Find all sortable table headers
+    event.detail.elt.querySelectorAll('th[role="button"][hx-trigger]').forEach(function(th) {
+        th.addEventListener('keydown', function(e) {
+            // Only trigger for Enter and Space, like native buttons
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault(); // Prevent page scroll on Space
+                htmx.trigger(this, 'click');
+            }
+        });
+    });
+});

@@ -5,7 +5,7 @@
 {% load export_url from django_tables2 %}
 
 {% block table %}
-<div hx-boost="true" hx-target="#mainbodycontent">
+<div hx-boost="true">
   <table {{ table.attrs.as_html }}>
     {% block table.thead %}
       {% if table.show_header %}
@@ -25,7 +25,7 @@
                   {% else %}
                     hx-get="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_order_by_field=column.order_by_alias.next %}"
                   {% endif %}
-                    hx-trigger="click, keydown"
+                    hx-trigger="click"
                     hx-target="#{{ target_id }}"
                     hx-swap="innerHTML"
                     hx-indicator="#{{ table_name }}-table-progress"
@@ -65,7 +65,7 @@
 
 {% block pagination %}
   {% if table.page and table.paginator.num_pages > 0 %}
-    <nav aria-label="{{ table_name|title }} table pagination" class="table-pagination-controls row">
+    <nav aria-label="{{ table_name|title }} table pagination" class="table-pagination-controls row" hx-boost="true">
       <div class="col-6 align-start">
         <div role="status" aria-live="polite">
           Showing {{ table.page.start_index }} to {{ table.page.end_index }} of {{ table.paginator.count }} records
@@ -77,9 +77,9 @@
           {% if page_obj.has_previous %}
             <li class="page-item">
               <a {% if instance %}
-                hx-get="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=table.page.previous_page_number %}"
+                href="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=table.page.previous_page_number %}"
               {% else %}
-                hx-get="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=table.page.previous_page_number %}"
+                href="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=table.page.previous_page_number %}"
               {% endif %}
                 hx-trigger="click"
                 hx-target="#{{ target_id }}"
@@ -112,9 +112,9 @@
               {% else %}
                 <li class="page-item">
                   <a {% if instance %}
-                    hx-get="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=i %}"
+                    href="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=i %}"
                   {% else %}
-                    hx-get="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=i %}"
+                    href="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=i %}"
                   {% endif %}
                     hx-trigger="click"
                     hx-target="#{{ target_id }}"
@@ -129,9 +129,9 @@
           {% if page_obj.has_next %}
             <li class="page-item">
               <a {% if instance %}
-                hx-get="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=table.page.next_page_number %}"
+                href="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=table.page.next_page_number %}"
               {% else %}
-                hx-get="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=table.page.next_page_number %}"
+                href="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=table.page.next_page_number %}"
               {% endif %}
                 hx-trigger="click"
                 hx-target="#{{ target_id }}"
