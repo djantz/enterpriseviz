@@ -1,19 +1,29 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
 <calcite-dialog id="webhook-modal" modal heading="Configure Webhook Settings" scale="m" open
-                {% if form.errors %}kind="danger"{% endif %}>
+                width="m" {% if form.errors %}kind="danger"{% endif %}>
 
   <div id="webhook-form-container">
     {% include "partials/webhook_settings_form.html" %}
   </div>
 
-  <calcite-button id="webhook-delete" slot="footer-start" appearance="solid" kind="danger" icon-start="trash"
+  <calcite-button id="webhook-delete" slot="footer-start" appearance="solid" kind="danger"
+                  icon-start="trash"
                   {% if not current_secret %}disabled{% endif %}
-                  hx-delete="{% url 'enterpriseviz:webhook_settings' %}"
-                  hx-target="#webhook-site-form" hx-include="#webhook-site-form">
+                  data-confirm-delete
+                  data-delete-url="{% url 'enterpriseviz:webhook_settings' %}"
+                  data-delete-method="DELETE"
+                  data-delete-target="#webhook-site-form"
+                  data-delete-message="Are you sure you want to clear the webhook secret?"
+                  data-delete-details="This will disable webhook authentication. Webhooks will no longer be validated."
+                  data-delete-button="Clear Secret"
+                  label="Clear webhook secret">
     Clear
   </calcite-button>
 
-  <calcite-button id="webhook-cancel" data-action="close-modal" slot="footer-end" appearance="outline" icon-start="circle-disallowed">
+  <calcite-button id="webhook-cancel" data-action="close-modal" slot="footer-end" appearance="outline"
+                  kind="neutral"
+                  icon-start="circle-disallowed"
+                  label="Cancel without saving changes">
     Cancel
   </calcite-button>
 
@@ -21,8 +31,13 @@
                   hx-post="{% url 'enterpriseviz:webhook_settings' %}"
                   hx-target="#webhook-form-container" hx-swap="innerHTML"
                   hx-include="#webhook-site-form" hx-vals='{"action": "save"}'
-                  icon-start="save">
+                  icon-start="save"
+                  label="Save webhook configuration">
     Save
   </calcite-button>
 
 </calcite-dialog>
+
+<calcite-tooltip reference-element="webhook-delete" placement="top" close-on-click>
+  <span>Remove the current webhook secret. Webhooks will no longer be authenticated.</span>
+</calcite-tooltip>

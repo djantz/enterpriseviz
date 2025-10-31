@@ -1,31 +1,26 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
 
-<form id="add-portal-form" autocomplete="off">
+<form id="add-portal-form" autocomplete="off" aria-label="Add new portal">
 
   {% csrf_token %}
 
   <calcite-input type="text" name="{{ form.alias.name }}" placeholder="Enter a descriptive title" required
                  value="{{ form.alias.value|default:'' }}" autocomplete="off" label-text="Alias"
-                 {% if form.alias.errors %}status="invalid"{% endif %}>
+                 status="{% if form.alias.errors %}invalid{% else %}idle{% endif %}"
+                 validation-message="{{ form.alias.errors|join:' ' }}"
+                 validation-icon="{% if form.alias.errors %}exclamation-mark-triangle{% endif %}">
     <calcite-icon slot="label-content" id="portal-alias-tooltip" icon="information" scale="s"></calcite-icon>
-
   </calcite-input>
-  <calcite-input-message {% if not form.alias.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                         status="invalid">
-    {{ form.alias.errors|join:" " }}
-  </calcite-input-message>
 
   <calcite-input name="{{ form.url.name }}" placeholder="Enter a Portal URL" required type="url"
                  value="{{ form.url.value|default:'' }}" autocomplete="off" label-text="URL"
-                 {% if form.url.errors %}status="invalid"{% endif %}>
+                 status="{% if form.url.errors %}invalid{% else %}idle{% endif %}"
+                 validation-message="{{ form.url.errors|join:' ' }}"
+                 validation-icon="{% if form.url.errors %}exclamation-mark-triangle{% endif %}">
     <calcite-icon slot="label-content" id="portal-url-tooltip" icon="information" scale="s"></calcite-icon>
   </calcite-input>
-  <calcite-input-message {% if not form.url.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                         status="invalid">
-    {{ form.url.errors|join:" " }}
-  </calcite-input-message>
 
-  <calcite-segmented-control id="portal-type" name="{{ form.portal_type.name }}" label-text="Portal Type">
+  <calcite-segmented-control id="portal-type" name="{{ form.portal_type.name }}" label-text="Portal Type" required>
     <calcite-icon slot="label-content" id="portal-type-tooltip" icon="information" scale="s"></calcite-icon>
     <calcite-segmented-control-item value="portal" icon-start="portal"
                                     {% if form.portal_type.value == 'portal' %}checked{% endif %}>Portal
@@ -35,7 +30,7 @@
     </calcite-segmented-control-item>
   </calcite-segmented-control>
 
-  <calcite-segmented-control id="store-password" name="{{ form.store_password.name }}" label-text="Store Credentials">
+  <calcite-segmented-control id="store-password" name="{{ form.store_password.name }}" label-text="Store Credentials" required>
     <calcite-icon slot="label-content" id="store-password-tooltip" icon="information" scale="s"></calcite-icon>
     <calcite-segmented-control-item value="False" {% if form.store_password.value == False %}checked{% endif %}>No
     </calcite-segmented-control-item>
@@ -43,32 +38,29 @@
     </calcite-segmented-control-item>
   </calcite-segmented-control>
 
-  <div id="store-password-container" hidden>
+  <div id="store-password-container" hidden aria-hidden="true">
     <calcite-input icon="user" id="{{ form.username.name }}" name="{{ form.username.name }}" disabled
                    placeholder="Enter Portal admin username"
                    required type="text" value="{{ form.username.value|default:'' }}"
-                   autocomplete="off" label-text="Username"
-                   {% if form.username.errors %}status="invalid"{% endif %}>
+                   autocomplete="username" label-text="Username"
+                   status="{% if form.username.errors %}invalid{% else %}idle{% endif %}"
+                   validation-message="{{ form.username.errors|join:' ' }}"
+                   validation-icon="{% if form.username.errors %}exclamation-mark-triangle{% endif %}">
       <calcite-icon slot="label-content" id="username-tooltip" icon="information" scale="s"></calcite-icon>
     </calcite-input>
-    <calcite-input-message {% if not form.username.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                           status="invalid">
-      {{ form.username.errors|join:" " }}
-    </calcite-input-message>
 
-    <calcite-input icon id="{{ form.password.name }}" name="{{ form.password.name }}" disabled
+    <calcite-input id="{{ form.password.name }}" name="{{ form.password.name }}" disabled
                    placeholder="Enter Portal admin password" required
-                   type="password" value="{{ form.password.value|default:'' }}" autocomplete="off"
+                   type="password" value="{{ form.password.value|default:'' }}" autocomplete="new-password"
                    label-text="Password"
-                   {% if form.password.errors %}status="invalid"{% endif %}>
+                   status="{% if form.password.errors %}invalid{% else %}idle{% endif %}"
+                   validation-message="{{ form.password.errors|join:' ' }}"
+                   validation-icon="{% if form.password.errors %}exclamation-mark-triangle{% endif %}">
     </calcite-input>
-    <calcite-input-message {% if not form.password.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                           status="invalid">
-      {{ form.password.errors|join:" " }}
-    </calcite-input-message>
   </div>
+
   <calcite-segmented-control id="enable-email" name="{{ form.enable_admin_notifications.name }}"
-                             label-text="Enable Admin Email Notifications">
+                             label-text="Enable Admin Email Notifications" required>
     <calcite-icon slot="label-content" id="enable-email-tooltip" icon="information" scale="s"></calcite-icon>
     <calcite-segmented-control-item value="False"
                                     {% if form.enable_admin_notifications.value == False %}checked{% endif %}>No
@@ -77,44 +69,41 @@
                                     {% if form.enable_admin_notifications.value == True %}checked{% endif %}>Yes
     </calcite-segmented-control-item>
   </calcite-segmented-control>
-  <calcite-input-message {% if not form.enable_admin_notifications.errors %}hidden{% endif %}
-                         icon="exclamation-mark-triangle-f"
-                         status="invalid">
-    {{ form.enable_admin_notifications.errors|join:" " }}
-  </calcite-input-message>
-  <div id="admin-emails-container" {% if form.enable_admin_notifications.value == False %}hidden{% endif %}>
 
-    <calcite-input name="{{ form.admin_emails.name }}" placeholder="Enter email address (comma separated)" required
+  <div id="admin-emails-container" {% if form.enable_admin_notifications.value == False %}hidden{% endif %}
+       {% if form.enable_admin_notifications.value == False %}aria-hidden="true"{% endif %}>
+    <calcite-input name="{{ form.admin_emails.name }}" placeholder="Enter email addresses (comma separated)" required
                    type="email" value="{{ form.admin_emails.value|default:'' }}" autocomplete="off"
                    multiple label-text="Admin Emails"
-                   {% if form.admin_emails.errors %}status="invalid"{% endif %}></calcite-input>
-    <calcite-input-message {% if not form.admin_emails.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                           status="invalid">
-      {{ form.admin_emails.errors|join:" " }}
-    </calcite-input-message>
+                   status="{% if form.admin_emails.errors %}invalid{% else %}idle{% endif %}"
+                   validation-message="{{ form.admin_emails.errors|join:' ' }}"
+                   validation-icon="{% if form.admin_emails.errors %}exclamation-mark-triangle{% endif %}">
+    </calcite-input>
   </div>
 
-  <calcite-input-message {% if not form.non_field_errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                         status="invalid">
-    {{ form.non_field_errors.as_text }}
-  </calcite-input-message>
+  {% if form.non_field_errors %}
+  <calcite-notice open kind="danger" icon>
+    <div slot="message">{{ form.non_field_errors.as_text }}</div>
+  </calcite-notice>
+  {% endif %}
 
 </form>
+
 <calcite-tooltip reference-element="portal-alias-tooltip" close-on-click placement="bottom-start">
-  <span>A shortname for this portal</span>
+  <span>A short name for this portal instance</span>
 </calcite-tooltip>
 <calcite-tooltip reference-element="portal-url-tooltip" close-on-click placement="bottom-start">
-  <span>URL of the Portal or AGOL instance</span>
+  <span>The full URL of the Portal or ArcGIS Online instance</span>
 </calcite-tooltip>
 <calcite-tooltip reference-element="portal-type-tooltip" close-on-click placement="bottom-start">
-  <span>Select whether this is a Portal or AGOL instance</span>
+  <span>Select whether this is an on-premises Portal or ArcGIS Online (AGOL)</span>
 </calcite-tooltip>
 <calcite-tooltip reference-element="store-password-tooltip" close-on-click placement="bottom-start">
-  <span>Whether an admin credential will be stored in EnterpriseViz. Credentials are encrypted but used to connect to pull data. If not, credentials will be prompted upon refresh and scheduling will not be available.</span>
+  <span>If enabled, admin credentials will be encrypted and stored to enable automatic data refreshes and scheduling. If disabled, you'll be prompted for credentials on each refresh.</span>
 </calcite-tooltip>
 <calcite-tooltip reference-element="username-tooltip" close-on-click placement="bottom-start">
-  <span>An admin user to the Portal that can view all items</span>
+  <span>An admin user account that has permission to view all portal items</span>
 </calcite-tooltip>
 <calcite-tooltip reference-element="enable-email-tooltip" close-on-click placement="bottom-start">
-  <span>Whether email alerts will be sent for automated refreshes and tool results</span>
+  <span>Enable email notifications for automated refresh results and tool execution reports</span>
 </calcite-tooltip>

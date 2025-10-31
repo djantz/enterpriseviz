@@ -3,27 +3,47 @@
                 {% if form.errors %}kind="danger"{% endif %}>
 
   <div id="log-settings-form-container">
-    <form id="log-settings-form">
+    <form id="log-settings-form" aria-label="Log level configuration">
       {% csrf_token %}
-      <calcite-select name="level" id="log-level-select" label-text="Application Log Level">
+      <calcite-select name="level" id="log-level-select" label="Application Log Level"
+                      required
+                      status="{% if form.level.errors %}invalid{% else %}idle{% endif %}"
+                      validation-message="{{ form.level.errors|join:' ' }}"
+                      validation-icon="{% if form.level.errors %}exclamation-mark-triangle{% endif %}">
         {% for level_name in log_levels %}
           <calcite-option value="{{ level_name }}"
-                          {% if level_name == current_log_level %}selected{% endif %}>{{ level_name }}</calcite-option>
+                          {% if level_name == current_log_level %}selected{% endif %}
+                          label="{{ level_name }}">{{ level_name }}</calcite-option>
         {% endfor %}
       </calcite-select>
+
+      {% if form.non_field_errors %}
+      <calcite-notice open kind="danger" icon>
+        <div slot="message">{{ form.non_field_errors|join:" " }}</div>
+      </calcite-notice>
+      {% endif %}
+
+      <calcite-notice open icon kind="info">
+        <div slot="title">Log Level Information</div>
+        <div slot="message">
+          Changing the log level affects what information is recorded in application logs.
+          Higher levels (ERROR, WARNING) show fewer messages, while lower levels (DEBUG, INFO) show more detail.
+        </div>
+      </calcite-notice>
     </form>
   </div>
 
   <calcite-button id="log-settings-cancel" data-action="close-modal" slot="footer-end" appearance="outline"
-                  icon-start="circle-disallowed">
+                  kind="neutral"
+                  icon-start="circle-disallowed" label="Cancel without saving changes">
     Cancel
   </calcite-button>
 
   <calcite-button id="log-settings-save" slot="footer-end"
                   hx-post="{% url 'enterpriseviz:log_settings' %}"
-                  target="#log-settings-modal"
+                  hx-target="#log-settings-modal"
                   hx-include="#log-settings-form"
-                  icon-start="save" value="save">
+                  icon-start="save" label="Save log level changes">
     Save
   </calcite-button>
 

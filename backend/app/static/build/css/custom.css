@@ -165,6 +165,7 @@ body {
   position: relative;
   min-height: 1px;
   float: left;
+  padding-top: 10px;
   padding-right: 10px;
   padding-left: 10px
 }
@@ -261,6 +262,10 @@ h2 {
   column-break-inside: avoid;
   opacity: 1;
   transition: all .2s ease
+}
+
+.x_panel--top {
+  margin-top: 10px
 }
 
 .x_title {
@@ -372,7 +377,7 @@ table.dataTable {
   float: right;
   text-align: right;
   display: inline;
-  padding-right: 16px;
+  margin-bottom: 16px;
 }
 
 table.dataTable th.focus,
@@ -713,7 +718,7 @@ calcite-modal#add-modal {
 
 .link {
   fill: none;
-  stroke: var(--calcite-color-foreground-3);
+  stroke: var(--calcite-color-border-1);
   stroke-width: 1px;
 }
 
@@ -737,15 +742,6 @@ canvas#line-chart {
 
 .ghostCircle, .activeDrag .ghostCircle {
   display: none;
-}
-
-.datatables-filter {
-  float: right;
-  text-align: right;
-  display: inline;
-  padding-right: 16px;
-  position: relative;
-  z-index: 1;
 }
 
 .chartjs-filter {
@@ -879,13 +875,6 @@ div.dt-buttons .dt-button {
 
 div.dt-buttons > .dt-button:hover:not(.disabled), div.dt-buttons > div.dt-button-split .dt-button:hover:not(.disabled) {
   border: unset;
-}
-
-.item-details {
-  line-height: 2;
-  padding-right: 20px;
-  margin-top: 12px;
-  margin-bottom: 6px;
 }
 
 calcite-button[kind="danger"] {
@@ -1086,7 +1075,8 @@ form calcite-input,
 form calcite-select,
 form calcite-input-time-picker,
 form calcite-segmented-control,
-form calcite-notice {
+form calcite-notice,
+form calcite-checkbox {
   margin-block-end: var(--calcite-label-margin-bottom, 0.75rem);
 }
 
@@ -1096,4 +1086,79 @@ form calcite-input-time-picker {
 
 calcite-dialog ul {
   margin-bottom: 0;
+}
+.datatables-toolbar {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.dt-buttons {
+    display: flex;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+    padding-left: 8px;
+}
+
+.datatables-filter {
+    display: flex;
+    gap: 0.5rem;
+    flex: 1;
+    padding-right: 16px;
+    min-width: 300px;
+    justify-content: flex-end;
+    margin-left: auto;
+}
+
+.datatables-filter calcite-input {
+    flex: 1;
+    min-width: 200px;
+    max-width: 400px;
+}
+
+.datatables-filter calcite-combobox {
+    flex: 0 0 auto;
+    width: 200px;
+}
+
+.item-details {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.5rem 1rem;
+    margin: 1rem 0;
+}
+
+.item-details dt {
+    font-weight: 500;
+    color: var(--calcite-color-text-1);
+}
+
+.item-details dd {
+  margin: 0;
+  color: var(--calcite-color-text-2);
+}
+
+.delete-confirm-sheet {
+  --calcite-sheet-height: auto;
+  --calcite-sheet-max-height: auto;
+  --calcite-sheet-min-height: auto;
+}
+
+.delete-confirm-sheet calcite-panel calcite-button,
+.delete-confirm-sheet calcite-panel calcite-notice {
+  width: calc(100% - 1rem);
+  margin: 0.5rem;
+}
+
+.delete-confirm-sheet calcite-panel calcite-button:first-of-type {
+  margin-block-end: 0;
+}
+
+.delete-confirm-buttons {
+  gap: 0.5rem;
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
 }

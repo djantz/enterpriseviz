@@ -12,31 +12,49 @@
 
 {% block body %}
   <calcite-dialog open modal close-disabled escape-disabled outside-close-disabled id="login-modal" heading="Login"
-                  width="s">
+                  width="s" label="Login to EnterpriseViz">
     <img src="https://raw.githubusercontent.com/Esri/calcite-ui-icons/master/icons/map-pin-32.svg"
          slot="header-actions-end" class="login-header-img"
-         draggable="false">
+         draggable="false" alt="EnterpriseViz logo">
 
     <div class="login-content-container">
 
-      <calcite-block open collapsible heading="Use your organization URL">
-        <calcite-label>
-          <calcite-input placeholder="{{ login_url }}" read-only></calcite-input>
-        </calcite-label>
-        <calcite-button width="full" href="{% url 'social:begin' 'arcgis' %}">Continue</calcite-button>
+      <calcite-block open collapsible heading="Use your organization URL"
+                     description="Sign in with your ArcGIS organization">
+        <form>
+          <calcite-input placeholder="{{ login_url }}" read-only label="Organization URL"
+                         value="{{ login_url }}"></calcite-input>
+          <calcite-button width="full" href="{% url 'social:begin' 'arcgis' %}"
+                          label="Continue with organization login">
+            Continue
+          </calcite-button>
+        </form>
       </calcite-block>
-      <calcite-block collapsible heading="Use your credentials">
-        <form id="login_form" method="post" autocomplete="off">
+
+      <calcite-block collapsible heading="Use your credentials" description="Sign in with username and password">
+        <form id="login_form" method="post" autocomplete="off" aria-label="Login form">
           {% csrf_token %}
-          <calcite-label>
-            <calcite-input type="username" icon="user" id="{{ form.username.name }}" name="{{ form.username.name }}"
-                           placeholder="{{ form.username.label }}" autocomplete="off"></calcite-input>
-          </calcite-label>
-          <calcite-label>
-            <calcite-input type="password" icon="lock" id="{{ form.password.name }}" name="{{ form.password.name }}"
-                           placeholder="{{ form.password.label }}"></calcite-input>
-          </calcite-label>
-          <calcite-button type="submit" form="login_form" width="full">Sign in</calcite-button>
+          <calcite-input type="text" icon="user" id="{{ form.username.name }}" name="{{ form.username.name }}"
+                         placeholder="{{ form.username.label }}" autocomplete="username"
+                         label-text="Username" required
+                         status="{% if form.username.errors %}invalid{% else %}idle{% endif %}"
+                         validation-message="{{ form.username.errors|join:' ' }}"
+                         validation-icon="{% if form.username.errors %}exclamation-mark-triangle{% endif %}"></calcite-input>
+
+          <calcite-input type="password" icon="lock" id="{{ form.password.name }}" name="{{ form.password.name }}"
+                         placeholder="{{ form.password.label }}" autocomplete="current-password"
+                         label-text="Password" required
+                         status="{% if form.password.errors %}invalid{% else %}idle{% endif %}"
+                         validation-message="{{ form.password.errors|join:' ' }}"
+                         validation-icon="{% if form.password.errors %}exclamation-mark-triangle{% endif %}"></calcite-input>
+
+          {% if form.non_field_errors %}
+            <calcite-notice open icon kind="danger">
+              <div slot="message">{{ form.non_field_errors|join:" " }}</div>
+            </calcite-notice>
+          {% endif %}
+
+          <calcite-button type="submit" form="login_form" width="full" label="Sign In">Sign in</calcite-button>
         </form>
       </calcite-block>
 

@@ -1,29 +1,43 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
 {% load filter %}
-<form id="webhook-site-form" class="calcite-form" autocomplete="off">
+<form id="webhook-site-form" class="calcite-form" autocomplete="off" aria-label="Webhook secret configuration">
   {% csrf_token %}
 
   <calcite-input type="password" id="{{ form.webhook_secret.name }}" name="{{ form.webhook_secret.name }}"
                  autocomplete="off" placeholder="Enter a secure secret key" minlength="16"
-                 label-text="Webhook Secret">
+                 label-text="Webhook Secret" required
+                 status="{% if form.webhook_secret.errors %}invalid{% else %}idle{% endif %}"
+                 validation-message="{{ form.webhook_secret.errors|join:' ' }}"
+                 validation-icon="{% if form.webhook_secret.errors %}exclamation-mark-triangle{% endif %}">
     <calcite-button slot="action" id="copy-secret-btn" icon-start="copy-to-clipboard"
-                    title="Copy secret to clipboard" type="button">
+                    type="button" appearance="transparent" scale="s"
+                    label="Copy secret to clipboard">
     </calcite-button>
   </calcite-input>
-  <calcite-input-message {% if not form.webhook_secret.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                         status="invalid">
-    {{ form.webhook_secret.errors|join:" " }}
-  </calcite-input-message>
 
-  <calcite-notice open>
+  <calcite-notice open kind="info" icon>
     <div slot="title">Security Information</div>
     <div slot="message">
       This secret is used to validate webhook requests from ArcGIS Portal.
       Configure the same secret in your Portal's webhook settings.
       Use a strong, randomly generated value (minimum 16 characters).
     </div>
-    <calcite-action slot="actions-end" icon="refresh" text="Generate" text-enabled id="generate-secret-action">
+    <calcite-action slot="actions-end" icon="refresh" text="Generate" text-enabled
+                    id="generate-secret-action" label="Generate random secret">
     </calcite-action>
   </calcite-notice>
 
+  {% if form.non_field_errors %}
+  <calcite-notice open kind="danger" icon>
+    <div slot="message">{{ form.non_field_errors|join:" " }}</div>
+  </calcite-notice>
+  {% endif %}
+
 </form>
+
+<calcite-tooltip reference-element="copy-secret-btn" placement="top" close-on-click>
+  <span>Copy webhook secret to clipboard</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="generate-secret-action" placement="top" close-on-click>
+  <span>Generate a secure random secret (recommended)</span>
+</calcite-tooltip>

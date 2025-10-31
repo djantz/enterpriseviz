@@ -1,11 +1,21 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
-<div id="portals-container">
+<div id="portals-container" role="navigation" aria-label="Portal selection">
   {% for item in portal %}
-    <calcite-action id="portal-{{ item.0 }}" text="{{ item.0 }}" {% if item.1 == 'portal' %}icon="portal"
-                    {% else %}icon="arcgis-online"{% endif %} text-enabled
-                    {% if instance == item.0 %}active {% endif %}
-                    hx-get="{% url 'enterpriseviz:viz' instance=item.0 %}" hx-target="#mainbodycontent"
+    <calcite-action id="portal-{{ item.0|slugify }}" text="{{ item.0 }}"
+                    {% if item.1 == 'portal' %}icon="portal"
+                    {% else %}icon="arcgis-online"{% endif %}
+                    text-enabled
+                    {% if instance == item.0 %}active{% endif %}
+                    hx-get="{% url 'enterpriseviz:viz' instance=item.0 %}"
+                    hx-target="#mainbodycontent"
                     hx-push-url="{% url 'enterpriseviz:viz' instance=item.0 %}"
-                    hx-swap="innerHTML show:top"></calcite-action>
+                    hx-swap="innerHTML show:top"
+                    label="View {{ item.0 }} portal content"
+                    {% if instance == item.0 %}aria-current="page"{% endif %}></calcite-action>
+
+    <calcite-tooltip reference-element="portal-{{ item.0|slugify }}" placement="right"
+                     overlay-positioning="fixed" close-on-click>
+      <span>View content for {{ item.0 }}{% if item.2 %} - {{ item.2 }}{% endif %}</span>
+    </calcite-tooltip>
   {% endfor %}
 </div>

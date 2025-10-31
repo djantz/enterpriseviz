@@ -1,35 +1,69 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
-<div id="manage-container" hx-swap-oob="true">
+<div id="manage-container" role="region" aria-label="Portal management">
   {% for item in portal %}
     <calcite-block heading="{{ item.0 }}" description="{{ item.2 }}">
-      <calcite-icon scale="s" preload="true" slot="icon" {% if item.1 == 'portal' %}icon="portal"
-                    {% else %}icon="arcgis-online"{% endif %}></calcite-icon>
-      {% if user.is_superuser %}
-        <calcite-action id="manage-modal-delete" slot="header-menu-actions" text="Delete" text-enabled
-                        icon="trash" hx-post="{% url 'enterpriseviz:delete_portal' instance=item.0 %}"
-                        hx-target="#manage-container" hx-confirm="{{ item.0 }}"></calcite-action>
-        <calcite-action id="manage-modal-update" slot="header-menu-actions" text="Update" text-enabled
-                        icon="refresh" hx-get="{% url 'enterpriseviz:update_portal' instance=item.0 %}"
-                        hx-target="#update_portal_modal"></calcite-action>
-        <calcite-action id="manage-modal-schedule" slot="header-menu-actions" text="Schedule" text-enabled
-                        icon="date-time" hx-get="{% url 'enterpriseviz:schedule' instance=item.0 %}"
-                        hx-target="#schedule_portal_modal"></calcite-action>
-        <calcite-action id="manage-modal-tools" slot="header-menu-actions" text="Tools" text-enabled
-                        icon="hammer" hx-get="{% url 'enterpriseviz:tool_settings' instance=item.0 %}"
-                        hx-target="#tool_settings_modal"></calcite-action>
-      {% endif %}
+      <calcite-icon scale="s" preload="true" slot="icon"
+                    {% if item.1 == 'portal' %}icon="portal"
+                    {% else %}icon="arcgis-online"{% endif %}
+                    aria-hidden="true"></calcite-icon>
+      <calcite-action id="manage-modal-delete-{{ item.0|slugify }}" slot="header-menu-actions"
+                      text="Delete" text-enabled
+                      icon="trash" hx-post="{% url 'enterpriseviz:delete_portal' instance=item.0 %}"
+                      hx-target="#manage-container" hx-confirm="Are you sure you want to delete {{ item.0 }}?"
+                      label="Delete {{ item.0 }}"></calcite-action>
+      <calcite-action id="manage-modal-update-{{ item.0|slugify }}" slot="header-menu-actions"
+                      text="Update" text-enabled
+                      icon="refresh" hx-get="{% url 'enterpriseviz:update_portal' instance=item.0 %}"
+                      hx-target="#update_portal_modal"
+                      label="Update credentials for {{ item.0 }}"></calcite-action>
+      <calcite-action id="manage-modal-schedule-{{ item.0|slugify }}" slot="header-menu-actions"
+                      text="Schedule" text-enabled
+                      icon="date-time" hx-get="{% url 'enterpriseviz:schedule' instance=item.0 %}"
+                      hx-target="#schedule_portal_modal"
+                      label="Schedule automatic updates for {{ item.0 }}"></calcite-action>
+      <calcite-action id="manage-modal-tools-{{ item.0|slugify }}" slot="header-menu-actions"
+                      text="Tools" text-enabled
+                      icon="hammer" hx-get="{% url 'enterpriseviz:tool_settings' instance=item.0 %}"
+                      hx-target="#tool_settings_modal"
+                      label="Run administration tools for {{ item.0 }}"></calcite-action>
+
     </calcite-block>
+    <calcite-tooltip reference-element="manage-modal-delete-{{ item.0|slugify }}" placement="right"
+                     overlay-positioning="fixed" close-on-click>
+      <span>Delete this portal from Enterpriseviz</span>
+    </calcite-tooltip>
+    <calcite-tooltip reference-element="manage-modal-update-{{ item.0|slugify }}" placement="right"
+                     overlay-positioning="fixed" close-on-click>
+      <span>Update credentials for this portal</span>
+    </calcite-tooltip>
+    <calcite-tooltip reference-element="manage-modal-schedule-{{ item.0|slugify }}" placement="right"
+                     overlay-positioning="fixed" close-on-click>
+      <span>Schedule automatic updates and view previous results</span>
+    </calcite-tooltip>
+    <calcite-tooltip reference-element="manage-modal-tools-{{ item.0|slugify }}" placement="right"
+                     overlay-positioning="fixed" close-on-click>
+      <span>Run portal administration tools</span>
+    </calcite-tooltip>
   {% endfor %}
 </div>
 
-<div id="portals-container" hx-swap-oob="true">
+<div id="portals-container" role="navigation" aria-label="Portal selection">
   {% for item in portal %}
-    <calcite-action text="{{ item.0 }}" {% if item.1 == 'portal' %}icon="portal"
-                    {% else %}icon="arcgis-online"{% endif %} text-enabled
-                    {% if instance == item.0 %}active {% endif %}
-                    hx-get="{% url 'enterpriseviz:viz' instance=item.0 %}" hx-target="#mainbodycontent"
+    <calcite-action id="portal-{{ item.0|slugify }}" text="{{ item.0 }}"
+                    {% if item.1 == 'portal' %}icon="portal"
+                    {% else %}icon="arcgis-online"{% endif %}
+                    text-enabled
+                    {% if instance == item.0 %}active{% endif %}
+                    hx-get="{% url 'enterpriseviz:viz' instance=item.0 %}"
+                    hx-target="#mainbodycontent"
                     hx-push-url="{% url 'enterpriseviz:viz' instance=item.0 %}"
-                    hx-swap="innerHTML show:top" data-loading-target="#loading"></calcite-action>
-  {% endfor %}
+                    hx-swap="innerHTML show:top"
+                    label="View {{ item.0 }} portal content"
+                    {% if instance == item.0 %}aria-current="page"{% endif %}></calcite-action>
 
+    <calcite-tooltip reference-element="portal-{{ item.0|slugify }}" placement="right"
+                     overlay-positioning="fixed" close-on-click>
+      <span>View content for {{ item.0 }}{% if item.2 %} - {{ item.2 }}{% endif %}</span>
+    </calcite-tooltip>
+  {% endfor %}
 </div>

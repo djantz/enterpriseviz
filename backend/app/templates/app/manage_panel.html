@@ -1,38 +1,53 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
-<div id="manage-container">
+<div id="manage-container" role="region" aria-label="Portal management">
   {% for item in portal %}
     <calcite-block heading="{{ item.0 }}" description="{{ item.2 }}">
-      <calcite-icon scale="s" preload="true" slot="icon" {% if item.1 == 'portal' %}icon="portal"
-                    {% else %}icon="arcgis-online"{% endif %}></calcite-icon>
-      <calcite-action id="manage-modal-delete" slot="header-menu-actions" text="Delete" text-enabled
-                      icon="trash" hx-post="{% url 'enterpriseviz:delete_portal' instance=item.0 %}"
-                      hx-target="#manage-container" hx-confirm="{{ item.0 }}"></calcite-action>
-      <calcite-action id="manage-modal-update" slot="header-menu-actions" text="Update" text-enabled
+      <calcite-icon scale="s" preload="true" slot="icon"
+                    {% if item.1 == 'portal' %}icon="portal"
+                    {% else %}icon="arcgis-online"{% endif %}
+                    aria-hidden="true"></calcite-icon>
+      <calcite-action id="manage-modal-delete-{{ item.0|slugify }}" slot="header-menu-actions"
+                      text="Delete" text-enabled
+                      icon="trash"
+                      data-confirm-delete
+                      data-delete-url="{% url 'enterpriseviz:delete_portal' instance=item.0 %}"
+                      data-delete-target="#manage-container"
+                      data-delete-message="Are you sure you want to delete &quot;{{ item.0 }}&quot;?"
+                      data-delete-details="This will remove the portal and all associated data from EnterpriseViz."
+                      data-delete-button="Delete Portal"
+                      label="Delete {{ item.0 }}"></calcite-action>
+      <calcite-action id="manage-modal-update-{{ item.0|slugify }}" slot="header-menu-actions"
+                      text="Update" text-enabled
                       icon="refresh" hx-get="{% url 'enterpriseviz:update_portal' instance=item.0 %}"
-                      hx-target="#update_portal_modal"></calcite-action>
-      <calcite-action id="manage-modal-schedule" slot="header-menu-actions" text="Schedule" text-enabled
+                      hx-target="#update_portal_modal"
+                      label="Update credentials for {{ item.0 }}"></calcite-action>
+      <calcite-action id="manage-modal-schedule-{{ item.0|slugify }}" slot="header-menu-actions"
+                      text="Schedule" text-enabled
                       icon="date-time" hx-get="{% url 'enterpriseviz:schedule' instance=item.0 %}"
-                      hx-target="#schedule_portal_modal"></calcite-action>
-      <calcite-action id="manage-modal-tools" slot="header-menu-actions" text="Tools" text-enabled
+                      hx-target="#schedule_portal_modal"
+                      label="Schedule automatic updates for {{ item.0 }}"></calcite-action>
+      <calcite-action id="manage-modal-tools-{{ item.0|slugify }}" slot="header-menu-actions"
+                      text="Tools" text-enabled
                       icon="hammer" hx-get="{% url 'enterpriseviz:tool_settings' instance=item.0 %}"
-                      hx-target="#tool_settings_modal"></calcite-action>
+                      hx-target="#tool_settings_modal"
+                      label="Run administration tools for {{ item.0 }}"></calcite-action>
 
     </calcite-block>
+    <calcite-tooltip reference-element="manage-modal-delete-{{ item.0|slugify }}" placement="right"
+                     overlay-positioning="fixed" close-on-click>
+      <span>Delete this portal from Enterpriseviz</span>
+    </calcite-tooltip>
+    <calcite-tooltip reference-element="manage-modal-update-{{ item.0|slugify }}" placement="right"
+                     overlay-positioning="fixed" close-on-click>
+      <span>Update credentials for this portal</span>
+    </calcite-tooltip>
+    <calcite-tooltip reference-element="manage-modal-schedule-{{ item.0|slugify }}" placement="right"
+                     overlay-positioning="fixed" close-on-click>
+      <span>Schedule automatic updates and view previous results</span>
+    </calcite-tooltip>
+    <calcite-tooltip reference-element="manage-modal-tools-{{ item.0|slugify }}" placement="right"
+                     overlay-positioning="fixed" close-on-click>
+      <span>Run portal administration tools</span>
+    </calcite-tooltip>
   {% endfor %}
-  <calcite-tooltip reference-element="manage-modal-delete" placement="left" overlay-positioning="fixed"
-                   close-on-click="true">
-    <span>Delete this portal from Enterpriseviz</span>
-  </calcite-tooltip>
-  <calcite-tooltip reference-element="manage-modal-update" placement="left" overlay-positioning="fixed"
-                   close-on-click="true">
-    <span>Update credentials for this portal</span>
-  </calcite-tooltip>
-  <calcite-tooltip reference-element="manage-modal-schedule" placement="left" overlay-positioning="fixed"
-                   close-on-click="true">
-    <span>Schedule automatic updates and view previous results</span>
-  </calcite-tooltip>
-  <calcite-tooltip reference-element="manage-modal-tools" placement="left" overlay-positioning="fixed"
-                   close-on-click="true">
-    <span>Run portal administration tools</span>
-  </calcite-tooltip>
 </div>

@@ -399,10 +399,10 @@ def portal_service_view(request, instance=None, url=None):
 
         if hasattr(request.user, "profile") and getattr(request.user.profile, "service_usage", False):
             logger.debug(f"Fetching usage report for service {details.get('item')}")
-            item_for_usage = details.get("item")
-            if item_for_usage:
-                usage_input = [item_for_usage] if not isinstance(item_for_usage, list) else item_for_usage
-                usage = utils.get_usage_report(usage_input)
+            item = details.get("item")
+            service_qs = Service.objects.filter(pk=item.pk) if item else Service.objects.none()
+            if service_qs.exists():
+                usage = utils.get_usage_report(service_qs)
                 if "error" in usage:
                     logger.warning(f"Error in usage report: {usage['error']}")
                 else:
@@ -819,7 +819,8 @@ def refresh_portal_view(request):
         response_data = {
             "instance": portal.alias,
             "task_id": task.id,
-            "progress": 0
+            "value": 0,
+            "progress": {"state": "PENDING", "complete": False}
         }
         response = render(request, "partials/progress_bar.html", context=response_data)
         response["HX-Trigger"] = json.dumps({"closeModal": True})
@@ -1641,8 +1642,8 @@ def webhook_view(request):
 
 
 VALID_LOG_LEVELS = {
-    "DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING,
-    "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL,
+    "CRITICAL": logging.CRITICAL, "ERROR": logging.ERROR, "WARNING": logging.WARNING,
+    "INFO": logging.INFO, "DEBUG": logging.DEBUG
 }
 LOG_LEVEL_NAMES = list(VALID_LOG_LEVELS.keys())
 
@@ -2135,7 +2136,8 @@ def tool_run(request, instance, tool_name):
         response_data = {
             "instance": instance,
             "task_id": task.id,
-            "progress": 0,
+            "value": 0,
+            "progress": {"state": "PENDING", "complete": False},
             "task_name": tool_display_name,
         }
 

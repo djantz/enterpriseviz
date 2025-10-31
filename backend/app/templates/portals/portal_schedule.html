@@ -1,92 +1,141 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
-<calcite-dialog id="schedule-modal" modal heading="Schedule Portal Updates" scale="m"
+<calcite-dialog id="schedule-modal" modal open heading="Schedule Portal Updates" scale="m"
                 {% if form.errors or not enable %}kind="danger"{% endif %}>
 
   {% if description %}
     <calcite-notice slot="content-top" open kind="info" icon width="full">
       <div slot="title">Existing Schedule</div>
-      <div slot="message">{{ description }}
-      </div>
+      <div slot="message">{{ description }}</div>
     </calcite-notice>
   {% endif %}
 
   {% if not enable %}
     <calcite-notice slot="content-top" open kind="danger" icon width="full">
       <div slot="title">Configuration Required</div>
-      <div slot="message">The ability to schedule updates is dependent on storing a username and password for the
-        portal.
-      </div>
+      <div slot="message">The ability to schedule updates requires storing a username and password for the portal. Please update the portal settings to enable scheduling.</div>
     </calcite-notice>
   {% endif %}
-  <calcite-tabs>
+
+  <calcite-tabs bordered>
     <calcite-tab-nav slot="title-group">
       <calcite-tab-title selected>
         Schedule
       </calcite-tab-title>
       <calcite-tab-title>Results</calcite-tab-title>
     </calcite-tab-nav>
+
     <calcite-tab selected>
-      <div id="schedule-form-container">
+      <div id="schedule-form-container" role="tabpanel" aria-label="Schedule configuration">
         {% include "partials/portal_schedule_form.html" %}
 
-        <div id="form-errors">
-          {% if form.errors %}
-            <ul>
-              {% for field in form %}
-                {% for error in field.errors %}
-                  <li>{{ field.label }}: {{ error }}</li>
+        {% if form.errors %}
+        <div id="form-errors" role="alert">
+          <calcite-notice open kind="danger" icon>
+            <div slot="title">Form Errors</div>
+            <div slot="message">
+              <ul>
+                {% for field in form %}
+                  {% for error in field.errors %}
+                    <li>{{ field.label }}: {{ error }}</li>
+                  {% endfor %}
                 {% endfor %}
-              {% endfor %}
-            </ul>
-          {% endif %}
+              </ul>
+            </div>
+          </calcite-notice>
         </div>
+        {% endif %}
       </div>
     </calcite-tab>
+
     <calcite-tab>
-      <calcite-label>Run History (last 24 hours)</calcite-label>
-      <calcite-table caption="Run History (last 24 hours)" bordered striped>
-        <calcite-table-row slot="table-header">
-          <calcite-table-header heading="Task Name"></calcite-table-header>
-          <calcite-table-header heading="Status"></calcite-table-header>
-          <calcite-table-header heading="Result"></calcite-table-header>
-          <calcite-table-header heading="Start Time"></calcite-table-header>
-          <calcite-table-header heading="End Time"></calcite-table-header>
-        </calcite-table-row>
-        {% if results %}
-          {% for item in results %}
-            <calcite-table-row>
-              <calcite-table-cell>{{ item.task_name }}</calcite-table-cell>
-              <calcite-table-cell>{{ item.status }}</calcite-table-cell>
-              <calcite-table-cell>{% for key, val in item.result_as_dict.items %}<strong>{{ key }}:</strong> {{ val }}
-                , {% endfor %}</calcite-table-cell>
-              <calcite-table-cell>{{ item.date_created|date:'M j, Y h:i A' }}</calcite-table-cell>
-              <calcite-table-cell>{{ item.date_done|date:'M j, Y h:i A' }}</calcite-table-cell>
-            </calcite-table-row>
-          {% endfor %}
-        {% else %}
-          <calcite-table-row>
-            <calcite-table-cell col-span="5">No runs in the last 24 hours.</calcite-table-cell>
+      <div role="tabpanel" aria-label="Run history">
+        <calcite-label>Run History (last 24 hours)</calcite-label>
+        <calcite-table caption="Run History (last 24 hours)" bordered striped
+                       aria-label="Schedule execution history">
+          <calcite-table-row slot="table-header">
+            <calcite-table-header heading="Task Name" description="Name of scheduled task"></calcite-table-header>
+            <calcite-table-header heading="Status" description="Execution status"></calcite-table-header>
+            <calcite-table-header heading="Result" description="Task results"></calcite-table-header>
+            <calcite-table-header heading="Start Time" description="When task started"></calcite-table-header>
+            <calcite-table-header heading="End Time" description="When task completed"></calcite-table-header>
           </calcite-table-row>
-        {% endif %}
-      </calcite-table>
+          {% if results %}
+            {% for item in results %}
+              <calcite-table-row>
+                <calcite-table-cell>{{ item.task_name }}</calcite-table-cell>
+                <calcite-table-cell>
+                  <calcite-chip scale="s"
+                                kind="{% if item.status == 'SUCCESS' %}inverse{% elif item.status == 'FAILURE' %}danger{% else %}neutral{% endif %}">
+                    {{ item.status }}
+                  </calcite-chip>
+                </calcite-table-cell>
+                <calcite-table-cell>
+                  {% if item.result_as_dict %}
+                    <ul>
+                      {% for key, val in item.result_as_dict.items %}
+                        <li><strong>{{ key }}:</strong> {{ val }}</li>
+                      {% endfor %}
+                    </ul>
+                  {% else %}
+                    —
+                  {% endif %}
+                </calcite-table-cell>
+                <calcite-table-cell>
+                  <time datetime="{{ item.date_created|date:'c' }}">
+                    {{ item.date_created|date:'M j, Y h:i A' }}
+                  </time>
+                </calcite-table-cell>
+                <calcite-table-cell>
+                  {% if item.date_done %}
+                    <time datetime="{{ item.date_done|date:'c' }}">
+                      {{ item.date_done|date:'M j, Y h:i A' }}
+                    </time>
+                  {% else %}
+                    Running...
+                  {% endif %}
+                </calcite-table-cell>
+              </calcite-table-row>
+            {% endfor %}
+          {% else %}
+            <calcite-table-row>
+              <calcite-table-cell col-span="5">
+                <calcite-notice open icon kind="info" scale="s">
+                  <div slot="message">No runs in the last 24 hours.</div>
+                </calcite-notice>
+              </calcite-table-cell>
+            </calcite-table-row>
+          {% endif %}
+        </calcite-table>
+      </div>
     </calcite-tab>
   </calcite-tabs>
-  <calcite-button id="schedule-portal-delete" slot="footer-start" appearance="solid" kind="danger" icon-start="trash"
+
+  <calcite-button id="schedule-portal-delete" slot="footer-start" appearance="solid" kind="danger"
+                  icon-start="trash"
                   {% if not description %}disabled{% endif %}
-                  hx-delete="{% url 'enterpriseviz:schedule' instance=form.instance.value %}"
-                  hx-target="#schedule-portal-form" hx-include="#schedule-portal-form">
+                  data-confirm-delete
+                  data-delete-url="{% url 'enterpriseviz:schedule' instance=form.instance.value %}"
+                  data-delete-method="DELETE"
+                  data-delete-target="#schedule-form-container"
+                  data-delete-message="Are you sure you want to delete this schedule?"
+                  data-delete-details="The scheduled updates will stop running."
+                  data-delete-button="Delete Schedule"
+                  label="Delete schedule permanently">
     Delete
   </calcite-button>
 
   <calcite-button id="schedule-portal-cancel" data-action="close-modal" slot="footer-end" appearance="outline"
-                  icon-start="circle-disallowed">
+                  kind="neutral"
+                  icon-start="circle-disallowed"
+                  label="Cancel without saving changes">
     Cancel
   </calcite-button>
 
   <calcite-button id="schedule-portal-save" slot="footer-end"
                   hx-post="{% url 'enterpriseviz:schedule' instance=form.instance.value %}"
                   hx-target="#schedule-form-container" hx-include="#schedule-portal-form"
-                  icon-start="save" {% if not enable %}disabled{% endif %}>
+                  icon-start="save" {% if not enable %}disabled{% endif %}
+                  label="Save schedule configuration">
     Save
   </calcite-button>
 

@@ -1,8 +1,10 @@
-<!-- Licensed under GPLv3 - See LICENSE file for details. -->
 <div class="progress_bar
             {% if progress.state == "SUCCESS" %}progress-success{% endif %}
             {% if progress.state == "FAILURE" %}progress-failure{% endif %}"
      id="progress-bar"
+     role="status"
+     aria-live="polite"
+     aria-atomic="true"
   {% if not progress.complete %}
      hx-get="{% url "enterpriseviz:refresh_progress" instance task_id %}"
      hx-trigger="every 5s"
@@ -12,6 +14,10 @@
      hx-trigger="none"
   {% endif %}>
   <div>
-    <calcite-progress value="{{ value }}"></calcite-progress>
+    <calcite-progress
+      value="{{ value }}"
+      type="determinate"
+      label="{% if progress.state == 'SUCCESS' %}Refresh complete{% elif progress.state == 'FAILURE' %}Refresh failed{% else %}Refreshing portal data{% endif %}">
+    </calcite-progress>
   </div>
 </div>

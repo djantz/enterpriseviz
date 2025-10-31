@@ -11,18 +11,15 @@ from .models import Webmap, Service, Layer, App, User, LogEntry
 class WebmapTable(tables.Table):
     details = tables.TemplateColumn(
         """<calcite-button
-  hx-get="{% url 'enterpriseviz:map' instance=record.portal_instance id=record.webmap_id %}"
-  hx-target="#mainbodycontent"
-  hx-push-url="{% url 'enterpriseviz:map' instance=record.portal_instance id=record.webmap_id %}"
-  hx-swap="show:top"
-  alignment="center"
-  appearance="solid"
-  kind="inverse"
-  scale="s"
-  width="auto"
-  type="submit">
-  Details
-</calcite-button>""",
+          href="{% url 'enterpriseviz:map' instance=record.portal_instance id=record.webmap_id %}"
+          hx-target="#mainbodycontent"
+          hx-push-url="{% url 'enterpriseviz:map' instance=record.portal_instance id=record.webmap_id %}"
+          hx-swap="innerHTML show:window:top"
+          kind="inverse"
+          scale="s"
+          label="View details for {{ record.webmap_title }}">
+          Details
+        </calcite-button>""",
         orderable=False, attrs={"td": {"class": "table-cell-details"}})
     title_link = tables.Column(orderable=True, accessor="webmap_title")
 
@@ -44,7 +41,16 @@ class WebmapTable(tables.Table):
 
 class ServiceTable(tables.Table):
     details = tables.TemplateColumn(
-        """<calcite-button hx-get="{% url 'enterpriseviz:service' instance=record.portal_instance url=record.service_name %}" hx-target="#mainbodycontent" hx-push-url="{% url 'enterpriseviz:service' instance=record.portal_instance url=record.service_name %}" hx-swap="show:top" alignment="center" appearance="solid" kind="inverse" scale="s" width="auto" type="submit">Details</calcite-button>""",
+        """<calcite-button
+        href="{% url 'enterpriseviz:service' instance=record.portal_instance url=record.service_name %}"
+        hx-target="#mainbodycontent"
+        hx-push-url="{% url 'enterpriseviz:service' instance=record.portal_instance url=record.service_name %}"
+        hx-swap="innerHTML show:window:top"
+        kind="inverse"
+        scale="s"
+        label="View details for {{ record.service_name }}">
+        Details
+        </calcite-button>""",
         orderable=False, attrs={"td": {"class": "table-cell-details"}})
     URL = tables.TemplateColumn(
         '{% for url in record.service_url_as_list %} <calcite-link href="{{ url }}" target="_blank">{{ url }}</calcite-link>{% endfor %}',
@@ -122,8 +128,17 @@ class ServiceTable(tables.Table):
         )
 
 class LayerTable(tables.Table):
-    details = tables.TemplateColumn(
-        """<calcite-button hx-get="{% url 'enterpriseviz:layer' name=record.layer_name %}?server={{ record.layer_server }}&database={{ record.layer_database }}&version={{ record.layer_version }}" hx-target="#mainbodycontent" hx-push-url="{% url 'enterpriseviz:layer' name=record.layer_name %}?server={{ record.layer_server }}&database={{ record.layer_database }}&version={{ record.layer_version }}" hx-swap="show:top" alignment="center" appearance="solid" kind="inverse" scale="s" width="auto" type="submit">Details</calcite-button>""",
+    details=tables.TemplateColumn(
+        """<calcite-button
+        href="{% url 'enterpriseviz:layer' name=record.layer_name %}?server={{ record.layer_server }}&database={{ record.layer_database }}&version={{ record.layer_version }}"
+        hx-target="#mainbodycontent"
+        hx-push-url="{% url 'enterpriseviz:layer' name=record.layer_name %}?server={{ record.layer_server }}&database={{ record.layer_database }}&version={{ record.layer_version }}"
+        hx-swap="innerHTML show:window:top"
+        kind="inverse"
+        scale="s"
+        label="View details for {{ record.layer_name }}">
+        Details
+        </calcite-button>""",
         orderable=False, attrs={"td": {"class": "table-cell-details"}})
 
     class Meta:

@@ -3,14 +3,17 @@
   <div id="add-form-container">
     {% include "partials/portal_add_form.html" %}
   </div>
-  <calcite-button id="add-portal-cancel" data-action="close-modal" icon-start="circle-disallowed" slot="footer-end" appearance="outline">
+  <calcite-button id="add-portal-cancel" data-action="close-modal"
+                  icon-start="circle-disallowed" slot="footer-end"
+                  appearance="outline" label="Cancel without saving changes">
     Cancel
   </calcite-button>
   <calcite-button id="add-portal-save" icon-start="save" slot="footer-end"
                   hx-post="{% url 'enterpriseviz:add_portal' %}"
                   hx-target="#add-form-container"
                   hx-include="#add-portal-form"
-                  hx-swap="innerHTML">
+                  hx-swap="innerHTML"
+                  label="Save portal configuration">
     Save
   </calcite-button>
 </calcite-dialog>

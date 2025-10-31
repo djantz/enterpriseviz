@@ -5,66 +5,133 @@
   </div>
   <div class="clearfix">
     <div class="row">
+      <div class="col-md-12 col-sm-12 col-xs-12">
+        <div class="x_panel x_panel--top">
+          <div class="x_title">
+            <h2>
+              <calcite-icon icon="layers" preload="true" scale="s" aria-hidden="true"></calcite-icon>
+              <div class="icon_space">
+                {{ tree.name }}
+              </div>
+            </h2>
+            <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="collapse-link"
+                                icon-start="chevron-up"
+                                label="Collapse panel">
+                </calcite-button>
+              </li>
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="close-link"
+                                icon-start="x"
+                                label="Close panel">
+                </calcite-button>
+              </li>
+            </ul>
+            <div class="clearfix"></div>
+          </div>
+          <div class="x_content">
+            <dl class="item-details">
+              <dt>Description:</dt>
+              <dd>{{ item.webmap_description|striptags|default:"No description available" }}</dd>
+              <dt>Owner:</dt>
+              <dd>{{ item.webmap_owner }}</dd>
+              <dt>Created:</dt>
+              <dd>
+                <time datetime="{{ item.webmap_created|date:'c' }}">
+                  {{ item.webmap_created }}
+                </time>
+              </dd>
+              <dt>Modified:</dt>
+              <dd>
+                <time datetime="{{ item.webmap_modified|date:'c' }}">
+                  {{ item.webmap_modified }}
+                </time>
+              </dd>
+              <dt>Views:</dt>
+              <dd>{{ item.webmap_views }}</dd>
+            </dl>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="row">
       <div id="d3panel" class="col-md-10 col-sm-10 col-xs-12">
         <div class="x_panel">
           <div class="x_title">
             <h2>
-              <calcite-icon icon="find-path" preload="true" scale="s"></calcite-icon>
+              <calcite-icon icon="find-path" preload="true" scale="s" aria-hidden="true"></calcite-icon>
               <div class="icon_space">What is this layer used in?<small>Matched
                 based on layer name. May not be
                 exact.</small>
               </div>
             </h2>
-            <ul class="nav navbar-right panel_toolbox">
-              <li><a class="collapse-link">
-                <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-              </a>
+            <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="collapse-link"
+                                icon-start="chevron-up"
+                                label="Collapse panel">
+                </calcite-button>
               </li>
-              <li><a class="close-link">
-                <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-              </a>
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="close-link"
+                                icon-start="x"
+                                label="Close panel">
+                </calcite-button>
               </li>
             </ul>
             <div class="clearfix"></div>
           </div>
           <div class="x_content d3chart">
-            <div class="d3chart-filter" id="d3chart-filter"></div>
-            <div id="chartd3" class="full-width"></div>
+            <div class="d3chart-filter" id="d3chart-filter" role="search" aria-label="Filter visualization"></div>
+            <div id="chartd3" class="full-width" role="img" aria-label="Layer usage dependency tree"></div>
           </div>
         </div>
       </div>
       <div class="col-md-2 col-sm-2 col-xs-12 col">
         <div class="x_panel">
           <div class="x_title">
-            <h2>Quick Stats<small></small></h2>
-            <ul class="nav navbar-right panel_toolbox">
-              <li><a class="collapse-link">
-                <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-              </a>
+            <h2>Quick Stats</h2>
+            <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="collapse-link"
+                                icon-start="chevron-up"
+                                label="Collapse panel">
+                </calcite-button>
               </li>
-              <li><a class="close-link">
-                <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-              </a>
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="close-link"
+                                icon-start="x"
+                                label="Close panel">
+                </calcite-button>
               </li>
             </ul>
             <div class="clearfix"></div>
           </div>
           <div class="x_content">
-            <h3>{{ services|length }}</h3>
-            <small>Number of Map Services</small>
-            <h3>{{ maps|length }}</h3>
-            <small>Number of Web Maps</small>
-            <h3>{{ apps|length }}</h3>
-            <small>Number of Web Apps</small>
+            <div role="group" aria-label="Content statistics">
+              <h3>{{ services|length }}</h3>
+              <p>Number of Map Services</p>
+              <h3>{{ maps|length }}</h3>
+              <p>Number of Web Maps</p>
+              <h3>{{ apps|length }}</h3>
+              <p>Number of Web Apps</p>
+            </div>
           </div>
         </div>
         {% if user.is_superuser %}
         <div class="x_panel">
-          <calcite-button scale="s" kind="inverse"
-            data-modal-trigger="notify-modal"
-                      >Notify
+          <calcite-button scale="s" kind="inverse" width="full"
+                          data-modal-trigger="notify-modal"
+                          label="Notify affected users about changes">Notify
           </calcite-button>
-        {% include "portals/portal_notify.html" with change_item_name=item %}
+          {% include "portals/portal_notify.html" with change_item_name=item %}
         </div>
         {% endif %}
       </div>
@@ -74,37 +141,44 @@
         <div class="x_panel">
           <div class="x_title">
             <h2>
-              <calcite-icon icon="layer-map-service" preload="true" scale="s"></calcite-icon>
+              <calcite-icon icon="layer-map-service" preload="true" scale="s" aria-hidden="true"></calcite-icon>
               <div class="icon_space">Services</div>
             </h2>
-            <ul class="nav navbar-right panel_toolbox">
-              <li><a class="collapse-link">
-                <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-              </a>
+            <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="collapse-link"
+                                icon-start="chevron-up"
+                                label="Collapse panel">
+                </calcite-button>
               </li>
-              <li><a class="close-link">
-                <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-              </a>
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="close-link"
+                                icon-start="x"
+                                label="Close panel">
+                </calcite-button>
               </li>
             </ul>
             <div class="clearfix"></div>
           </div>
           <div class="x_content">
-            <div class="line">
+            <div class="datatables-toolbar">
+              <div class="dt-buttons"></div>
               <div class="datatables-filter" id="datatable-services-filter"></div>
             </div>
             <table id="datatable-services" class="table table-striped wrap"
-                   width="100%">
+                   width="100%" aria-label="Services using this layer" hx-boost="true">
               <thead>
               <tr>
-                <th class="details">Details</th>
-                <th>Name</th>
-                <th>URL</th>
-                <th>Publishing Server</th>
-                <th>MXD</th>
-                <th>Owner</th>
-                <th>Access</th>
-                <th class="instance">Instance</th>
+                <th scope="col" class="details">Details</th>
+                <th scope="col">Name</th>
+                <th scope="col">URL</th>
+                <th scope="col">Publishing Server</th>
+                <th scope="col">MXD</th>
+                <th scope="col">Owner</th>
+                <th scope="col">Access</th>
+                <th scope="col" class="instance">Instance</th>
               </tr>
               </thead>
               <tbody>
@@ -113,26 +187,28 @@
                   <td>
                     <calcite-button {% if service.portal_instance.alias is None %}
                       disabled {% endif %} scale="s" kind="inverse"
-                      hx-get="/enterpriseviz/portal/{{ service.portal_instance.alias }}/service/{{ service.service_name|urlencode:'' }}"
+                      href="/enterpriseviz/portal/{{ service.portal_instance.alias }}/service/{{ service.service_name|urlencode:'' }}"
                       hx-target="#mainbodycontent"
                       hx-push-url="/enterpriseviz/portal/{{ service.portal_instance.alias }}/service/{{ service.service_name|urlencode:'' }}"
-                      hx-swap="show:window:top">Details
+                      hx-swap="show:window:top"
+                      label="View details for {{ service.service_name }}">Details
                     </calcite-button>
                   </td>
                   <td>{{ service.service_name }}</td>
                   <td>
                     {% for url in service.service_url_as_list %}
-                      <calcite-link href="{{ url }}" target="_blank">{{ url }}</calcite-link>{% endfor %}
+                      <calcite-link href="{{ url }}" target="_blank"
+                                    rel="noopener noreferrer">{{ url }}</calcite-link>
+                    {% endfor %}
                   </td>
-                  <td>{{ service.service_mxd_server }}</td>
-                  <td>{{ service.service_mxd }}</td>
+                  <td>{{ service.service_mxd_server|default:"—" }}</td>
+                  <td>{{ service.service_mxd|default:"—" }}</td>
                   <td>{{ service.service_owner }}</td>
                   <td>{{ service.service_access }}</td>
                   <td>{{ service.portal_instance.alias }}</td>
                 </tr>
               {% endfor %}
               </tbody>
-
             </table>
           </div>
         </div>
@@ -144,27 +220,33 @@
           <div class="x_panel">
             <div class="x_title">
               <h2>
-                <calcite-icon icon="graph-time-series" preload="true" scale="s"></calcite-icon>
+                <calcite-icon icon="graph-time-series" preload="true" scale="s" aria-hidden="true"></calcite-icon>
                 <div class="icon_space">Service Usage<small>Last 30
                   days</small></div>
               </h2>
-              <ul class="nav navbar-right panel_toolbox">
-                <li><a class="collapse-link">
-                  <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-                </a>
+              <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+                <li>
+                  <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                  class="collapse-link"
+                                  icon-start="chevron-up"
+                                  label="Collapse panel">
+                  </calcite-button>
                 </li>
-                <li><a class="close-link">
-                  <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-                </a>
+                <li>
+                  <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                  class="close-link"
+                                  icon-start="x"
+                                  label="Close panel">
+                  </calcite-button>
                 </li>
               </ul>
               <div class="clearfix"></div>
             </div>
             <div class="x_content">
-              <div class="chartjs-filter" id="chartjs-filter"></div>
-              <div id="chartjs-legend"></div>
+              <div class="chartjs-filter" id="chartjs-filter" role="search" aria-label="Filter chart data"></div>
+              <div id="chartjs-legend" role="group" aria-label="Chart legend"></div>
               <div class="height-370px">
-                <canvas id="line-chart"></canvas>
+                <canvas id="line-chart" role="img" aria-label="Service usage over last 30 days"></canvas>
               </div>
             </div>
           </div>
@@ -176,37 +258,45 @@
         <div class="x_panel">
           <div class="x_title">
             <h2>
-              <calcite-icon icon="map" preload="true" scale="s"></calcite-icon>
+              <calcite-icon icon="map" preload="true" scale="s" aria-hidden="true"></calcite-icon>
               <div class="icon_space">Web Maps</div>
             </h2>
-            <ul class="nav navbar-right panel_toolbox">
-              <li><a class="collapse-link">
-                <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-              </a>
+            <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="collapse-link"
+                                icon-start="chevron-up"
+                                label="Collapse panel">
+                </calcite-button>
               </li>
-              <li><a class="close-link">
-                <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-              </a>
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="close-link"
+                                icon-start="x"
+                                label="Close panel">
+                </calcite-button>
               </li>
             </ul>
             <div class="clearfix"></div>
           </div>
           <div class="x_content">
-            <div class="line">
+            <div class="datatables-toolbar">
+              <div class="dt-buttons"></div>
               <div class="datatables-filter" id="datatable-maps-filter"></div>
             </div>
-            <table id="datatable-maps" class="table table-striped wrap" width="100%">
+            <table id="datatable-maps" class="table table-striped wrap" width="100%"
+                   aria-label="Web maps using this layer" hx-boost="true">
               <thead>
               <tr>
-                <th class="details">Details</th>
-                <th>Webmap Title</th>
-                <th>Owner</th>
-                <th>Access</th>
-                <th>Created</th>
-                <th>Modified</th>
-                <th>Views</th>
-                <th class="instance">Instance</th>
-                <th class="url">URL</th>
+                <th scope="col" class="details">Details</th>
+                <th scope="col">Webmap Title</th>
+                <th scope="col">Owner</th>
+                <th scope="col">Access</th>
+                <th scope="col">Created</th>
+                <th scope="col">Modified</th>
+                <th scope="col">Views</th>
+                <th scope="col" class="instance">Instance</th>
+                <th scope="col" class="url">URL</th>
               </tr>
               </thead>
               <tbody>
@@ -215,19 +305,29 @@
                   <td>
                     <calcite-button {% if map.portal_instance.alias is None %}
                       disabled {% endif %} scale="s" kind="inverse"
-                      hx-get="/enterpriseviz/portal/{{ map.portal_instance.alias }}/map/{{ map.webmap_id }}"
+                      href="/enterpriseviz/portal/{{ map.portal_instance.alias }}/map/{{ map.webmap_id }}"
                       hx-target="#mainbodycontent"
                       hx-push-url="/enterpriseviz/portal/{{ map.portal_instance.alias }}/map/{{ map.webmap_id }}"
-                      hx-swap="show:window:top">Details
+                      hx-swap="show:window:top"
+                      label="View details for {{ map.webmap_title }}">Details
                     </calcite-button>
                   </td>
                   <td>
-                    <calcite-link href="{{ map.webbmap_url }}" target="_blank">{{ map.webmap_title }}</calcite-link>
+                    <calcite-link href="{{ map.webbmap_url }}" target="_blank"
+                                  rel="noopener noreferrer">{{ map.webmap_title }}</calcite-link>
                   </td>
                   <td>{{ map.webmap_owner }}</td>
                   <td>{{ map.webmap_access }}</td>
-                  <td>{{ map.webmap_created|date:'M j, Y h:i A' }}</td>
-                  <td>{{ map.webmap_modified|date:'M j, Y h:i A' }}</td>
+                  <td>
+                    <time datetime="{{ map.webmap_created|date:'c' }}">
+                      {{ map.webmap_created|date:'M j, Y h:i A' }}
+                    </time>
+                  </td>
+                  <td>
+                    <time datetime="{{ map.webmap_modified|date:'c' }}">
+                      {{ map.webmap_modified|date:'M j, Y h:i A' }}
+                    </time>
+                  </td>
                   <td>{{ map.webmap_views }}</td>
                   <td>{{ map.portal_instance.alias }}</td>
                   <td>{{ map.webbmap_url }}</td>
@@ -244,57 +344,75 @@
         <div class="x_panel">
           <div class="x_title">
             <h2>
-              <calcite-icon icon="browser" preload="true" scale="s"></calcite-icon>
+              <calcite-icon icon="browser" preload="true" scale="s" aria-hidden="true"></calcite-icon>
               <div class="icon_space">Apps<small>
                 Dashboard, ExB, Form, StoryMap, WAB</small></div>
             </h2>
-            <ul class="nav navbar-right panel_toolbox">
-              <li><a class="collapse-link">
-                <calcite-icon icon="chevron-up" preload="true" scale="s"></calcite-icon>
-              </a>
+            <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="collapse-link"
+                                icon-start="chevron-up"
+                                label="Collapse panel">
+                </calcite-button>
               </li>
-              <li><a class="close-link">
-                <calcite-icon icon="x" preload="true" scale="s"></calcite-icon>
-              </a>
+              <li>
+                <calcite-button appearance="transparent" kind="neutral" scale="s"
+                                class="close-link"
+                                icon-start="x"
+                                label="Close panel">
+                </calcite-button>
               </li>
             </ul>
             <div class="clearfix"></div>
           </div>
           <div class="x_content">
-            <div class="line">
+            <div class="datatables-toolbar">
+              <div class="dt-buttons"></div>
               <div class="datatables-filter" id="datatable-apps-filter"></div>
             </div>
-            <table id="datatable-apps" class="table table-striped wrap" width="100%">
+            <table id="datatable-apps" class="table table-striped wrap" width="100%"
+                   aria-label="Apps using this layer">
               <thead>
               <tr>
-                <th class="details">Details</th>
-                <th>Title</th>
-                <th>Type</th>
-                <th>Usage</th>
-                <th>Owner</th>
-                <th>Access</th>
-                <th>Created</th>
-                <th>Modified</th>
-                <th>Views</th>
-                <th class="instance">Instance</th>
-                <th class="url">URL</th>
+                <th scope="col" class="details">Details</th>
+                <th scope="col">Title</th>
+                <th scope="col">Type</th>
+                <th scope="col">Usage</th>
+                <th scope="col">Owner</th>
+                <th scope="col">Access</th>
+                <th scope="col">Created</th>
+                <th scope="col">Modified</th>
+                <th scope="col">Views</th>
+                <th scope="col" class="instance">Instance</th>
+                <th scope="col" class="url">URL</th>
               </tr>
               </thead>
               <tbody>
               {% for app in apps %}
                 <tr>
                   <td>
-                    <calcite-button scale="s" kind="inverse" disabled>Details</calcite-button>
+                    <calcite-button scale="s" kind="inverse" disabled
+                                    label="Details not available for apps">Details</calcite-button>
                   </td>
                   <td>
-                    <calcite-link href="{{ app.app_url }}" target="_blank">{{ app.app_title }}</calcite-link>
+                    <calcite-link href="{{ app.app_url }}" target="_blank"
+                                  rel="noopener noreferrer">{{ app.app_title }}</calcite-link>
                   </td>
                   <td>{{ app.app_type }}</td>
-                  <td>{{ app.usage_type }}</td>
+                  <td>{{ app.usage_type|default:"—" }}</td>
                   <td>{{ app.app_owner }}</td>
                   <td>{{ app.app_access }}</td>
-                  <td>{{ app.app_created|date:'M j, Y h:i A' }}</td>
-                  <td>{{ app.app_modified|date:'M j, Y h:i A' }}</td>
+                  <td>
+                    <time datetime="{{ app.app_created|date:'c' }}">
+                      {{ app.app_created|date:'M j, Y h:i A' }}
+                    </time>
+                  </td>
+                  <td>
+                    <time datetime="{{ app.app_modified|date:'c' }}">
+                      {{ app.app_modified|date:'M j, Y h:i A' }}
+                    </time>
+                  </td>
                   <td>{{ app.app_views }}</td>
                   <td>{{ app.portal_instance }}</td>
                   <td>{{ app.app_url }}</td>

@@ -1,64 +1,90 @@
 <form id="notify-portal-form" class="calcite-form" autocomplete="off"
       hx-post="{% url 'enterpriseviz:notify' %}"
       hx-target="#notify-form-container"
-      hx-swap="innerHTML">
+      hx-swap="innerHTML"
+      aria-label="Notify affected users about changes">
   {% csrf_token %}
-  <input type="hidden" name="selected_maps" id="selected-maps">
-  <input type="hidden" name="selected_apps" id="selected-apps">
+  <input type="hidden" name="selected_maps" id="selected-maps" aria-hidden="true">
+  <input type="hidden" name="selected_apps" id="selected-apps" aria-hidden="true">
 
-  <calcite-stepper id="notify-stepper" layout="horizontal" scale="s">
-    <calcite-stepper-item heading="Select items" selected>
-      <calcite-label>Affected Maps</calcite-label>
-      <calcite-table id="maps-table" scale="s" caption="Maps" striped {% if maps %}
-                     selection-mode="multiple" {% endif %} page-size="10"
-                     bordered>
-        <calcite-table-row slot="table-header">
-          <calcite-table-header heading="Title"></calcite-table-header>
-          <calcite-table-header heading="Owner"></calcite-table-header>
-        </calcite-table-row>
-        {% if maps %}
-          {% for map in maps %}
-            <calcite-table-row data-id="{{ map.webmap_id }}">
-              <calcite-table-cell>{{ map.webmap_title }}</calcite-table-cell>
-              <calcite-table-cell>{{ map.webmap_owner }}</calcite-table-cell>
-            </calcite-table-row>
-          {% endfor %}
-        {% else %}
-          <calcite-table-row>
-            <calcite-table-cell col-span="2">No impacted maps.</calcite-table-cell>
+  <calcite-stepper id="notify-stepper" layout="horizontal" scale="s" numbered>
+    <calcite-stepper-item heading="Select items" description="Choose affected maps and apps" selected>
+      <div role="group" aria-labelledby="maps-label">
+        <calcite-label id="maps-label">Affected Maps</calcite-label>
+        <calcite-table id="maps-table" scale="s" caption="Affected Maps" striped
+                       {% if maps %}selection-mode="multiple"{% endif %}
+                       page-size="10" bordered
+                       aria-label="Select affected maps">
+          <calcite-table-row slot="table-header">
+            <calcite-table-header heading="Title"></calcite-table-header>
+            <calcite-table-header heading="Owner"></calcite-table-header>
           </calcite-table-row>
-        {% endif %}
-      </calcite-table>
+          {% if maps %}
+            {% for map in maps %}
+              <calcite-table-row data-id="{{ map.webmap_id }}">
+                <calcite-table-cell>{{ map.webmap_title }}</calcite-table-cell>
+                <calcite-table-cell>{{ map.webmap_owner }}</calcite-table-cell>
+              </calcite-table-row>
+            {% endfor %}
+          {% else %}
+            <calcite-table-row>
+              <calcite-table-cell col-span="2">
+                <calcite-notice open kind="info" icon scale="s">
+                  <div slot="message">No impacted maps.</div>
+                </calcite-notice>
+              </calcite-table-cell>
+            </calcite-table-row>
+          {% endif %}
+        </calcite-table>
+      </div>
 
-      <calcite-label>Affected Apps</calcite-label>
-      <calcite-table id="apps-table" scale="s" caption="Apps" striped {% if apps %}
-                     selection-mode="multiple" {% endif %} page-size="10"
-                     bordered>
-        <calcite-table-row slot="table-header">
-          <calcite-table-header heading="Title"></calcite-table-header>
-          <calcite-table-header heading="Owner"></calcite-table-header>
-        </calcite-table-row>
-        {% if apps %}
-          {% for app in apps %}
-            <calcite-table-row data-id="{{ app.app_id }}">
-              <calcite-table-cell>{{ app.app_title }}</calcite-table-cell>
-              <calcite-table-cell>{{ app.app_owner }}</calcite-table-cell>
-            </calcite-table-row>
-          {% endfor %}
-        {% else %}
-          <calcite-table-row>
-            <calcite-table-cell col-span="2">No impacted apps.</calcite-table-cell>
+      <div role="group" aria-labelledby="apps-label" class="margin-top-1">
+        <calcite-label id="apps-label">Affected Apps</calcite-label>
+        <calcite-table id="apps-table" scale="s" caption="Affected Apps" striped
+                       {% if apps %}selection-mode="multiple"{% endif %}
+                       page-size="10" bordered
+                       aria-label="Select affected apps">
+          <calcite-table-row slot="table-header">
+            <calcite-table-header heading="Title"></calcite-table-header>
+            <calcite-table-header heading="Owner"></calcite-table-header>
           </calcite-table-row>
-        {% endif %}
-      </calcite-table>
+          {% if apps %}
+            {% for app in apps %}
+              <calcite-table-row data-id="{{ app.app_id }}">
+                <calcite-table-cell>{{ app.app_title }}</calcite-table-cell>
+                <calcite-table-cell>{{ app.app_owner }}</calcite-table-cell>
+              </calcite-table-row>
+            {% endfor %}
+          {% else %}
+            <calcite-table-row>
+              <calcite-table-cell col-span="2">
+                <calcite-notice open kind="info" icon scale="s">
+                  <div slot="message">No impacted apps.</div>
+                </calcite-notice>
+              </calcite-table-cell>
+            </calcite-table-row>
+          {% endif %}
+        </calcite-table>
+      </div>
     </calcite-stepper-item>
 
-    <calcite-stepper-item heading="Add info">
+    <calcite-stepper-item heading="Add info" description="Provide notification details">
       <calcite-text-area name="change" id="change-text"
-                         rows="4" label-text="Provide additional information about the change">This email is to inform
-        you about upcoming changes to the '{{ change_item_name }}' layer. Below is content you own that may be impacted
-        by this change. For additional information, questions, or concerns, please contact your portal administrator.
+                         rows="4"
+                         label-text="Additional Information"
+                         required
+                         placeholder="Provide additional information about the change"
+                         resize="vertical">This email is to inform you about upcoming changes to the '{{ change_item_name }}' layer. Below is content you own that may be impacted by this change. For additional information, questions, or concerns, please contact your portal administrator.
       </calcite-text-area>
+      <calcite-input-message icon="information" kind="info">
+        This message will be sent to the owners of all selected maps and apps.
+      </calcite-input-message>
     </calcite-stepper-item>
   </calcite-stepper>
+
+  {% if form.non_field_errors %}
+    <calcite-notice open kind="danger" icon>
+      <div slot="message">{{ form.non_field_errors|join:" " }}</div>
+    </calcite-notice>
+  {% endif %}
 </form>

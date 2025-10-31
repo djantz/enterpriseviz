@@ -4,116 +4,154 @@
 {% load django_tables2 %}
 {% load export_url from django_tables2 %}
 
+{% block table %}
+<div hx-boost="true">
+  <table {{ table.attrs.as_html }}>
+    {% block table.thead %}
+      {% if table.show_header %}
+        <thead {{ table.attrs.thead.as_html }}>
+        <tr>
+          {% for column in table.columns %}
+            <th {{ column.attrs.th.as_html }} scope="col"
+              {% if column.orderable %}
+                role="button"
+                tabindex="0"
+                class="cursor-pointer"
+                aria-sort="{% if column.is_ordered %}{% if column.order_by_alias.is_descending %}descending{% else %}ascending{% endif %}{% else %}none{% endif %}"
+                aria-label="Sort by {{ column.header }}{% if column.is_ordered %}, currently sorted {% if column.order_by_alias.is_descending %}descending{% else %}ascending{% endif %}{% endif %}"
+                {% with target_id=table_name|add:"-table" %}
+                  {% if instance %}
+                    hx-get="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_order_by_field=column.order_by_alias.next %}"
+                  {% else %}
+                    hx-get="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_order_by_field=column.order_by_alias.next %}"
+                  {% endif %}
+                    hx-trigger="click"
+                    hx-target="#{{ target_id }}"
+                    hx-swap="innerHTML"
+                    hx-indicator="#{{ table_name }}-table-progress"
+                {% endwith %}
+              {% endif %}>
+              {{ column.header }}
+            </th>
+          {% endfor %}
+        </tr>
+        </thead>
+      {% endif %}
+    {% endblock table.thead %}
 
-{% block table.thead %}
-  {% if table.show_header %}
-    <thead {{ table.attrs.thead.as_html }}>
-    <tr>
-      {% for column in table.columns %}
-        <th {{ column.attrs.th.as_html }} scope="col"
-          {% if column.orderable %}
-            class="cursor-pointer"
-            {% with target_id=table_name|add:"-table" %} {# Construct target ID #}
-              {% if instance %}
-                hx-get="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_order_by_field=column.order_by_alias.next %}"
+    {% block table.tbody %}
+      <tbody>
+      {% for row in table.page.object_list %}
+        <tr {{ row.attrs.as_html }}>
+          {% for column, cell in row.items %}
+            <td {{ column.attrs.td.as_html }}>{{ cell }}</td>
+          {% endfor %}
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="{{ table.columns|length }}" class="text-center">
+            <calcite-notice open kind="info" icon="information" scale="s">
+              <div slot="message">No records available.</div>
+            </calcite-notice>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    {% endblock table.tbody %}
+  </table>
+</div>
+{% endblock table %}
+
+
+{% block pagination %}
+  {% if table.page and table.paginator.num_pages > 0 %}
+    <nav aria-label="{{ table_name|title }} table pagination" class="table-pagination-controls row" hx-boost="true">
+      <div class="col-6 align-start">
+        <div role="status" aria-live="polite">
+          Showing {{ table.page.start_index }} to {{ table.page.end_index }} of {{ table.paginator.count }} records
+        </div>
+      </div>
+      <div class="col-6 align-end">
+        <ul class="pagination justify-content-right flex-wrap">
+    {% with target_id=table_name|add:"-table" %}
+          {% if page_obj.has_previous %}
+            <li class="page-item">
+              <a {% if instance %}
+                href="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=table.page.previous_page_number %}"
               {% else %}
-                hx-get="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_order_by_field=column.order_by_alias.next %}"
+                href="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=table.page.previous_page_number %}"
               {% endif %}
                 hx-trigger="click"
                 hx-target="#{{ target_id }}"
                 hx-swap="innerHTML"
                 hx-indicator="#{{ table_name }}-table-progress"
-            {% endwith %}
-          {% endif %}>
-          {{ column.header }}
-        </th>
-      {% endfor %}
-    </tr>
-    </thead>
-  {% endif %}
-{% endblock table.thead %}
-
-{% block table.tbody %}
-  <tbody>
-  {% for row in table.page.object_list %}
-    <tr {{ row.attrs.as_html }}>
-      {% for column, cell in row.items %}
-        <td {{ column.attrs.td.as_html }}>{{ cell }}</td>
-      {% endfor %}
-    </tr>
-    {% empty %}
-    <tr>
-      <td colspan="{{ table.columns|length }}" class="text-center">No records available.</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-{% endblock table.tbody %}
-
-
-{% block pagination %}
-  {% if table.page and table.paginator.num_pages > 1 %} {# Show pagination only if needed #}
-    <div class="table-pagination-controls row"> {# Class for styling pagination area #}
-      <div class="col-6 align-start">
-        Showing {{ table.page.start_index }} to {{ table.page.end_index }} of {{ table.paginator.count }} records
-      </div>
-    <div class="col-6 align-end">
-      <ul class="pagination justify-content-right flex-wrap">
-  {% with target_id=table_name|add:"-table" %}
-        {% if page_obj.has_previous %}
-          <li class="page-item">
-            <a {% if instance %}
-              hx-get="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=table.page.previous_page_number %}"
-            {% else %}
-              hx-get="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=table.page.previous_page_number %}"
-            {% endif %}
-              hx-trigger="click"
-              hx-target="#{{ target_id }}"
-              hx-swap="innerHTML"
-              hx-indicator="#{{ table_name }}-table-progress"
-              class="page-link"><calcite-icon icon="chevron-left" preload="true" scale="s"></calcite-icon></a></li>
-        {% else %}
-          <li class="disabled page-item"><span class="page-link"><calcite-icon icon="chevron-left" preload="true" scale="s"></calcite-icon></span></li>
-        {% endif %}
-        {% for i in paginator_range|default_if_none:page_obj.paginator.get_elided_page_range %}
-          {% if page_obj.number == i %}
-            <li class="active page-item"><span class="page-link">{{ i }} <span class="sr-only">(current)</span></span>
+                class="page-link"
+                aria-label="Previous page">
+                <calcite-icon icon="chevron-left" preload="true" scale="s" aria-hidden="true"></calcite-icon>
+              </a>
             </li>
           {% else %}
-            {% if i == page_obj.paginator.ELLIPSIS %}
-              <li class="page-item"><span class="page-link disabled">...</span></li>
-            {% else %}
-              <li class="page-item"><a
-                {% if instance %}
-                  hx-get="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=i %}"
-                {% else %}
-                  hx-get="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=i %}"
-                {% endif %}
-                  hx-trigger="click"
-                  hx-target="#{{ target_id }}"
-                  hx-swap="innerHTML"
-                  hx-indicator="#{{ table_name }}-table-progress"
-                  class="page-link">{{ i }}</a></li>
-            {% endif %}
+            <li class="disabled page-item">
+              <span class="page-link" aria-disabled="true" aria-label="Previous page (disabled)">
+                <calcite-icon icon="chevron-left" preload="true" scale="s" aria-hidden="true"></calcite-icon>
+              </span>
+            </li>
           {% endif %}
-        {% endfor %}
-        {% if page_obj.has_next %}
-          <li class="page-item"><a
-            {% if instance %}
-              hx-get="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=table.page.next_page_number %}"
+          {% for i in paginator_range|default_if_none:page_obj.paginator.get_elided_page_range %}
+            {% if page_obj.number == i %}
+              <li class="active page-item">
+                <span class="page-link" aria-current="page" aria-label="Page {{ i }}, current page">
+                  {{ i }}
+                </span>
+              </li>
             {% else %}
-              hx-get="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=table.page.next_page_number %}"
+              {% if i == page_obj.paginator.ELLIPSIS %}
+                <li class="page-item">
+                  <span class="page-link disabled" aria-hidden="true">...</span>
+                </li>
+              {% else %}
+                <li class="page-item">
+                  <a {% if instance %}
+                    href="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=i %}"
+                  {% else %}
+                    href="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=i %}"
+                  {% endif %}
+                    hx-trigger="click"
+                    hx-target="#{{ target_id }}"
+                    hx-swap="innerHTML"
+                    hx-indicator="#{{ table_name }}-table-progress"
+                    class="page-link"
+                    aria-label="Go to page {{ i }}">{{ i }}</a>
+                </li>
+              {% endif %}
             {% endif %}
-              hx-trigger="click"
-              hx-target="#{{ target_id }}"
-              hx-swap="innerHTML"
-              hx-indicator="#{{ table_name }}-table-progress"
-              class="page-link"><calcite-icon icon="chevron-right" preload="true" scale="s"></calcite-icon></a></li>
-        {% else %}
-          <li class="disabled page-item"><span class="page-link"><calcite-icon icon="chevron-right" preload="true" scale="s"></calcite-icon></span></li>
-        {% endif %}
-      {% endwith %}
-      </ul>
-    </div>
-    {% endif %}
-  </div>
+          {% endfor %}
+          {% if page_obj.has_next %}
+            <li class="page-item">
+              <a {% if instance %}
+                href="{% url 'enterpriseviz:table' instance=instance name=table_name %}{% querystring table.prefixed_page_field=table.page.next_page_number %}"
+              {% else %}
+                href="{% url 'enterpriseviz:table' name=table_name %}{% querystring table.prefixed_page_field=table.page.next_page_number %}"
+              {% endif %}
+                hx-trigger="click"
+                hx-target="#{{ target_id }}"
+                hx-swap="innerHTML"
+                hx-indicator="#{{ table_name }}-table-progress"
+                class="page-link"
+                aria-label="Next page">
+                <calcite-icon icon="chevron-right" preload="true" scale="s" aria-hidden="true"></calcite-icon>
+              </a>
+            </li>
+          {% else %}
+            <li class="disabled page-item">
+              <span class="page-link" aria-disabled="true" aria-label="Next page (disabled)">
+                <calcite-icon icon="chevron-right" preload="true" scale="s" aria-hidden="true"></calcite-icon>
+              </span>
+            </li>
+          {% endif %}
+        {% endwith %}
+        </ul>
+      </div>
+    </nav>
+  {% endif %}
 {% endblock pagination %}

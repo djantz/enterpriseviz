@@ -377,6 +377,7 @@ CONTENT_SECURITY_POLICY = {
 
         "img-src": [
             SELF,
+            "https://raw.githubusercontent.com",
         ],
 
         "font-src": [
@@ -388,6 +389,8 @@ CONTENT_SECURITY_POLICY = {
         "connect-src": [
             SELF,
             "https://js.arcgis.com",
+            "https://cdnjs.cloudflare.com",
+            "https://cdn.jsdelivr.net"
         ],
 
         "worker-src": [

@@ -10,11 +10,14 @@
         <th {{ column.attrs.th.as_html }} scope="col"
           {% if column.orderable %}
             class="cursor-pointer"
+            role="button"
+            tabindex="0"
+            aria-sort="{% if column.is_ordered %}{% if column.order_by_alias.is_descending %}descending{% else %}ascending{% endif %}{% else %}none{% endif %}"
             hx-get="{{ request.path }}?{% querystring table.prefixed_order_by_field=column.order_by_alias.next %}"
-            hx-trigger="click"
+            hx-trigger="click, keydown"
             hx-target="#log-table-container"
             hx-swap="innerHTML"
-
+            aria-label="Sort by {{ column.header }}{% if column.is_ordered %}, currently sorted {% if column.order_by_alias.is_descending %}descending{% else %}ascending{% endif %}{% endif %}"
           {% endif %}>
           {{ column.header }}
         </th>
@@ -36,67 +39,90 @@
       {% endfor %}
     {% else %}
       <tr>
-        <td colspan="{{ table.columns|length }}" class="text-center">No records available.</td>
+        <td colspan="{{ table.columns|length }}" class="text-center">
+          <calcite-notice open icon kind="info">
+            <div slot="message">No records available.</div>
+          </calcite-notice>
+        </td>
       </tr>
     {% endif %}
   </tbody>
 {% endblock table.tbody %}
 
 {% block pagination %}
-  <div class="row mt-3">
-    <div class="col-sm-6">
-      {% if table.page %}
-        Showing {{ table.page.start_index }} to {{ table.page.end_index }} of {{ table.page.paginator.count }} records
-      {% endif %}
-    </div>
-    <div class="col-sm-6">
-      {% if table.page and table.paginator.num_pages > 1 %}
-        <ul class="pagination justify-content-end flex-wrap">
-          {% if table.page.has_previous %}
-            <li class="page-item">
-              <a hx-get="{{ request.path }}?page={{ table.page.previous_page_number }}&{{ query_params_urlencode }}"
-                 hx-trigger="click"
-                 hx-target="#log-table-container"
-                 hx-swap="innerHTML"
-                 class="page-link">
-                <calcite-icon icon="chevron-left" scale="s"></calcite-icon>
-              </a>
-            </li>
-          {% else %}
-            <li class="disabled page-item"><span class="page-link"><calcite-icon icon="chevron-left" scale="s"></calcite-icon></span></li>
-          {% endif %}
-
-          {% for i in paginator_range|default_if_none:table.page.paginator.get_elided_page_range %}
-            {% if table.page.number == i %}
-              <li class="active page-item"><span class="page-link">{{ i }}</span></li>
-            {% elif i == table.page.paginator.ELLIPSIS %}
-              <li class="page-item disabled"><span class="page-link">...</span></li>
-            {% else %}
+  <nav aria-label="Log table pagination" class="mt-3">
+    <div class="row">
+      <div class="col-sm-6">
+        {% if table.page %}
+          <div role="status" aria-live="polite">
+            Showing {{ table.page.start_index }} to {{ table.page.end_index }} of {{ table.page.paginator.count }} records
+          </div>
+        {% endif %}
+      </div>
+      <div class="col-sm-6">
+        {% if table.page and table.paginator.num_pages > 1 %}
+          <ul class="pagination justify-content-end flex-wrap">
+            {% if table.page.has_previous %}
               <li class="page-item">
-                <a hx-get="{{ request.path }}?page={{ i }}&{{ query_params_urlencode }}"
+                <a hx-get="{{ request.path }}?page={{ table.page.previous_page_number }}&{{ query_params_urlencode }}"
                    hx-trigger="click"
                    hx-target="#log-table-container"
                    hx-swap="innerHTML"
-                   class="page-link">{{ i }}</a>
+                   class="page-link"
+                   aria-label="Previous page">
+                  <calcite-icon icon="chevron-left" scale="s" aria-hidden="true"></calcite-icon>
+                </a>
+              </li>
+            {% else %}
+              <li class="disabled page-item">
+                <span class="page-link" aria-disabled="true" aria-label="Previous page (disabled)">
+                  <calcite-icon icon="chevron-left" scale="s" aria-hidden="true"></calcite-icon>
+                </span>
               </li>
             {% endif %}
-          {% endfor %}
 
-          {% if table.page.has_next %}
-            <li class="page-item">
-              <a hx-get="{{ request.path }}?page={{ table.page.next_page_number }}&{{ query_params_urlencode }}"
-                 hx-trigger="click"
-                 hx-target="#log-table-container"
-                 hx-swap="innerHTML"
-                 class="page-link">
-                <calcite-icon icon="chevron-right" scale="s"></calcite-icon>
-              </a>
-            </li>
-          {% else %}
-            <li class="disabled page-item"><span class="page-link"><calcite-icon icon="chevron-right" scale="s"></calcite-icon></span></li>
-          {% endif %}
-        </ul>
-      {% endif %}
+            {% for i in paginator_range|default_if_none:table.page.paginator.get_elided_page_range %}
+              {% if table.page.number == i %}
+                <li class="active page-item">
+                  <span class="page-link" aria-current="page" aria-label="Page {{ i }}, current page">{{ i }}</span>
+                </li>
+              {% elif i == table.page.paginator.ELLIPSIS %}
+                <li class="page-item disabled">
+                  <span class="page-link" aria-hidden="true">...</span>
+                </li>
+              {% else %}
+                <li class="page-item">
+                  <a hx-get="{{ request.path }}?page={{ i }}&{{ query_params_urlencode }}"
+                     hx-trigger="click"
+                     hx-target="#log-table-container"
+                     hx-swap="innerHTML"
+                     class="page-link"
+                     aria-label="Go to page {{ i }}">{{ i }}</a>
+                </li>
+              {% endif %}
+            {% endfor %}
+
+            {% if table.page.has_next %}
+              <li class="page-item">
+                <a hx-get="{{ request.path }}?page={{ table.page.next_page_number }}&{{ query_params_urlencode }}"
+                   hx-trigger="click"
+                   hx-target="#log-table-container"
+                   hx-swap="innerHTML"
+                   class="page-link"
+                   aria-label="Next page">
+                  <calcite-icon icon="chevron-right" scale="s" aria-hidden="true"></calcite-icon>
+                </a>
+              </li>
+            {% else %}
+              <li class="disabled page-item">
+                <span class="page-link" aria-disabled="true" aria-label="Next page (disabled)">
+                  <calcite-icon icon="chevron-right" scale="s" aria-hidden="true"></calcite-icon>
+                </span>
+              </li>
+            {% endif %}
+          </ul>
+        {% endif %}
+      </div>
     </div>
-  </div>
+  </nav>
 {% endblock pagination %}

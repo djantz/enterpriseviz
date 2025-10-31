@@ -1,6 +1,5 @@
 $('.collapse-link').on('click', function () {
     var $BOX_PANEL = $(this).closest('.x_panel');
-    var $ICON = $(this).find('calcite-icon');
     var $BOX_CONTENT = $BOX_PANEL.find('.x_content');
 
     $BOX_CONTENT.slideToggle(200, function () {
@@ -11,9 +10,9 @@ $('.collapse-link').on('click', function () {
         }
     });
 
-    var currentIcon = $ICON.attr('icon');
+    var currentIcon = $(this).attr('icon-start');
     var newIcon = (currentIcon === 'chevron-up') ? 'chevron-down' : 'chevron-up';
-    $ICON.attr('icon', newIcon);
+    $(this).attr('icon-start', newIcon);
 });
 
 
@@ -40,38 +39,42 @@ function init_DataTables() {
     }
 
     function initDataTable(selector, filterSelector, columnContains, usageTarget) {
-        return $(selector).DataTable({
+        const table = $(selector).DataTable({
             layout: {
-                topStart: {
-                    buttons: [
-                        {
-                            extend: "copyHtml5",
-                            tag: 'calcite-button',
-                            attr: {scale: "s", kind: "inverse", "icon-start": "copy-to-clipboard"}
-                        },
-                        {
-                            extend: "csvHtml5",
-                            tag: 'calcite-button',
-                            attr: {scale: "s", kind: "inverse", "icon-start": "file-csv"}
-                        },
-                        {
-                            extend: "excelHtml5",
-                            tag: 'calcite-button',
-                            attr: {scale: "s", kind: "inverse", "icon-start": "file-excel"}
-                        },
-                        {
-                            extend: "pdfHtml5",
-                            tag: 'calcite-button',
-                            attr: {scale: "s", kind: "inverse", "icon-start": "file-pdf"}
-                        }
-                    ]
-                },
+                topStart: null,
+                topEnd: null,
                 bottomEnd: {
                     paging: {
                         firstLast: false
                     }
                 }
             },
+            buttons: [
+                {
+                    extend: "copyHtml5",
+                    text: "Copy",
+                    tag: 'calcite-button',
+                    attr: {scale: "s", kind: "inverse", "icon-start": "copy-to-clipboard"}
+                },
+                {
+                    extend: "csvHtml5",
+                    text: "CSV",
+                    tag: 'calcite-button',
+                    attr: {scale: "s", kind: "inverse", "icon-start": "file-csv"}
+                },
+                {
+                    extend: "excelHtml5",
+                    text: "Excel",
+                    tag: 'calcite-button',
+                    attr: {scale: "s", kind: "inverse", "icon-start": "file-excel"}
+                },
+                {
+                    extend: "pdfHtml5",
+                    text: "PDF",
+                    tag: 'calcite-button',
+                    attr: {scale: "s", kind: "inverse", "icon-start": "file-pdf"}
+                }
+            ],
             language: {
                 paginate: {
                     next: '<calcite-icon icon="chevron-right" preload="true" scale="s"></calcite-icon>',
@@ -95,12 +98,19 @@ function init_DataTables() {
             ],
             orderCellsTop: true,
             initComplete: function () {
-                this.api().columns(`:contains(${columnContains})`).every(function (d) {
+                const api = this.api();
+
+                const buttonsContainer = $(selector).closest('.x_content').find('.dt-buttons');
+                if (buttonsContainer.length) {
+                    api.buttons().container().appendTo(buttonsContainer);
+                }
+
+                api.columns(`:contains(${columnContains})`).every(function (d) {
                     var column = this;
-                    var $select = $('<calcite-combobox placeholder="Instance" scale="s" selection-mode="single" placeholder-icon="filter"></calcite-combobox>');
+                    var $select = $('<calcite-combobox placeholder="Instance" scale="s" selection-mode="single" placeholder-icon="filter" label="Filter by Portal instance"></calcite-combobox>');
                     column.data().unique().sort().each(function (d, j) {
                         var val = $('<div/>').html(d).text();
-                        $select.append(`<calcite-combobox-item value="${val}" heading="${val}"></calcite-combobox-item>`);
+                        $select.append(`<calcite-combobox-item value="${val}" heading="${val}" label="${val}"></calcite-combobox-item>`);
                     });
                     $select.appendTo(filterSelector);
                     $select.on('calciteComboboxChange', function () {
@@ -108,8 +118,32 @@ function init_DataTables() {
                         column.search(val ? '^' + val + '$' : '', true, false).draw();
                     });
                 });
+
+                // Add Calcite search input (at the beginning)
+                const filterContainer = document.querySelector(filterSelector);
+                if (filterContainer) {
+                    const tableId = selector.replace('#', '');
+                    const searchHtml = `
+                        <calcite-input
+                            prefix-text="Search"
+                            type="search"
+                            id="${tableId}-search"
+                            clearable
+                            scale="s"
+                            label="Search">
+                        </calcite-input>
+                    `;
+                    filterContainer.insertAdjacentHTML('afterbegin', searchHtml);
+
+                    const searchInput = document.getElementById(`${tableId}-search`);
+                    searchInput.addEventListener('calciteInputInput', (e) => {
+                        api.search(e.target.value).draw();
+                    });
+                }
             }
         });
+
+        return table;
     }
 
     // Initialize tables only if they exist
@@ -204,7 +238,7 @@ function init_Charts() {
         });
 
         // Create dropdown filter
-        const $select = $('<calcite-combobox placeholder="Instance" scale="s" selection-mode="single" placeholder-icon="filter"></calcite-combobox>');
+        const $select = $('<calcite-combobox placeholder="Instance" scale="s" selection-mode="multiple" placeholder-icon="filter" label="Filter by Portal instance"></calcite-combobox>');
         const instances = new Set();
 
         // Populate unique instances
@@ -215,7 +249,7 @@ function init_Charts() {
 
         // Append unique instances to dropdown
         for (const instance of instances) {
-            $select.append(`<calcite-combobox-item value="${instance}" heading="${instance}"></calcite-combobox-item>`);
+            $select.append(`<calcite-combobox-item value="${instance}" heading="${instance}" label="${instance}"></calcite-combobox-item>`);
         }
 
         // Ensure the dropdown is empty before appending (prevents duplicates)
@@ -809,7 +843,6 @@ htmx.on("htmx:afterSettle", (e) => {
             const content = document.getElementById('mainbodycontent');
             if (content) content.hidden = false;
 
-            return;
         }
 
         // Initialize notify modal
@@ -905,9 +938,21 @@ async function setupPortalFormLogic(modal) {
         if (!storePasswordItem) {
             return;
         }
-        storePasswordSection.hidden = storePasswordItem.checked;
-        usernameInput.disabled = storePasswordItem.checked;
-        passwordInput.disabled = storePasswordItem.checked;
+        const shouldHide = storePasswordItem.checked;
+
+        storePasswordSection.hidden = shouldHide;
+        storePasswordSection.setAttribute('aria-hidden', shouldHide);
+        usernameInput.disabled = shouldHide;
+        passwordInput.disabled = shouldHide;
+
+        // Update required state based on visibility
+        if (shouldHide) {
+            usernameInput.removeAttribute('required');
+            passwordInput.removeAttribute('required');
+        } else {
+            usernameInput.setAttribute('required', '');
+            passwordInput.setAttribute('required', '');
+        }
     }
 
     storePasswordControl.addEventListener("calciteSegmentedControlChange", toggleCredentials);
@@ -915,12 +960,28 @@ async function setupPortalFormLogic(modal) {
 
     const enableEmailControl = modal.querySelector("#enable-email");
     const adminEmailsContainer = modal.querySelector("#admin-emails-container");
+    const adminEmailsInput = modal.querySelector("calcite-input[name='admin_emails']");
 
     if (enableEmailControl && adminEmailsContainer) {
-        enableEmailControl.addEventListener("calciteSegmentedControlChange", () => {
+        function toggleAdminEmails() {
             const enabledItem = enableEmailControl.querySelector("calcite-segmented-control-item[value='False']");
-            adminEmailsContainer.hidden = enabledItem.checked;
-        });
+            const shouldHide = enabledItem.checked;
+
+            adminEmailsContainer.hidden = shouldHide;
+            adminEmailsContainer.setAttribute('aria-hidden', shouldHide);
+
+            // Update required state based on visibility
+            if (adminEmailsInput) {
+                if (shouldHide) {
+                    adminEmailsInput.removeAttribute('required');
+                } else {
+                    adminEmailsInput.setAttribute('required', '');
+                }
+            }
+        }
+
+        enableEmailControl.addEventListener("calciteSegmentedControlChange", toggleAdminEmails);
+        toggleAdminEmails();
     }
 }
 
@@ -940,7 +1001,6 @@ function setupScheduleFormLogic(modal) {
     const startHour = modal.querySelector("#between-hours-start-hour");
     const endHour = modal.querySelector("#between-hours-end-hour");
     const endDateContainer = modal.querySelector("#end-date-container");
-    const endCountContainer = modal.querySelector("#end-count-container");
 
     function updateRepeatType() {
         const value = repeatType.value;
@@ -969,6 +1029,7 @@ function setupScheduleFormLogic(modal) {
 
     updateRepeatType();
     updateEndingOn();
+    updateAllDay();
 }
 
 
@@ -1002,9 +1063,13 @@ async function showAlert(kind, label, message, autoClose = true) {
     const alert = document.createElement("calcite-alert");
     alert.setAttribute("kind", kind);
     alert.setAttribute("open", "");
-    alert.setAttribute("auto-close", autoClose ? "true" : "false");
     alert.setAttribute("label", label);
     alert.setAttribute("icon", "");
+
+    if (autoClose && kind !== "danger") {
+        alert.setAttribute("auto-close", "");
+        alert.setAttribute("auto-close-duration", "medium");
+    }
 
     alert.innerHTML = `<div slot="message">${message}</div>`;
 
@@ -1026,19 +1091,19 @@ async function showAlert(kind, label, message, autoClose = true) {
 }
 
 htmx.on("showDangerAlert", (e) => {
-    showAlert("danger", "Danger alert", e.detail.value, false).catch(console.error);
+    showAlert("danger", "Error", e.detail.value, false).catch(console.error);
 });
 
 htmx.on("showSuccessAlert", (e) => {
-    showAlert("success", "Success alert", e.detail.value, true).catch(console.error);
+    showAlert("success", "Success", e.detail.value, true).catch(console.error);
 });
 
 htmx.on("showInfoAlert", (e) => {
-    showAlert("info", "Info alert", e.detail.value, true).catch(console.error);
+    showAlert("info", "Information", e.detail.value, true).catch(console.error);
 });
 
 htmx.on("showWarningAlert", (e) => {
-    showAlert("warning", "Warning alert", e.detail.value, true).catch(console.error);
+    showAlert("warning", "Warning", e.detail.value, true).catch(console.error);
 });
 
 document.addEventListener('DOMContentLoaded', function () {
@@ -1207,3 +1272,78 @@ function initWebhookSecretGenerator() {
     }
 }
 
+// Global delete confirmation handler
+(function() {
+    const deleteSheet = document.getElementById('delete-confirm-sheet');
+    const deleteMessage = document.getElementById('delete-confirm-message');
+    const deleteDetails = document.getElementById('delete-confirm-details');
+    const confirmYes = document.getElementById('delete-confirm-yes');
+    const confirmNo = document.getElementById('delete-confirm-no');
+
+    let pendingDeleteConfig = null;
+
+    // Global click handler for any delete action
+    document.addEventListener('click', function(e) {
+        const deleteAction = e.target.closest('[data-confirm-delete]');
+        if (deleteAction) {
+            e.preventDefault();
+
+            // Get configuration from data attributes
+            pendingDeleteConfig = {
+                url: deleteAction.getAttribute('data-delete-url'),
+                method: deleteAction.getAttribute('data-delete-method') || 'POST',
+                target: deleteAction.getAttribute('data-delete-target') || '#manage-container',
+                message: deleteAction.getAttribute('data-delete-message') || 'Are you sure you want to delete this item?',
+                details: deleteAction.getAttribute('data-delete-details') || 'This action cannot be undone.',
+                buttonText: deleteAction.getAttribute('data-delete-button') || 'Delete'
+            };
+
+            // Update UI
+            deleteMessage.textContent = pendingDeleteConfig.message;
+            deleteDetails.textContent = pendingDeleteConfig.details;
+            confirmYes.textContent = pendingDeleteConfig.buttonText;
+
+            // Show sheet
+            deleteSheet.open = true;
+        }
+    });
+
+    // Handle confirm
+    confirmYes.addEventListener('click', function() {
+        if (pendingDeleteConfig) {
+            // Perform the delete with HTMX
+            htmx.ajax(pendingDeleteConfig.method, pendingDeleteConfig.url, {
+                target: pendingDeleteConfig.target,
+                swap: 'innerHTML'
+            });
+
+            // Close sheet
+            deleteSheet.open = false;
+            pendingDeleteConfig = null;
+        }
+    });
+
+    // Handle cancel
+    confirmNo.addEventListener('click', function() {
+        deleteSheet.open = false;
+        pendingDeleteConfig = null;
+    });
+
+    // Handle sheet close (clicking outside or ESC)
+    deleteSheet.addEventListener('calciteSheetClose', function() {
+        pendingDeleteConfig = null;
+    });
+})();
+
+document.addEventListener('htmx:load', function(event) {
+    // Find all sortable table headers
+    event.detail.elt.querySelectorAll('th[role="button"][hx-trigger]').forEach(function(th) {
+        th.addEventListener('keydown', function(e) {
+            // Only trigger for Enter and Space, like native buttons
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault(); // Prevent page scroll on Space
+                htmx.trigger(this, 'click');
+            }
+        });
+    });
+});

@@ -5,73 +5,96 @@
     <calcite-notice slot="content-top" open kind="danger" icon width="full">
       <div slot="title">Email Configuration Required</div>
       <div slot="message">
-        Email settings must be configured in Site Settings before tools can be enabled.
+        Email settings must be configured in Site Settings before tools can be enabled. Please configure email settings first.
       </div>
     </calcite-notice>
   {% endif %}
-  <calcite-label>
-    Portal Alias
-    <calcite-input type="text" name="alias" read-only="true"
-                   autocomplete="off" value="{{ instance_alias }}"></calcite-input>
-    <calcite-input-message {% if not form.instance.errors %}hidden{% endif %} icon="exclamation-mark-triangle-f"
-                           status="invalid">
-      {{ form.instance.errors|join:" " }}
-    </calcite-input-message>
-  </calcite-label>
-  <calcite-tabs>
+
+  <calcite-input type="text" name="alias" read-only
+                 autocomplete="off" value="{{ instance_alias }}"
+                 label-text="Portal Alias"></calcite-input>
+
+  <calcite-tabs bordered class="x_panel--top">
     <calcite-tab-nav slot="title-group">
       <calcite-tab-title selected>
         Tools
       </calcite-tab-title>
       <calcite-tab-title>Results</calcite-tab-title>
     </calcite-tab-nav>
+
     <calcite-tab selected>
-      <div id="tools-form-container">
+      <div id="tools-form-container" role="tabpanel" aria-label="Tool configuration">
         {% include "partials/portal_tools_form.html" %}
       </div>
-
     </calcite-tab>
-    <calcite-tab>
-      <calcite-label>Run History (last 24 hours)</calcite-label>
-      <calcite-table caption="Run History (last 24 hours)" bordered striped>
-        <calcite-table-row slot="table-header">
-          <calcite-table-header heading="Task Name"></calcite-table-header>
-          <calcite-table-header heading="Status"></calcite-table-header>
-          <calcite-table-header heading="Result"></calcite-table-header>
-          <calcite-table-header heading="Start Time"></calcite-table-header>
-          <calcite-table-header heading="End Time"></calcite-table-header>
-        </calcite-table-row>
-        {% if results %}
-          {% for item in results %}
 
-            <calcite-table-row>
-              <calcite-table-cell>{{ item.task_name }}</calcite-table-cell>
-              <calcite-table-cell>{{ item.status }}</calcite-table-cell>
-              <calcite-table-cell>{{ item.result }}</calcite-table-cell>
-              <calcite-table-cell>{{ item.date_created|date:'M j, Y h:i A' }}</calcite-table-cell>
-              <calcite-table-cell>{{ item.date_done|date:'M j, Y h:i A' }}</calcite-table-cell>
-            </calcite-table-row>
-          {% endfor %}
-        {% else %}
-          <calcite-table-row>
-            <calcite-table-cell col-span="5">No runs in the last 24 hours.</calcite-table-cell>
+    <calcite-tab>
+      <div role="tabpanel" aria-label="Tool execution history">
+        <calcite-label>Run History (last 24 hours)</calcite-label>
+        <calcite-table caption="Run History (last 24 hours)" bordered striped
+                       aria-label="Tool execution history">
+          <calcite-table-row slot="table-header">
+            <calcite-table-header heading="Task Name" description="Name of executed tool"></calcite-table-header>
+            <calcite-table-header heading="Status" description="Execution status"></calcite-table-header>
+            <calcite-table-header heading="Result" description="Tool results"></calcite-table-header>
+            <calcite-table-header heading="Start Time" description="When tool started"></calcite-table-header>
+            <calcite-table-header heading="End Time" description="When tool completed"></calcite-table-header>
           </calcite-table-row>
-        {% endif %}
-      </calcite-table>
+          {% if results %}
+            {% for item in results %}
+              <calcite-table-row>
+                <calcite-table-cell>{{ item.task_name }}</calcite-table-cell>
+                <calcite-table-cell>
+                  <calcite-chip scale="s"
+                                kind="{% if item.status == 'SUCCESS' %}inverse{% elif item.status == 'FAILURE' %}danger{% else %}neutral{% endif %}">
+                    {{ item.status }}
+                  </calcite-chip>
+                </calcite-table-cell>
+                <calcite-table-cell>{{ item.result|default:"—" }}</calcite-table-cell>
+                <calcite-table-cell>
+                  <time datetime="{{ item.date_created|date:'c' }}">
+                    {{ item.date_created|date:'M j, Y h:i A' }}
+                  </time>
+                </calcite-table-cell>
+                <calcite-table-cell>
+                  {% if item.date_done %}
+                    <time datetime="{{ item.date_done|date:'c' }}">
+                      {{ item.date_done|date:'M j, Y h:i A' }}
+                    </time>
+                  {% else %}
+                    Running...
+                  {% endif %}
+                </calcite-table-cell>
+              </calcite-table-row>
+            {% endfor %}
+          {% else %}
+            <calcite-table-row>
+              <calcite-table-cell col-span="5">
+                <calcite-notice open kind="info" icon scale="s">
+                  <div slot="message">No tool runs in the last 24 hours.</div>
+                </calcite-notice>
+              </calcite-table-cell>
+            </calcite-table-row>
+          {% endif %}
+        </calcite-table>
+      </div>
     </calcite-tab>
   </calcite-tabs>
 
   <calcite-button id="tools-portal-cancel" data-action="close-modal" slot="footer-end" appearance="outline"
-                  icon-start="circle-disallowed">
+                  kind="neutral"
+                  icon-start="circle-disallowed"
+                  label="Cancel without saving changes">
     Cancel
   </calcite-button>
 
-  <calcite-button id="tools-portal-save" slot="footer-end" {% if not email_configured %}disabled{% endif %}
+  <calcite-button id="tools-portal-save" slot="footer-end"
+                  {% if not email_configured %}disabled{% endif %}
                   hx-post="{% url 'enterpriseviz:tool_settings' instance=form.instance.portal.alias %}"
                   hx-target="#tools-form-container"
                   hx-include="#tools-form-container form"
-                  icon-start="save" value="save">
+                  icon-start="save"
+                  label="Save tool configuration">
     Save
   </calcite-button>
 </calcite-dialog>
-
