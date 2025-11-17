@@ -65,7 +65,8 @@
 
 {% block pagination %}
   {% if table.page and table.paginator.num_pages > 0 %}
-    <nav aria-label="{{ table_name|title }} table pagination" class="table-pagination-controls row" hx-boost="true">
+    <nav aria-label="{{ table_name|title }} table pagination" class="table-pagination-controls row"
+         hx-boost="true" hx-push-url="false">
       <div class="col-6 align-start">
         <div role="status" aria-live="polite">
           Showing {{ table.page.start_index }} to {{ table.page.end_index }} of {{ table.paginator.count }} records
