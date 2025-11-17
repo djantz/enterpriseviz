@@ -1,61 +1,61 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
 {% block content %}
   <div class="row">
-      <div class="col-md-12 col-sm-12 col-xs-12">
-        <div class="x_panel x_panel--top">
-          <div class="x_title">
-            <h2>
-              <calcite-icon icon="layer-map-service" preload="true" scale="s" aria-hidden="true"></calcite-icon>
-              <div class="icon_space">
-                <calcite-link href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ url }}</calcite-link>
-              </div>
-            </h2>
-            <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
-              <li>
-                <calcite-button appearance="transparent" kind="neutral" scale="s"
-                                class="collapse-link"
-                                icon-start="chevron-up"
-                                label="Collapse panel">
-                </calcite-button>
-              </li>
-              <li>
-                <calcite-button appearance="transparent" kind="neutral" scale="s"
-                                class="close-link"
-                                icon-start="x"
-                                label="Close panel">
-                </calcite-button>
-              </li>
-            </ul>
-            <div class="clearfix"></div>
-          </div>
-          <div class="x_content">
-            <dl class="item-details">
-              <dt>Description:</dt>
-              <dd>{{ item.service_description|striptags|default:"No description available" }}</dd>
-              <dt>Owner:</dt>
-              <dd>{{ item.service_owner }}</dd>
-              <dt>Created:</dt>
-              <dd>
-                <time datetime="{{ item.service_created|date:'c' }}">
-                  {{ item.service_created }}
-                </time>
-              </dd>
-              <dt>Modified:</dt>
-              <dd>
-                <time datetime="{{ item.service_modified|date:'c' }}">
-                  {{ item.service_modified }}
-                </time>
-              </dd>
-              <dt>Views:</dt>
-              <dd>{{ item.service_views }}</dd>
-            </dl>
-          </div>
+    <div class="col-md-12 col-sm-12 col-xs-12">
+      <div class="x_panel x_panel--top">
+        <div class="x_title">
+          <h2>
+            <calcite-icon icon="layer-map-service" preload="true" scale="s" aria-hidden="true"></calcite-icon>
+            <div class="icon_space">
+              <calcite-link href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ url }}</calcite-link>
+            </div>
+          </h2>
+          <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+            <li>
+              <calcite-button appearance="transparent" kind="neutral" scale="s"
+                              class="collapse-link"
+                              icon-start="chevron-up"
+                              label="Collapse panel">
+              </calcite-button>
+            </li>
+            <li>
+              <calcite-button appearance="transparent" kind="neutral" scale="s"
+                              class="close-link"
+                              icon-start="x"
+                              label="Close panel">
+              </calcite-button>
+            </li>
+          </ul>
+          <div class="clearfix"></div>
+        </div>
+        <div class="x_content">
+          <dl class="item-details">
+            <dt>Description:</dt>
+            <dd>{{ item.service_description|striptags|default:"No description available" }}</dd>
+            <dt>Owner:</dt>
+            <dd>{{ item.service_owner }}</dd>
+            <dt>Created:</dt>
+            <dd>
+              <time datetime="{{ item.service_created|date:'c' }}">
+                {{ item.service_created }}
+              </time>
+            </dd>
+            <dt>Modified:</dt>
+            <dd>
+              <time datetime="{{ item.service_modified|date:'c' }}">
+                {{ item.service_modified }}
+              </time>
+            </dd>
+            <dt>Views:</dt>
+            <dd>{{ item.service_views }}</dd>
+          </dl>
         </div>
       </div>
     </div>
+  </div>
   <div class="clearfix">
     <div class="row">
-      <div id="d3panel" class="col-md-10 col-sm-10 col-xs-12">
+      <div class="col-md-10 col-sm-10 col-xs-12">
         <div class="x_panel">
           <div class="x_title">
             <h2>
@@ -82,9 +82,21 @@
             </ul>
             <div class="clearfix"></div>
           </div>
-          <div class="x_content d3chart">
-            <div class="d3chart-filter" id="d3chart-filter" role="search" aria-label="Filter visualization"></div>
-            <div id="chartd3" class="full-width" role="img" aria-label="Layer usage dependency tree"></div>
+          <div class="x_content">
+            <div class="graph-filter" id="graph-filter" role="search" aria-label="Filter visualization"></div>
+            <div class="graph-navigation-bar">
+              <calcite-action-bar layout="horizontal" scale="s" expand-disabled floating overflow-actions-disabled>
+                <calcite-action-group scale="s">
+                  <calcite-action id="graph-reset-btn" text="Reset" icon="reset" scale="s"></calcite-action>
+                  <calcite-action id="graph-center-btn" text="Center angle" icon="zoom-to-object"
+                                  scale="s"></calcite-action>
+                  <calcite-action id="graph-zoom-in-btn" text="Zoom in" icon="plus" scale="s"></calcite-action>
+                  <calcite-action id="graph-zoom-out-btn" text="Zoom out" icon="minus" scale="s"></calcite-action>
+                  <calcite-action id="graph-fullscreen-btn" text="Fullscreen" icon="full-screen" scale="s"></calcite-action>
+                </calcite-action-group>
+              </calcite-action-bar>
+            </div>
+            <div id="graph-container" class="full-width" role="img" aria-label="Layer usage dependency tree"></div>
           </div>
         </div>
       </div>
@@ -259,7 +271,8 @@
                 <tr>
                   <td>
                     <calcite-button scale="s" kind="inverse" disabled
-                                    label="Details not available for apps">Details</calcite-button>
+                                    label="Details not available for apps">Details
+                    </calcite-button>
                   </td>
                   <td>
                     <calcite-link href="{{ item.url }}" target="_blank"
@@ -290,8 +303,25 @@
       </div>
     </div>
   </div>
+  <calcite-tooltip reference-element="graph-reset-btn" placement="bottom">
+    <span>Reset</span>
+  </calcite-tooltip>
+  <calcite-tooltip reference-element="graph-center-btn" placement="bottom">
+    <span>Center</span>
+  </calcite-tooltip>
+  <calcite-tooltip reference-element="graph-zoom-in-btn" placement="bottom">
+    <span>Zoom In</span>
+  </calcite-tooltip>
+  <calcite-tooltip reference-element="graph-zoom-out-btn" placement="bottom">
+    <span>Zoom Out</span>
+  </calcite-tooltip>
+  <calcite-tooltip reference-element="graph-fullscreen-btn" placement="bottom">
+    <span>Full Screen</span>
+  </calcite-tooltip>
 {% endblock content %}
 {% block javascripts %}
-{#  {{ tree|json_script:"d3data" }}#}
+  <script id="graph-data" type="application/json">
+    {{ graph_data|safe }}
+  </script>
   {{ service_usage|json_script:"chartdata" }}
 {% endblock javascripts %}
