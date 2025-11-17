@@ -168,12 +168,16 @@ class Service(models.Model):
         Webmap,
         through="Map_Service"
     )
+    layers = models.ManyToManyField(
+        'Layer',
+        through="Layer_Service"
+    )
 
     def __str__(self):
         return "%s" % self.service_name
 
     def service_url_as_list(self):
-        return self.service_url
+        return list(x for x in self.service_url)
 
     def service_owner_as_list(self):
         return self.service_owner.split(",")
