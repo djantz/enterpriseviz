@@ -550,7 +550,7 @@ def map_details(item_id):
                 nodes.append({
                     "id": app_id,
                     "name": app.app_title,
-                    "type": "app",
+                    "type": app.app_type.title(),
                     "url": app.app_url,
                     "instance": app.portal_instance.alias if app.portal_instance else None
                 })
@@ -688,7 +688,7 @@ def service_details(portal_alias, service_name):
                         nodes.append({
                             "id": app_id,
                             "name": app_rel.app_id.app_title,
-                            "type": "app",
+                            "type": app_rel.app_id.app_type.title(),
                             "url": app_rel.app_id.app_url,
                             "instance": app_rel.app_id.portal_instance.alias if app_rel.app_id.portal_instance else None
                         })
@@ -709,7 +709,7 @@ def service_details(portal_alias, service_name):
                 nodes.append({
                     "id": app_id,
                     "name": app.app_title,
-                    "type": "app",
+                    "type": app.app_type.title(),
                     "url": app.app_url,
                     "instance": app.portal_instance.alias if app.portal_instance else None
                 })
@@ -877,7 +877,7 @@ def layer_details(dbserver, database, version, name):
                             nodes.append({
                                 "id": app_id,
                                 "name": app_rel.app_id.app_title,
-                                "type": "app",
+                                "type": app_rel.app_id.app_type.title(),
                                 "url": app_rel.app_id.app_url,
                                 "instance": app_rel.app_id.portal_instance.alias if app_rel.app_id.portal_instance else None
                             })
@@ -898,7 +898,7 @@ def layer_details(dbserver, database, version, name):
                     nodes.append({
                         "id": app_id,
                         "name": app.app_title,
-                        "type": "app",
+                        "type": app.app_type.title(),
                         "url": app.app_url,
                         "instance": app.portal_instance.alias if app.portal_instance else None
                     })
