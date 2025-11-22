@@ -500,7 +500,7 @@ def process_databases(manifest, regex_patterns, instance_item, s_obj, update_tim
     if "databases" not in manifest:
         return
     for db_obj in manifest["databases"]:
-        db_server, db_version, db_database = "", "", ""
+        db_server, db_version, db_database = None, None, None
         connection_string = db_obj.get("onServerConnectionString", "")
         if "Sde" in db_obj.get("onServerWorkspaceFactoryProgID", ""):
             match_server = regex_patterns["server"].search(connection_string)
