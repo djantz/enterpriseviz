@@ -130,9 +130,9 @@ class ServiceTable(tables.Table):
 class LayerTable(tables.Table):
     details=tables.TemplateColumn(
         """<calcite-button
-        href="{% url 'enterpriseviz:layer' name=record.layer_name %}?{% if record.layer_server %}server={{ record.layer_server }}&{% endif %}{% if record.layer_database %}database={{ record.layer_database }}&{% endif %}{% if record.layer_version %}version={{ record.layer_version }}{% endif %}"
+        href="{% url 'enterpriseviz:layer' name=record.layer_name %}{% if record.layer_server or record.layer_database or record.layer_version %}?{% endif %}{% if record.layer_server %}server={{ record.layer_server|urlencode }}{% if record.layer_database or record.layer_version %}&{% endif %}{% endif %}{% if record.layer_database %}database={{ record.layer_database|urlencode }}{% if record.layer_version %}&{% endif %}{% endif %}{% if record.layer_version %}version={{ record.layer_version|urlencode }}{% endif %}"
         hx-target="#mainbodycontent"
-        hx-push-url="{% url 'enterpriseviz:layer' name=record.layer_name %}?{% if record.layer_server %}server={{ record.layer_server }}&{% endif %}{% if record.layer_database %}database={{ record.layer_database }}&{% endif %}{% if record.layer_version %}version={{ record.layer_version }}{% endif %}"
+        hx-push-url="{% url 'enterpriseviz:layer' name=record.layer_name %}{% if record.layer_server or record.layer_database or record.layer_version %}?{% endif %}{% if record.layer_server %}server={{ record.layer_server|urlencode }}{% if record.layer_database or record.layer_version %}&{% endif %}{% endif %}{% if record.layer_database %}database={{ record.layer_database|urlencode }}{% if record.layer_version %}&{% endif %}{% endif %}{% if record.layer_version %}version={{ record.layer_version|urlencode }}{% endif %}"
         hx-swap="innerHTML show:window:top"
         kind="inverse"
         scale="s"
@@ -149,6 +149,7 @@ class LayerTable(tables.Table):
         attrs = {
             "class": "table table-striped"
         }
+
 
 
 class AppTable(tables.Table):
