@@ -6,6 +6,8 @@
  * @param {Array} data.links - Array of link objects with {source, target}
  * @returns {Object} Cytoscape instance
  */
+// TODO: Add filter by portal
+// TODO: Add toggle to hide layers in service view
 function initDependencyGraph(containerId, data) {
     // Ensure container exists
     const container = document.getElementById(containerId);
@@ -135,7 +137,7 @@ function initDependencyGraph(containerId, data) {
             }
         });
     });
-    console.log(colors.textPrimary);
+
     // Add edges and identify direct connections
     data.links.forEach(function (link) {
         var sourceNode = data.nodes.find(function (n) {
@@ -390,7 +392,6 @@ function initDependencyGraph(containerId, data) {
             });
             resizeObserver.observe(container);
 
-            console.log('Shadow DOM scroll handler attached to .content-wrapper successfully');
         } catch (err) {
             console.warn('Error setting up shadow DOM scroll handler:', err);
         }
@@ -453,6 +454,8 @@ function initDependencyGraph(containerId, data) {
                 return;
             }
 
+            var fullscreenBtn = document.getElementById('graph-fullscreen-btn');
+
             if (!document.fullscreenElement) {
                 // Enter fullscreen
                 if (panel.requestFullscreen) {
@@ -470,7 +473,6 @@ function initDependencyGraph(containerId, data) {
                 container.style.height = 'calc(100vh - 100px)';
 
                 // Update icon
-                var fullscreenBtn = document.getElementById('graph-fullscreen-btn');
                 if (fullscreenBtn) {
                     fullscreenBtn.setAttribute('icon', 'full-screen-exit');
                     fullscreenBtn.setAttribute('text', 'Exit Fullscreen');
@@ -498,7 +500,6 @@ function initDependencyGraph(containerId, data) {
                 container.style.height = '';
 
                 // Update icon
-                var fullscreenBtn = document.getElementById('graph-fullscreen-btn');
                 if (fullscreenBtn) {
                     fullscreenBtn.setAttribute('icon', 'extent');
                     fullscreenBtn.setAttribute('text', 'Fullscreen');
