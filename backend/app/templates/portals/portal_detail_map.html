@@ -8,7 +8,7 @@
             <h2>
               <calcite-icon icon="map" preload="true" scale="s" aria-hidden="true"></calcite-icon>
               <div class="icon_space">
-                <calcite-link href="{{ tree.url }}" target="_blank" rel="noopener noreferrer">{{ tree.name }}</calcite-link>
+                <calcite-link href="{{ item.webmap_url }}" target="_blank" rel="noopener noreferrer">{{ item.webmap_title }}</calcite-link>
               </div>
             </h2>
             <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
@@ -60,7 +60,7 @@
           <div class="x_title">
             <h2>
               <calcite-icon icon="find-path" preload="true" scale="s" aria-hidden="true"></calcite-icon>
-              <div class="icon_space">What does this {{ tree.name }}
+              <div class="icon_space">What does this {{ item.webmap_title }}
                 WebMap contain?
               </div>
             </h2>
@@ -82,8 +82,20 @@
             </ul>
             <div class="clearfix"></div>
           </div>
-          <div class="x_content d3chart">
-            <div id="chartd3" role="img" aria-label="WebMap content hierarchy"></div>
+          <div class="x_content">
+            <div class="graph-navigation-bar">
+              <calcite-action-bar layout="horizontal" scale="s" expand-disabled floating overflow-actions-disabled>
+                <calcite-action-group scale="s">
+                  <calcite-action id="graph-reset-btn" text="Reset" icon="reset" scale="s"></calcite-action>
+                  <calcite-action id="graph-center-btn" text="Center angle" icon="zoom-to-object"
+                                  scale="s"></calcite-action>
+                  <calcite-action id="graph-zoom-in-btn" text="Zoom in" icon="plus" scale="s"></calcite-action>
+                  <calcite-action id="graph-zoom-out-btn" text="Zoom out" icon="minus" scale="s"></calcite-action>
+                  <calcite-action id="graph-fullscreen-btn" text="Fullscreen" icon="full-screen" scale="s"></calcite-action>
+                </calcite-action-group>
+              </calcite-action-bar>
+            </div>
+            <div id="graph-container" role="img" aria-label="WebMap content hierarchy"></div>
           </div>
         </div>
       </div>
@@ -328,8 +340,24 @@
       </div>
     </div>
   </div>
-  <div class="clearfix"></div>
+  <calcite-tooltip reference-element="graph-reset-btn" placement="bottom">
+    <span>Reset</span>
+  </calcite-tooltip>
+  <calcite-tooltip reference-element="graph-center-btn" placement="bottom">
+    <span>Center</span>
+  </calcite-tooltip>
+  <calcite-tooltip reference-element="graph-zoom-in-btn" placement="bottom">
+    <span>Zoom In</span>
+  </calcite-tooltip>
+  <calcite-tooltip reference-element="graph-zoom-out-btn" placement="bottom">
+    <span>Zoom Out</span>
+  </calcite-tooltip>
+  <calcite-tooltip reference-element="graph-fullscreen-btn" placement="bottom">
+    <span>Full Screen</span>
+  </calcite-tooltip>
 {% endblock content %}
 {% block javascripts %}
-  {{ tree|json_script:"d3data" }}
+  <script id="graph-data" type="application/json">
+    {{ graph_data|safe }}
+  </script>
 {% endblock javascripts %}

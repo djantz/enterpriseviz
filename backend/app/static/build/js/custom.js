@@ -21,109 +21,128 @@ $('.close-link').click(function () {
     $BOX_PANEL.remove();
 });
 
+async function waitForCalcite(container) {
+    // Find all Calcite components in the container
+    const tagNames = new Set();
+    const allElements = container.querySelectorAll('*');
+    allElements.forEach(el => {
+        const tag = el.tagName.toLowerCase();
+        if (tag.startsWith('calcite-')) {
+            tagNames.add(tag);
+        }
+    });
+    console.log("Found calcite elements:", tagNames);
 
-function init_DataTables() {
-    // Ensure moment.js sorting plugin is loaded
-    if ($.fn.dataTable.moment === undefined) {
-        return;
+    // Wait for all unique Calcite components to be defined
+    await Promise.all(
+        Array.from(tagNames).map(tag => customElements.whenDefined(tag))
+    );
+
+    // Additional small delay for component initialization
+    await new Promise(resolve => setTimeout(resolve, 100));
+}
+
+async function init_DataTables(tableElement) {
+    const $table = $(tableElement);
+
+    if ($.fn.DataTable.isDataTable($table)) {
+        $table.DataTable().destroy();
     }
 
-    // Register Moment.js formats for sorting
-    $.fn.dataTable.moment('lll');
-    $.fn.dataTable.moment('MMM D, YYYY');
-    $.fn.dataTable.moment('MM/DD/YYYY');
+    // Wait for Calcite components in the table
+    await waitForCalcite(tableElement);
+    let tableInstance = initDataTable(`#${tableElement.id}`, `#${tableElement.id}-filter`, "Instance", false);
+    tableInstance.on('draw', () => htmx.process(tableElement));
+    return tableInstance
+}
 
-    // Check if any table exists on the page before initializing
-    if ($("table[id^='datatable']").length === 0) {
-        return;
-    }
-
-    function initDataTable(selector, filterSelector, columnContains, usageTarget) {
-        const table = $(selector).DataTable({
-            layout: {
-                topStart: null,
-                topEnd: null,
-                bottomEnd: {
-                    paging: {
-                        firstLast: false
-                    }
+function initDataTable(selector, filterSelector, columnContains, usageTarget) {
+    const table = $(selector).DataTable({
+        paging: true,
+        layout: {
+            topStart: null,
+            topEnd: null,
+            bottomEnd: {
+                paging: {
+                    firstLast: false
                 }
+            }
+        },
+        buttons: [
+            {
+                extend: "copyHtml5",
+                text: "Copy",
+                tag: 'calcite-button',
+                attr: {scale: "s", kind: "inverse", "icon-start": "copy-to-clipboard"}
             },
-            buttons: [
-                {
-                    extend: "copyHtml5",
-                    text: "Copy",
-                    tag: 'calcite-button',
-                    attr: {scale: "s", kind: "inverse", "icon-start": "copy-to-clipboard"}
-                },
-                {
-                    extend: "csvHtml5",
-                    text: "CSV",
-                    tag: 'calcite-button',
-                    attr: {scale: "s", kind: "inverse", "icon-start": "file-csv"}
-                },
-                {
-                    extend: "excelHtml5",
-                    text: "Excel",
-                    tag: 'calcite-button',
-                    attr: {scale: "s", kind: "inverse", "icon-start": "file-excel"}
-                },
-                {
-                    extend: "pdfHtml5",
-                    text: "PDF",
-                    tag: 'calcite-button',
-                    attr: {scale: "s", kind: "inverse", "icon-start": "file-pdf"}
-                }
-            ],
-            language: {
-                paginate: {
-                    next: '<calcite-icon icon="chevron-right" preload="true" scale="s"></calcite-icon>',
-                    previous: '<calcite-icon icon="chevron-left" preload="true" scale="s"></calcite-icon>',
-                    first: 'First',
-                    last: 'Last'
-                },
-                info: "Displaying records _START_ to _END_ of _TOTAL_ records",
-                emptyTable: "No records available.",
-                infoFiltered: "(filtered from _MAX_ records)",
-                infoEmpty: "Displaying 0 to 0 of 0 records"
+            {
+                extend: "csvHtml5",
+                text: "CSV",
+                tag: 'calcite-button',
+                attr: {scale: "s", kind: "inverse", "icon-start": "file-csv"}
             },
-            autoWidth: false,
-            order: [[1, "asc"]],
-            responsive: true,
-            columnDefs: [
-                {targets: 'details', width: '40px', orderable: false},
-                {targets: 'instance', visible: false, searchable: true},
-                {targets: 'url', visible: false, searchable: true},
-                {targets: 'trend', width: '50px'}
-            ],
-            orderCellsTop: true,
-            initComplete: function () {
-                const api = this.api();
+            {
+                extend: "excelHtml5",
+                text: "Excel",
+                tag: 'calcite-button',
+                attr: {scale: "s", kind: "inverse", "icon-start": "file-excel"}
+            },
+            {
+                extend: "pdfHtml5",
+                text: "PDF",
+                tag: 'calcite-button',
+                attr: {scale: "s", kind: "inverse", "icon-start": "file-pdf"}
+            }
+        ],
+        language: {
+            paginate: {
+                next: '<calcite-icon icon="chevron-right" preload="true" scale="s"></calcite-icon>',
+                previous: '<calcite-icon icon="chevron-left" preload="true" scale="s"></calcite-icon>',
+                first: 'First',
+                last: 'Last'
+            },
+            info: "Displaying records _START_ to _END_ of _TOTAL_ records",
+            emptyTable: "No records available.",
+            infoFiltered: "(filtered from _MAX_ records)",
+            infoEmpty: "Displaying 0 to 0 of 0 records"
+        },
+        autoWidth: false,
+        order: [[1, "asc"]],
+        responsive: true,
+        columnDefs: [
+            {targets: 'details', width: '40px', orderable: false},
+            {targets: 'instance', visible: false, searchable: true},
+            {targets: 'url', visible: false, searchable: true},
+            {targets: 'trend', width: '50px'}
+        ],
+        orderCellsTop: true,
+        initComplete: function () {
+            const api = this.api();
 
-                const buttonsContainer = $(selector).closest('.x_content').find('.dt-buttons');
-                if (buttonsContainer.length) {
-                    api.buttons().container().appendTo(buttonsContainer);
-                }
+            const buttonsContainer = $(selector).closest('.x_content').find('.dt-buttons');
+            if (buttonsContainer.length) {
+                api.buttons().container().appendTo(buttonsContainer);
+            }
 
-                api.columns(`:contains(${columnContains})`).every(function (d) {
-                    var column = this;
-                    var $select = $('<calcite-combobox placeholder="Instance" scale="s" selection-mode="single" placeholder-icon="filter" label="Filter by Portal instance"></calcite-combobox>');
-                    column.data().unique().sort().each(function (d, j) {
-                        var val = $('<div/>').html(d).text();
-                        $select.append(`<calcite-combobox-item value="${val}" heading="${val}" label="${val}"></calcite-combobox-item>`);
-                    });
-                    $select.appendTo(filterSelector);
-                    $select.on('calciteComboboxChange', function () {
-                        var val = $.fn.dataTable.util.escapeRegex($(this).val());
-                        column.search(val ? '^' + val + '$' : '', true, false).draw();
-                    });
+            api.columns(`:contains(${columnContains})`).every(function (d) {
+                var column = this;
+                var $select = $('<calcite-combobox placeholder="Instance" scale="s" selection-mode="single" placeholder-icon="filter" label="Filter by Portal instance"></calcite-combobox>');
+                column.data().unique().sort().each(function (d, j) {
+                    var val = $('<div/>').html(d).text();
+                    $select.append(`<calcite-combobox-item value="${val}" heading="${val}" label="${val}"></calcite-combobox-item>`);
                 });
+                $select.appendTo(filterSelector);
+                $select.on('calciteComboboxChange', function () {
+                    var val = $.fn.dataTable.util.escapeRegex($(this).val());
+                    column.search(val ? '^' + val + '$' : '', true, false).draw();
+                });
+            });
 
-                // Add Calcite search input (at the beginning)
-                const filterContainer = document.querySelector(filterSelector);
-                if (filterContainer) {
-                    const tableId = selector.replace('#', '');
-                    const searchHtml = `
+            // Add Calcite search input (at the beginning)
+            const filterContainer = document.querySelector(filterSelector);
+            if (filterContainer) {
+                const tableId = selector.replace('#', '');
+                const searchHtml = `
                         <calcite-input
                             prefix-text="Search"
                             type="search"
@@ -133,26 +152,17 @@ function init_DataTables() {
                             label="Search">
                         </calcite-input>
                     `;
-                    filterContainer.insertAdjacentHTML('afterbegin', searchHtml);
+                filterContainer.insertAdjacentHTML('afterbegin', searchHtml);
 
-                    const searchInput = document.getElementById(`${tableId}-search`);
-                    searchInput.addEventListener('calciteInputInput', (e) => {
-                        api.search(e.target.value).draw();
-                    });
-                }
+                const searchInput = document.getElementById(`${tableId}-search`);
+                searchInput.addEventListener('calciteInputInput', (e) => {
+                    api.search(e.target.value).draw();
+                });
             }
-        });
-
-        return table;
-    }
-
-    // Initialize tables only if they exist
-    ["maps", "services", "layers", "apps", "users"].forEach(table => {
-        if ($(`#datatable-${table}`).length) {
-            let tableInstance = initDataTable(`#datatable-${table}`, `#datatable-${table}-filter`, "Instance", false);
-            tableInstance.on('draw', () => htmx.process(document.body));
         }
     });
+
+    return table;
 }
 
 function init_Charts() {
@@ -608,34 +618,88 @@ function setupNotifyModalStepper() {
     });
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+htmx.on("htmx:load", async (e) => {
+    const target = e.detail.elt;
+    const parent = target.parentNode.id;
     const currentPath = window.location.pathname;
-    init_DataTables();
-    init_Charts();
-    initD3();
 
+    // Find all tables with IDs starting with "datatable-"
+    const tables = target.querySelectorAll('table[id^="datatable-"]');
 
-    const logTableContainer = document.getElementById('log-table-container');
-    // Check for a key element of the log filters AND the data script tag
-    if (document.getElementById('log-form') && document.getElementById('log_initial_visible_cols_data')) {
-        const logTableUrl = logTableContainer?.dataset.logTableUrl;
-        if (logTableUrl) {
-            init_LogFilters(logTableUrl);
-        } else if (logTableContainer) { // Log table container exists, but URL missing
-            console.warn("Log table URL not found on #log-table-container for init_LogFilters.");
+    // Also check if the target itself is a datatable
+    if (target.id?.startsWith('datatable-')) {
+        await init_DataTables(target);
+    } else {
+        for (const table of tables) {
+            await init_DataTables(table);
         }
     }
+    // Main content updates - reinitialize page-level components
+    if (document.getElementById('graph-container')) {
+        let graph = initDependencyGraph('graph-container');
+        if (graph) {
+            graph.connectControls();
+        }
+    }
+    if (document.getElementById('line-chart')) {
+        init_Charts();
+    }
+
     // Initialize notify modal
     if (currentPath.match(/\/portal\/[^/]+\/service/) || currentPath.match(/\/portal\/[^/]+\/map/) || currentPath.includes('/layer/')) {
         initPortalNotification();
     }
 
+    // Reinitialize log filters if present
+    if (document.getElementById('log-form') && document.getElementById('log_initial_visible_cols_data')) {
+        const logTableContainer = document.getElementById('log-table-container');
+        const logTableUrl = logTableContainer?.dataset.logTableUrl;
+        if (logTableUrl) {
+            init_LogFilters(logTableUrl);
+        } else if (logTableContainer) {
+            console.warn("Log table URL not found for re-init after HTMX swap.");
+        }
+    }
+
+    // Specific component updates
+    if (parent === 'service-table') {
+        initializeSparklines();
+        return;
+    }
+
+    // Modal opening - when entire modal HTML is loaded
+    const modalId = MODAL_TRIGGER_MAP[parent];
+    if (modalId) {
+        const modal = document.getElementById(modalId);
+        if (modal) {
+            modal.open = true;
+            await ensureCalciteComponentsInitialized(modal);
+            setupModalHTMXListeners(modal);
+
+            // Run the form setup logic based on what's inside the modal
+            const formContainer = modal.querySelector('[id$="-form-container"]');
+            if (formContainer && FORM_SETUP_HANDLERS[formContainer.id]) {
+                await FORM_SETUP_HANDLERS[formContainer.id](modal);
+            }
+        }
+        return;
+    }
+
+    // Form container update (validation errors, form refresh)
+    const setupHandler = FORM_SETUP_HANDLERS[parent];
+    if (setupHandler) {
+        const modal = e.detail.target.closest("calcite-dialog");
+        if (modal) {
+            await ensureCalciteComponentsInitialized(modal);
+            await setupHandler(modal);
+        }
+    }
+
     const content = document.getElementById("mainbodycontent");
     if (content) {
         content.hidden = false;
-    } else {
-
     }
+
 });
 
 function externalTooltipHandler(context) {
@@ -829,76 +893,6 @@ const MODAL_TRIGGER_MAP = {
 
 };
 
-htmx.on("htmx:afterSettle", (e) => {
-    (async () => {
-        const targetId = e.detail.target.id;
-        const currentPath = window.location.pathname;
-
-        // Main content updates - reinitialize page-level components
-        if (targetId === 'mainbodycontent') {
-            init_DataTables();
-            init_Charts();
-            initD3();
-
-            const content = document.getElementById('mainbodycontent');
-            if (content) content.hidden = false;
-
-        }
-
-        // Initialize notify modal
-        if (currentPath.match(/\/portal\/[^/]+\/service/) || currentPath.match(/\/portal\/[^/]+\/map/) || currentPath.includes('/layer/')) {
-            initPortalNotification();
-        }
-
-        // Reinitialize log filters if present
-        if (document.getElementById('log-form') && document.getElementById('log_initial_visible_cols_data')) {
-            const logTableContainer = document.getElementById('log-table-container');
-            const logTableUrl = logTableContainer?.dataset.logTableUrl;
-            if (logTableUrl) {
-                init_LogFilters(logTableUrl);
-            } else if (logTableContainer) {
-                console.warn("Log table URL not found for re-init after HTMX swap.");
-            }
-        }
-
-        // Specific component updates
-        if (targetId === 'service-table') {
-            initializeSparklines();
-            return;
-        }
-
-        // Modal opening - when entire modal HTML is loaded
-        const modalId = MODAL_TRIGGER_MAP[targetId];
-        if (modalId) {
-            const modal = document.getElementById(modalId);
-            if (modal) {
-                modal.open = true;
-                await ensureCalciteComponentsInitialized(modal);
-                setupModalHTMXListeners(modal);
-
-                // Run the form setup logic based on what's inside the modal
-                const formContainer = modal.querySelector('[id$="-form-container"]');
-                if (formContainer && FORM_SETUP_HANDLERS[formContainer.id]) {
-                    await FORM_SETUP_HANDLERS[formContainer.id](modal);
-                }
-            }
-            return;
-        }
-
-        // Form container update (validation errors, form refresh)
-        const setupHandler = FORM_SETUP_HANDLERS[targetId];
-        if (setupHandler) {
-            const modal = e.detail.target.closest("calcite-dialog");
-            if (modal) {
-                await ensureCalciteComponentsInitialized(modal);
-                await setupHandler(modal);
-            }
-            return;
-        }
-
-    })();
-});
-
 htmx.on("closeModal", function (event) {
     (async () => {
         await customElements.whenDefined("calcite-dialog");
@@ -1084,8 +1078,7 @@ async function showAlert(kind, label, message, autoClose = true) {
     if (modal) {
         alert.setAttribute("slot", "alerts");
         modal.appendChild(alert);
-    }
-    else {
+    } else {
         document.querySelector("#alert-container").appendChild(alert);
     }
 }
@@ -1215,13 +1208,14 @@ function initWebhookSecretGenerator() {
     const copyButton = document.getElementById('copy-secret-btn');
 
     if (generateButton) {
-        generateButton.addEventListener('click', function() {
+        generateButton.addEventListener('click', function () {
             const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
             const secretLength = 32;
             // Check for crypto availability
             const crypto = globalThis.crypto || window.crypto;
             if (!crypto || !crypto.getRandomValues) {
                 console.error('Crypto API not available. This environment does not support cryptographically secure random number generation.');
+                return
             }
 
             // Calculate the largest multiple of chars.length that fits in 256
@@ -1254,17 +1248,17 @@ function initWebhookSecretGenerator() {
     }
 
     if (copyButton) {
-        copyButton.addEventListener('click', function() {
+        copyButton.addEventListener('click', function () {
             const webhookSecretInput = document.querySelector('calcite-input[name="webhook_secret"]');
             if (webhookSecretInput && webhookSecretInput.value) {
                 navigator.clipboard.writeText(webhookSecretInput.value).then(() => {
                     // Show success feedback
-                    htmx.trigger(copyButton, 'showSuccessAlert', { value: 'Webhook secret copied to clipboard!' });
+                    htmx.trigger(copyButton, 'showSuccessAlert', {value: 'Webhook secret copied to clipboard!'});
                 }).catch(() => {
                     // Fallback for older browsers
                     webhookSecretInput.select();
                     document.execCommand('copy');
-                    htmx.trigger(copyButton, 'showSuccessAlert', { value: 'Webhook secret copied to clipboard!' });
+                    htmx.trigger(copyButton, 'showSuccessAlert', {value: 'Webhook secret copied to clipboard!'});
 
                 });
             }
@@ -1273,17 +1267,22 @@ function initWebhookSecretGenerator() {
 }
 
 // Global delete confirmation handler
-(function() {
+(function () {
     const deleteSheet = document.getElementById('delete-confirm-sheet');
     const deleteMessage = document.getElementById('delete-confirm-message');
     const deleteDetails = document.getElementById('delete-confirm-details');
     const confirmYes = document.getElementById('delete-confirm-yes');
     const confirmNo = document.getElementById('delete-confirm-no');
 
+    if (!deleteSheet || !deleteMessage || !deleteDetails || !confirmYes || !confirmNo) {
+        // Sheet not present (e.g., non-superuser)
+        return;
+    }
+
     let pendingDeleteConfig = null;
 
     // Global click handler for any delete action
-    document.addEventListener('click', function(e) {
+    document.addEventListener('click', function (e) {
         const deleteAction = e.target.closest('[data-confirm-delete]');
         if (deleteAction) {
             e.preventDefault();
@@ -1309,7 +1308,7 @@ function initWebhookSecretGenerator() {
     });
 
     // Handle confirm
-    confirmYes.addEventListener('click', function() {
+    confirmYes.addEventListener('click', function () {
         if (pendingDeleteConfig) {
             // Perform the delete with HTMX
             htmx.ajax(pendingDeleteConfig.method, pendingDeleteConfig.url, {
@@ -1324,21 +1323,21 @@ function initWebhookSecretGenerator() {
     });
 
     // Handle cancel
-    confirmNo.addEventListener('click', function() {
+    confirmNo.addEventListener('click', function () {
         deleteSheet.open = false;
         pendingDeleteConfig = null;
     });
 
     // Handle sheet close (clicking outside or ESC)
-    deleteSheet.addEventListener('calciteSheetClose', function() {
+    deleteSheet.addEventListener('calciteSheetClose', function () {
         pendingDeleteConfig = null;
     });
 })();
 
-document.addEventListener('htmx:load', function(event) {
+document.addEventListener('htmx:load', function (event) {
     // Find all sortable table headers
-    event.detail.elt.querySelectorAll('th[role="button"][hx-trigger]').forEach(function(th) {
-        th.addEventListener('keydown', function(e) {
+    event.detail.elt.querySelectorAll('th[role="button"][hx-trigger]').forEach(function (th) {
+        th.addEventListener('keydown', function (e) {
             // Only trigger for Enter and Space, like native buttons
             if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault(); // Prevent page scroll on Space

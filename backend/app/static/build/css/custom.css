@@ -727,7 +727,7 @@ calcite-modal#add-modal {
   width: 100%;
 }
 
-div#chartd3 {
+div#graph-container {
   height: 400px;
   padding-bottom: 10px;
 }
@@ -749,7 +749,7 @@ canvas#line-chart {
   padding-right: 16px;
 }
 
-.d3chart-filter {
+.graph-filter {
   float: right;
   padding-right: 16px;
 }
@@ -1161,4 +1161,14 @@ calcite-dialog ul {
   margin-top: 1rem;
   display: flex;
   flex-direction: column;
+}
+
+calcite-chip {
+    --calcite-chip-corner-radius: 4px;
+}
+
+.graph-navigation-bar {
+    position: absolute;
+    right: 16px;
+    z-index: 100;
 }

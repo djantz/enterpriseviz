@@ -444,9 +444,9 @@ def portal_layer_view(request, name=None):
     logger.debug(f"name={name}, user={request.user.username}")
     template = "portals/portal_detail_layer.html" if request.htmx else "portals/portal_detail_layer_full.html"
 
-    version = request.GET.get("version", "")
-    dbserver = request.GET.get("server", "")
-    database = request.GET.get("database", "")
+    version = request.GET.get("version", None)
+    dbserver = request.GET.get("server", None)
+    database = request.GET.get("database", None)
     logger.debug(f"Params - version: {version}, server: {dbserver}, database: {database}")
 
     if not name:

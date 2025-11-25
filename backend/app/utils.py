@@ -17,6 +17,7 @@
 # ----------------------------------------------------------------------
 import base64
 import hashlib
+import json
 import logging
 import re
 import secrets
@@ -34,7 +35,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import get_connection, EmailMultiAlternatives, EmailMessage
 from django.core.validators import validate_email
-from django.db.models import F, QuerySet, Q
+from django.db.models import F, Prefetch, QuerySet, Q
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare
 from django.utils.html import escape
@@ -486,7 +487,7 @@ def map_details(item_id):
 
     :param item_id: Unique ID of the Webmap.
     :type item_id: str
-    :return: Dictionary with 'tree' (Webmap details), 'services' (QuerySet),
+    :return: Dictionary with 'graph_data' (JSON string), 'services' (QuerySet),
              'apps' (QuerySet with usage_type), 'layers' (list),
              and 'item' (Webmap model instance). Returns {'error': msg} on failure.
     :rtype: dict
@@ -495,12 +496,21 @@ def map_details(item_id):
         webmap_item = Webmap.objects.select_related('portal_instance').get(webmap_id=item_id)
         logger.debug(f"Retrieved Webmap '{webmap_item.webmap_title}' (ID: {item_id}).")
 
-        tree = {
-            "name": webmap_item.webmap_title, "url": webmap_item.webmap_url,
-            "instance": webmap_item.portal_instance.alias if webmap_item.portal_instance else None,
-            "description": webmap_item.webmap_description, "access": webmap_item.webmap_access,
-            "children": []
-        }
+        # Initialize flat structure
+        nodes = []
+        links = []
+        added_node_ids = set()
+
+        # Add the root map node
+        map_node_id = f"map-{webmap_item.id}"
+        nodes.append({
+            "id": map_node_id,
+            "name": webmap_item.webmap_title,
+            "type": "map",
+            "url": webmap_item.webmap_url,
+            "instance": webmap_item.portal_instance.alias if webmap_item.portal_instance else None
+        })
+        added_node_ids.add(map_node_id)
 
         services = webmap_item.service_set.select_related('portal_instance').distinct()
         apps = webmap_item.app_set.select_related('portal_instance', 'app_owner') \
@@ -510,16 +520,58 @@ def map_details(item_id):
         logger.debug(
             f"map_details: Found {services.count()} services, {apps.count()} apps, {len(layers)} layers for Webmap {item_id}.")
 
+        # Add service nodes and links
         for service in services:
-            if service.service_name and service.service_url:
-                tree["children"].append({
-                    "name": service.service_name,
-                    "url": service.service_url_as_list()[0] if service.service_url_as_list() else service.service_url,
-                    "instance": service.portal_instance.alias if service.portal_instance else None,
-                    "children": []
-                })
+            service_id = f"service-{service.id}"
 
-        return {"tree": tree, "services": services, "apps": apps, "layers": layers, "item": webmap_item}
+            # Add service node (if not already added)
+            if service_id not in added_node_ids:
+                nodes.append({
+                    "id": service_id,
+                    "name": service.service_name,
+                    "type": "service",
+                    "url": service.service_url_as_list()[0] if service.service_url_as_list() else service.service_url,
+                    "instance": service.portal_instance.alias if service.portal_instance else None
+                })
+                added_node_ids.add(service_id)
+
+            # Add link from map to service
+            links.append({
+                "source": map_node_id,
+                "target": service_id
+            })
+
+        # Add app nodes and links
+        for app in apps:
+            app_id = f"app-{app.id}"
+
+            # Add app node (if not already added)
+            if app_id not in added_node_ids:
+                nodes.append({
+                    "id": app_id,
+                    "name": app.app_title,
+                    "type": app.app_type.title(),
+                    "url": app.app_url,
+                    "instance": app.portal_instance.alias if app.portal_instance else None
+                })
+                added_node_ids.add(app_id)
+
+            # Add link from map to app
+            links.append({
+                "source": map_node_id,
+                "target": app_id
+            })
+
+        return {
+            'graph_data': json.dumps({
+                'nodes': nodes,
+                'links': links
+            }),
+            "services": services,
+            "apps": apps,
+            "layers": layers,
+            "item": webmap_item
+        }
 
     except Webmap.DoesNotExist:
         logger.warning(f"Webmap with ID {item_id} not found.")
@@ -537,7 +589,7 @@ def service_details(portal_alias, service_name):
     :type portal_alias: str
     :param service_name: Name of the Service.
     :type service_name: str
-    :return: Dictionary with 'tree' (Service details), 'maps' (QuerySet),
+    :return: Dictionary with 'graph_data' (JSON string), 'maps' (QuerySet),
              'apps' (list of combined app dicts), 'layers' (QuerySet),
              and 'item' (Service model instance). Returns {'error': msg} on failure.
     :rtype: dict
@@ -551,12 +603,21 @@ def service_details(portal_alias, service_name):
 
         logger.debug(f"Retrieved Service '{service_item.service_name}' from '{portal_alias}'.")
 
-        tree = {
+        # Initialize flat structure
+        nodes = []
+        links = []
+        added_node_ids = set()
+
+        # Add the root service node
+        service_node_id = f"service-{service_item.id}"
+        nodes.append({
+            "id": service_node_id,
             "name": service_item.service_name,
+            "type": "service",
             "url": service_item.service_url_as_list()[0] if service_item.service_url_as_list() else None,
-            "instance": portal_alias,
-            "children": []
-        }
+            "instance": portal_alias
+        })
+        added_node_ids.add(service_node_id)
 
         layers = Layer.objects.filter(layer_service__service_id=service_item)
         maps = Webmap.objects.filter(map_service__service_id=service_item).select_related(
@@ -575,25 +636,101 @@ def service_details(portal_alias, service_name):
         logger.debug(
             f"Found {layers.count()} layers, {maps.count()} maps, {len(apps_combined)} apps for Service '{service_item.service_name}'.")
 
-        for map_item in maps:
-            map_data = {
-                "name": map_item.webmap_title,
-                "url": map_item.webmap_url,
-                "instance": map_item.portal_instance.alias if map_item.portal_instance else None,
-                "children": []
-            }
-            for app_item in map_item.app_map_set.all():
-                if app_item.app_id:
-                    app_data = {
-                        "name": app_item.app_id.app_title,
-                        "url": app_item.app_id.app_url,
-                        "instance": app_item.app_id.portal_instance.alias if app_item.app_id.portal_instance else None,
-                        "children": []
-                    }
-                    map_data["children"].append(app_data)
-            tree["children"].append(map_data)
+        # Add layer nodes and links
+        for layer in layers:
+            layer_id = f"layer-{layer.layer_name}"
 
-        return {"tree": tree, "maps": maps, "apps": apps_combined, "layers": layers, "item": service_item}
+            # Add layer node (if not already added)
+            if layer_id not in added_node_ids:
+                nodes.append({
+                    "id": layer_id,
+                    "name": layer.layer_name,
+                    "type": "layer",
+                    "url": None,
+                    "instance": None
+                })
+                added_node_ids.add(layer_id)
+
+            # Add link from service to layer
+            links.append({
+                "source": service_node_id,
+                "target": layer_id
+            })
+
+        # Add map nodes and links
+        for map_item in maps:
+            map_id = f"map-{map_item.id}"
+
+            # Add map node (if not already added)
+            if map_id not in added_node_ids:
+                nodes.append({
+                    "id": map_id,
+                    "name": map_item.webmap_title,
+                    "type": "map",
+                    "url": map_item.webmap_url,
+                    "instance": map_item.portal_instance.alias if map_item.portal_instance else None
+                })
+                added_node_ids.add(map_id)
+
+            # Add link from service to map
+            links.append({
+                "source": service_node_id,
+                "target": map_id
+            })
+
+            # Add app nodes and links (via maps)
+            for app_rel in map_item.app_map_set.all():
+                if app_rel.app_id:
+                    app_id = f"app-{app_rel.app_id.id}"
+
+                    # Add app node (if not already added)
+                    if app_id not in added_node_ids:
+                        nodes.append({
+                            "id": app_id,
+                            "name": app_rel.app_id.app_title,
+                            "type": app_rel.app_id.app_type.title(),
+                            "url": app_rel.app_id.app_url,
+                            "instance": app_rel.app_id.portal_instance.alias if app_rel.app_id.portal_instance else None
+                        })
+                        added_node_ids.add(app_id)
+
+                    # Add link from map to app
+                    links.append({
+                        "source": map_id,
+                        "target": app_id
+                    })
+
+        # Add direct service → app links (bypassing maps)
+        for app in apps_direct:
+            app_id = f"app-{app.id}"
+
+            # Add app node (if not already added)
+            if app_id not in added_node_ids:
+                nodes.append({
+                    "id": app_id,
+                    "name": app.app_title,
+                    "type": app.app_type.title(),
+                    "url": app.app_url,
+                    "instance": app.portal_instance.alias if app.portal_instance else None
+                })
+                added_node_ids.add(app_id)
+
+            # Add direct link from service to app
+            links.append({
+                "source": service_node_id,
+                "target": app_id
+            })
+
+        return {
+            'graph_data': json.dumps({
+                'nodes': nodes,
+                'links': links
+            }),
+            "maps": maps,
+            "apps": apps_combined,
+            "layers": layers,
+            "item": service_item
+        }
 
     except Portal.DoesNotExist:
         logger.warning(f"Portal with alias '{portal_alias}' not found.")
@@ -628,75 +765,160 @@ def layer_details(dbserver, database, version, name):
         f"layer_details: Fetching layer '{name}' from server '{dbserver}', db '{database}', version '{version}'.")
     try:
         layer_filter_q = Q(layer_name=name)
-
+        layer_item = Layer.objects.filter(layer_name=name, layer_server=dbserver, layer_database=database,
+                                          layer_version=version).first()
         layer_items = Layer.objects.filter(layer_filter_q).select_related('portal_instance')
         if not layer_items.exists():
             logger.warning(f"Layer '{name}' not found with specified criteria.")
             return {"error": f"Layer '{name}' not found."}
 
-        tree = {
-            "name": name,
-            "url": None,
-            "instance": None,
-            "children": []
-        }
+        # Initialize flat structure
+        nodes = []
+        links = []
+        added_node_ids = set()
 
-        # Services directly associated with any of the found layer_items
-        services = Service.objects.filter(layer__in=layer_items).select_related('portal_instance').distinct()
+        # Add the root layer node
+        layer_node_id = f"layer-{name}"
+        nodes.append({
+            "id": layer_node_id,
+            "name": name,
+            "type": "layer",
+            "url": None,
+            "instance": None
+        })
+        added_node_ids.add(layer_node_id)
+
+        # Services directly associated with the layer
+        services = (
+            Service.objects
+            .filter(layer__in=layer_items)
+            .select_related('portal_instance')
+            .prefetch_related(
+                Prefetch(
+                    'layers',
+                    queryset=Layer.objects.filter(layer_name=name),
+                    to_attr='filtered_layers'
+                )
+            )
+            .distinct()
+        )
         if not services.exists():
             logger.warning(f"No services found directly associated with layer(s) '{name}'.")
 
-        # Maps that use services which contain any of the found layer_items
+        # Maps that use services which contain the layer
         maps = Webmap.objects.filter(map_service__service_id__layer__in=layer_items).select_related(
             'portal_instance').distinct()
 
-        # Apps related via maps that use services which contain the layer(s)
+        # Apps related via maps
         apps_via_maps = App.objects.filter(app_map__webmap_id__map_service__service_id__layer__in=layer_items) \
             .annotate(usage_type=F("app_map__rel_type")) \
             .select_related('app_owner', 'portal_instance').distinct()
 
-        # Apps directly related to services which contain the layer(s)
+        # Apps directly related to services
         apps_direct = App.objects.filter(app_service__service_id__layer__in=layer_items) \
             .annotate(usage_type=F("app_service__rel_type")) \
             .select_related('app_owner', 'portal_instance').distinct()
+
         apps_combined = combine_apps(apps_direct.union(apps_via_maps))
+
         logger.debug(
-            f"Found {services.count()} services, {maps.count()} maps, {len(apps_combined)} apps for Layer '{name}'.")
+            f"Found {services.count()} services, {maps.count()} maps, {len(apps_combined)} apps for Layer '{name}'."
+        )
 
+        # Add service nodes and links
         for service in services:
-            service_data = {
-                "name": service.service_name,
-                "url": service.service_url,
-                "url": service.service_url_as_list()[0] if service.service_url_as_list() else None,
-                "instance": service.portal_instance.alias if service.portal_instance else None,
-                "children": []
-            }
+            service_id = f"service-{service.id}"
 
+            # Add service node (if not already added)
+            if service_id not in added_node_ids:
+                nodes.append({
+                    "id": service_id,
+                    "name": service.service_name,
+                    "type": "service",
+                    "url": service.service_url_as_list()[0] if service.service_url_as_list() else None,
+                    "instance": service.portal_instance.alias if service.portal_instance else None
+                })
+                added_node_ids.add(service_id)
+
+            # Add link from layer to service
+            links.append({
+                "source": layer_node_id,
+                "target": service_id
+            })
+
+            # Add map nodes and links
             for map_instance in service.maps.all():
-                map_data = {
-                    "name": map_instance.webmap_title,
-                    "url": map_instance.webmap_url,
-                    "instance": map_instance.portal_instance.alias if map_instance.portal_instance else None,
-                    "children": []
-                }
+                map_id = f"map-{map_instance.id}"
 
-                for app in map_instance.app_map_set.all():
-                    if app.app_id:
-                        app_data = {
-                            "name": app.app_id.app_title,
-                            "url": app.app_id.app_url,
-                            "instance": app.app_id.portal_instance.alias if app.app_id.portal_instance else None,
-                            "children": []
-                        }
-                        map_data["children"].append(app_data)
+                # Add map node (if not already added)
+                if map_id not in added_node_ids:
+                    nodes.append({
+                        "id": map_id,
+                        "name": map_instance.webmap_title,
+                        "type": "map",
+                        "url": map_instance.webmap_url,
+                        "instance": map_instance.portal_instance.alias if map_instance.portal_instance else None
+                    })
+                    added_node_ids.add(map_id)
 
-                service_data["children"].append(map_data)
+                # Add link from service to map
+                links.append({
+                    "source": service_id,
+                    "target": map_id
+                })
 
-            tree["children"].append(service_data)
+                # Add app nodes and links (via maps)
+                for app_rel in map_instance.app_map_set.select_related('app_id').all():
+                    if app_rel.app_id:
+                        app_id = f"app-{app_rel.app_id.id}"
+
+                        # Add app node (if not already added)
+                        if app_id not in added_node_ids:
+                            nodes.append({
+                                "id": app_id,
+                                "name": app_rel.app_id.app_title,
+                                "type": app_rel.app_id.app_type.title(),
+                                "url": app_rel.app_id.app_url,
+                                "instance": app_rel.app_id.portal_instance.alias if app_rel.app_id.portal_instance else None
+                            })
+                            added_node_ids.add(app_id)
+
+                        # Add link from map to app
+                        links.append({
+                            "source": map_id,
+                            "target": app_id
+                        })
+
+            # Add direct service → app links (bypassing maps)
+            for app in apps_direct.filter(app_service__service_id=service):
+                app_id = f"app-{app.id}"
+
+                # Add app node (if not already added)
+                if app_id not in added_node_ids:
+                    nodes.append({
+                        "id": app_id,
+                        "name": app.app_title,
+                        "type": app.app_type.title(),
+                        "url": app.app_url,
+                        "instance": app.portal_instance.alias if app.portal_instance else None
+                    })
+                    added_node_ids.add(app_id)
+
+                # Add direct link from service to app
+                links.append({
+                    "source": service_id,
+                    "target": app_id
+                })
 
         return {
-            "tree": tree, "services": services, "maps": maps, "apps": apps_combined,
-            "item": name
+            'graph_data': json.dumps({
+                'nodes': nodes,
+                'links': links
+            }),
+            "services": services,
+            "maps": maps,
+            "apps": apps_combined,
+            "item": layer_item
         }
     except Exception as e:
         logger.error(f"Error for Layer '{name}' in server '{dbserver}', db '{database}', version '{version}': {e}",
