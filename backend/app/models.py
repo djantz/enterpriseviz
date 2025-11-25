@@ -177,7 +177,9 @@ class Service(models.Model):
         return "%s" % self.service_name
 
     def service_url_as_list(self):
-        return list(x for x in self.service_url)
+        if not self.service_url:
+            return []
+        return list(self.service_url)
 
     def service_owner_as_list(self):
         return self.service_owner.split(",")
