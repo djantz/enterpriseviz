@@ -23,14 +23,17 @@ $('.close-link').click(function () {
 
 async function waitForCalcite(container) {
     // Find all Calcite components in the container
-    const calciteElements = container.querySelectorAll('[class*="calcite-"]');
     const tagNames = new Set();
-
-    calciteElements.forEach(el => {
-        tagNames.add(el.tagName.toLowerCase());
+    const allElements = container.querySelectorAll('*');
+    allElements.forEach(el => {
+        const tag = el.tagName.toLowerCase();
+        if (tag.startsWith('calcite-')) {
+            tagNames.add(tag);
+        }
     });
+    console.log("Found calcite elements:", tagNames);
 
-    // Wait for all unique Calcite components
+    // Wait for all unique Calcite components to be defined
     await Promise.all(
         Array.from(tagNames).map(tag => customElements.whenDefined(tag))
     );
@@ -49,7 +52,8 @@ async function init_DataTables(tableElement) {
     // Wait for Calcite components in the table
     await waitForCalcite(tableElement);
     let tableInstance = initDataTable(`#${tableElement.id}`, `#${tableElement.id}-filter`, "Instance", false);
-    tableInstance.on('draw', () => htmx.process(document.body));
+    tableInstance.on('draw', () => htmx.process(tableElement));
+    return tableInstance
 }
 
 function initDataTable(selector, filterSelector, columnContains, usageTarget) {
@@ -1211,6 +1215,7 @@ function initWebhookSecretGenerator() {
             const crypto = globalThis.crypto || window.crypto;
             if (!crypto || !crypto.getRandomValues) {
                 console.error('Crypto API not available. This environment does not support cryptographically secure random number generation.');
+                return
             }
 
             // Calculate the largest multiple of chars.length that fits in 256
@@ -1268,6 +1273,11 @@ function initWebhookSecretGenerator() {
     const deleteDetails = document.getElementById('delete-confirm-details');
     const confirmYes = document.getElementById('delete-confirm-yes');
     const confirmNo = document.getElementById('delete-confirm-no');
+
+    if (!deleteSheet || !deleteMessage || !deleteDetails || !confirmYes || !confirmNo) {
+        // Sheet not present (e.g., non-superuser)
+        return;
+    }
 
     let pendingDeleteConfig = null;
 
