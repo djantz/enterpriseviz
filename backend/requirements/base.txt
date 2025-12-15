@@ -15,8 +15,9 @@ django-redis  # https://github.com/jazzband/django-redis
 djangorestframework  # https://github.com/encode/django-rest-framework
 
 
-arcgis==2.3.1
-requests==2.31.0
+arcgis==2.4.2
+arcgis-mapping==4.33.0
+requests
 social-auth-app-django
 django-csp
 beautifulsoup4>=4.12.2
