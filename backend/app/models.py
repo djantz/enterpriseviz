@@ -350,10 +350,22 @@ class Map_Service(models.Model):
     portal_instance = models.ForeignKey(Portal, on_delete=models.CASCADE)
     webmap_id = models.ForeignKey(Webmap, on_delete=models.CASCADE)
     service_id = models.ForeignKey(Service, on_delete=models.CASCADE)
+    service_layer_id = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Specific layer ID from this service used in the webmap"
+    )
+    webmap_layer_id = models.CharField(max_length=100, null=True, blank=True)
     updated_date = models.DateTimeField(blank=True, null=True)
 
     def __str__(self):
         return f"{self.webmap_id.webmap_title} - {self.service_id.service_name}"
+
+    class Meta:
+        unique_together = ('portal_instance', 'webmap_id', 'service_id', 'service_layer_id')
+        indexes = [
+            models.Index(fields=['webmap_id', 'webmap_layer_id']),
+        ]
 
 
 class Layer_Service(models.Model):
@@ -363,8 +375,26 @@ class Layer_Service(models.Model):
     portal_instance = models.ForeignKey(Portal, on_delete=models.CASCADE)
     layer_id = models.ForeignKey(Layer, on_delete=models.CASCADE)
     service_id = models.ForeignKey(Service, on_delete=models.CASCADE)
+    service_layer_id = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="The layer ID within the service (e.g., 0, 1, 2 from /MapServer/0)"
+    )
+
+    service_layer_name = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text="The display name of the layer in the service"
+    )
     updated_date = models.DateTimeField(blank=True, null=True)
 
+
+    class Meta:
+        unique_together = ['portal_instance', 'layer_id', 'service_id']
+        indexes = [
+            models.Index(fields=['service_id', 'service_layer_id'], name='idx_service_layer')
+        ]
     def __str__(self):
         return f"{self.layer_id.layer_name} - {self.service_id.service_name}"
 
@@ -377,11 +407,14 @@ class App_Map(models.Model):
     app_id = models.ForeignKey(App, on_delete=models.CASCADE)
     webmap_id = models.ForeignKey(Webmap, on_delete=models.CASCADE)
     types = (
-        ("widget", "widget"),
-        ("search", "search"),
-        ("filter", "filter"),
-        ("map", "map"),
-        ("other", "other")
+        ("widget", "Widget"),
+        ("search", "Search"),
+        ("filter", "Filter"),
+        ('map', 'Primary Map Reference'),  # Web Mapping Application, Dashboard
+        ('datasource', 'Data Source Map'),  # Web AppBuilder, Experience Builder
+        ('widget', 'Widget Map'),  # Experience Builder
+        ('storymap', 'StoryMap Embed'),  # StoryMap
+        ('other', 'Other'),
     )
     rel_type = models.CharField(choices=types, null=True)
     updated_date = models.DateTimeField(blank=True, null=True)
@@ -398,10 +431,15 @@ class App_Service(models.Model):
     app_id = models.ForeignKey(App, on_delete=models.CASCADE)
     service_id = models.ForeignKey(Service, on_delete=models.CASCADE)
     types = (
-        ("widget", "widget"),
-        ("search", "search"),
-        ("filter", "filter"),
-        ("other", "other")
+        ('search', 'Search Layer'),  # Web AppBuilder
+        ('filter', 'Filter'),  # Web AppBuilder
+        ('widget', 'Widget'),  # Web AppBuilder
+        ('datasource', 'Data Source'),  # Web AppBuilder, Experience Builder
+        ('dataset', 'Dashboard Dataset'),  # Dashboard
+        ('arcade', 'Arcade Expression'),  # Dashboard
+        ('survey', 'Survey123 Form'),  # Experience Builder
+        ('embed', 'StoryMap Embed'),  # StoryMap
+        ('other', 'Other'),
     )
     rel_type = models.CharField(choices=types, null=True)
     updated_date = models.DateTimeField(blank=True, null=True)
