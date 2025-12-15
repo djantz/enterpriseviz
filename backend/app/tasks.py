@@ -15,25 +15,28 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 # ----------------------------------------------------------------------
-from datetime import datetime, timedelta
-from django.utils import timezone
 import json
 import logging
 import re
 import time
+from datetime import datetime, timedelta
 
 import arcgis.gis.server
 import requests
+from arcgis.features import FeatureLayer
+from arcgis.map import Map
+from arcgis.map.group_layer import GroupLayer
 from bs4 import BeautifulSoup
 from celery import shared_task, group, current_app
 from celery.exceptions import Ignore
 from celery_progress.backend import ProgressRecorder, Progress
 from django.conf import settings as django_settings
 from django.core.exceptions import MultipleObjectsReturned
+from django.utils import timezone
 
-from .models import Webmap, Service, Layer, App, User, Map_Service, Layer_Service, App_Map, App_Service, Portal, \
-    SiteSettings, WebhookNotificationLog, PortalToolSettings
 from . import utils
+from .models import Webmap, Service, Layer, App, User, Map_Service, Layer_Service, App_Map, App_Service, Portal, \
+    WebhookNotificationLog
 from .request_context import celery_logging_context
 
 logger = logging.getLogger('enterpriseviz.tasks')
@@ -338,22 +341,68 @@ def extract_webmap_data(item, instance_item, update_time):
 
 
 def process_layers(item):
-    """Processes web map layers and returns a dictionary of layers and services."""
-    from arcgis.mapping import WebMap
+    """
+    Process web map layers and extract layer and service information.
 
-    wm = WebMap(item)
+    This function recursively processes operational layers from a web map, including handling
+    nested group layers. It extracts layer metadata (name, type, URL, IDs) and identifies
+    associated services. For each service URL, it attempts to extract the service layer ID
+    (the numeric index at the end of the URL, e.g., MapServer/5) and the web map's internal
+    layer ID used for references by applications.
+
+    :param item: ArcGIS web map Item object to process.
+    :type item: arcgis.gis.Item
+    :return: Tuple containing:
+             - layers (dict): Dictionary mapping layer names to their metadata including url, type,
+               service_item_id, and webmap_layer_id
+             - services (list): List of tuples (service_url, service_layer_id, webmap_layer_id)
+               where service_layer_id and webmap_layer_id may be None
+    :rtype: tuple[dict, list]
+    """
+
     layers = {}
-    services = set()
+    services = []
+    wm_content = item.get_data()
 
-    for layer in (l for l in wm.layers if l.get("layerType", None) != "GroupLayer"):
-        if not getattr(layer, "url", None):
-            continue
-        s_url = "/".join(layer.url.split("/")[:-1]) if layer.url.split("/")[-1].isdigit() else layer.url
-        services.add(s_url)
+    def process_op_layer(layer):
+        if layer.get("layerType") == "GroupLayer":
+            for sublayer in layer.get("layers", []):
+                process_op_layer(sublayer)
+        else:
+            # Web map's internal layer ID (used by apps for references)
+            webmap_layer_id = layer.get("id", None)
 
-        layers[layer.title] = [layer.get("url", None), layer.get("layerType", None), layer.id]
+            # Service item ID (the published service this layer comes from)
+            service_item_id = layer.get("itemId", None)
 
-    return layers, list(services)
+            layer_name = layer.get("title", None)
+            layer_type = layer.get("layerType", None)
+            layer_url = layer.get("url", None)
+
+            if layer_url:
+                # Extract service_layer_id from URL if present (last segment is a digit)
+                url_parts = layer_url.split("/")
+                service_layer_id = None
+                if url_parts and url_parts[-1].isdigit():
+                    service_layer_id = int(url_parts[-1])
+                    s_url = "/".join(url_parts[:-1])
+                else:
+                    s_url = layer_url
+
+                services.append((s_url, service_layer_id, webmap_layer_id))
+
+            # Store layer info including webmap_layer_id
+            layers[layer_name] = {
+                "url": layer_url,
+                "type": layer_type,
+                "service_item_id": service_item_id,
+                "webmap_layer_id": webmap_layer_id  # NEW
+            }
+
+    for op_layer in wm_content.get("operationalLayers", []):
+        process_op_layer(op_layer)
+
+    return layers, services
 
 
 def calculate_usage(item, instance_item):
@@ -388,9 +437,29 @@ def get_owner(instance_item, owner_username):
 
 
 def link_services_to_webmap(instance_item, webmap_obj, services):
-    """Links web maps to services if they exist in the database."""
+    """
+    Link web maps to services if they exist in the database.
+
+    This function creates or updates Map_Service relationships between a web map and its
+    associated services. It handles service layer IDs (for specific layer references within
+    a service) and web map layer IDs (internal identifiers used by the web map). The function
+    also cleans up outdated Map_Service records that are no longer present in the web map.
+
+    :param instance_item: Portal instance containing the web map and services.
+    :type instance_item: Portal
+    :param webmap_obj: Web map model object to link services to.
+    :type webmap_obj: Webmap
+    :param services: List of service data, either as tuples (service_url, service_layer_id, webmap_layer_id)
+                    or (service_url, service_layer_id) or just service_url strings for backward compatibility.
+                    service_layer_id and webmap_layer_id may be None.
+    :type services: list[tuple | str]
+    :return: None
+    :rtype: None
+    """
     update_time = timezone.now()
-    for service_url in services:
+    for service_data in services:
+        service_url, service_layer_id, webmap_layer_id = service_data
+
         try:
             s_obj = Service.objects.get(service_url__overlap=[service_url])
         except Service.DoesNotExist:
@@ -398,12 +467,23 @@ def link_services_to_webmap(instance_item, webmap_obj, services):
             continue
         except MultipleObjectsReturned:
             s_obj = Service.objects.filter(service_url__overlap=[service_url]).first()
+
         Map_Service.objects.update_or_create(
-            portal_instance=instance_item, webmap_id=webmap_obj, service_id=s_obj,
-            defaults={"updated_date": update_time}
+            portal_instance=instance_item,
+            webmap_id=webmap_obj,
+            service_id=s_obj,
+            service_layer_id=service_layer_id,
+            defaults={
+                "updated_date": update_time,
+                "webmap_layer_id": webmap_layer_id
+            }
         )
-    deletes = Map_Service.objects.filter(portal_instance=instance_item, webmap_id=webmap_obj,
-                                         updated_date__lt=update_time)
+
+    deletes = Map_Service.objects.filter(
+        portal_instance=instance_item,
+        webmap_id=webmap_obj,
+        updated_date__lt=update_time
+    )
     deletes.delete()
 
 
