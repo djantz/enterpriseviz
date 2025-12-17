@@ -21,14 +21,19 @@ import json
 import logging
 import re
 import secrets
+import shutil
+import tempfile
+import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone as dt_timezone
 from itertools import combinations, groupby
 from operator import itemgetter
+from pathlib import Path
+from typing import Dict, List, Optional
 
 import requests
 from arcgis import gis
-from arcgis.mapping import WebMap
 from cryptography.fernet import Fernet
 from django.conf import settings
 from django.core.cache import cache
@@ -43,7 +48,7 @@ from fuzzywuzzy import fuzz
 from tabulate import tabulate
 
 from . import tasks
-from .models import Webmap, Service, Layer, App, Portal, SiteSettings
+from .models import Webmap, Service, Layer, App, Portal, SiteSettings, Layer_Service
 
 logger = logging.getLogger('enterpriseviz.utils')
 
@@ -1852,3 +1857,722 @@ def _process_user_event(portal_instance, event_id, operation):
     """Process user webhook events."""
     logger.info(f"Processing user webhook - ID: {event_id}, Operation: {operation}")
     tasks.process_user.delay(portal_instance.alias, event_id, operation)
+
+
+class MSDLayerInfo:
+    """
+    Container for parsed MSD layer information.
+
+    :ivar service_layer_id: Layer index within the service (e.g., 0, 1, 2).
+    :vartype service_layer_id: int or None
+    :ivar layer_name: Display name of the layer.
+    :vartype layer_name: str or None
+    :ivar dataset: Dataset name (feature class name).
+    :vartype dataset: str or None
+    :ivar dataset_type: Type of dataset (e.g., 'esriDTFeatureClass').
+    :vartype dataset_type: str or None
+    :ivar feature_dataset: Parent feature dataset name if applicable.
+    :vartype feature_dataset: str or None
+    :ivar workspace_connection: Database connection string.
+    :vartype workspace_connection: str or None
+    :ivar workspace_factory: Workspace factory type.
+    :vartype workspace_factory: str or None
+    :ivar workspace_type: Type of workspace (e.g., 'esriDataSourcesGDB.SdeWorkspaceFactory').
+    :vartype workspace_type: str or None
+    """
+
+    def __init__(self):
+        self.service_layer_id = None
+        self.layer_name = None
+        self.dataset = None
+        self.dataset_type = None
+        self.feature_dataset = None
+        self.workspace_connection = None
+        self.workspace_factory = None
+        self.workspace_type = None
+
+    def to_dict(self):
+        """
+        Convert to dictionary.
+
+        :return: Dictionary representation of layer info.
+        :rtype: dict
+        """
+        return {
+            'service_layer_id': self.service_layer_id,
+            'layer_name': self.layer_name,
+            'dataset': self.dataset,
+            'dataset_type': self.dataset_type,
+            'feature_dataset': self.feature_dataset,
+            'workspace_connection': self.workspace_connection,
+            'workspace_factory': self.workspace_factory,
+            'workspace_type': self.workspace_type
+        }
+
+
+def extract_msd_from_manifest(service_manifest, service_name="service"):
+    """
+    Extract .msd file path from service manifest and copy it locally for processing.
+
+    The .msd file is not accessible through REST API and must be accessed directly
+    from the server file system. This function extracts the file path from the manifest,
+    checks if it's accessible, and creates a local copy for processing.
+
+    :param service_manifest: The service manifest dictionary (already retrieved).
+    :type service_manifest: dict
+    :param service_name: Name of the service for logging purposes.
+    :type service_name: str
+    :return: Path to local copy of .msd file or None if failed.
+    :rtype: Optional[Path]
+    """
+    try:
+        # Find the .msd resource in the manifest
+        resources = service_manifest.get("resources", [])
+        msd_resource = None
+
+        for resource in resources:
+            server_path = resource.get("serverPath", "")
+            if server_path.endswith(".msd"):
+                msd_resource = resource
+                break
+
+        if not msd_resource:
+            logger.debug(f"No .msd file found in manifest for service: {service_name}")
+            return None
+
+        # Get the server path to the .msd file
+        msd_server_path = Path(msd_resource.get("serverPath", ""))
+
+        if not msd_server_path:
+            logger.warning(f"Empty server path for .msd file in service: {service_name}")
+            return None
+
+        logger.debug(f"Found .msd file path: {msd_server_path}")
+
+        # Check if the file is accessible
+        if not msd_server_path.exists():
+            logger.warning(f"MSD file not accessible at path: {msd_server_path}. "
+                         f"This script must be run on a machine with access to the ArcGIS Server file system.")
+            return None
+
+        # Create a temporary copy to avoid modifying the original
+        temp_dir = Path(tempfile.mkdtemp(prefix='msd_'))
+        local_msd_path = temp_dir / msd_server_path.name
+
+        logger.debug(f"Copying .msd file to temporary location: {local_msd_path}")
+        shutil.copy2(msd_server_path, local_msd_path)
+
+        logger.info(f"Successfully copied .msd file for service '{service_name}' to: {local_msd_path}")
+        return local_msd_path
+
+    except PermissionError as e:
+        logger.error(f"Permission denied accessing .msd file for service '{service_name}': {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error extracting .msd file for service '{service_name}': {e}", exc_info=True)
+        return None
+
+
+def parse_msd_layers(msd_path):
+    """
+    Parse layer information from an .msd file.
+
+    Supports both ArcGIS Pro 2.x (p20) and 3.x (p30) formats:
+    - p20: Traditional XML with namespaces
+    - p30: JSON content in .xml files
+
+    :param msd_path: Path to .msd file or extracted directory.
+    :type msd_path: Path
+    :return: List of MSDLayerInfo objects.
+    :rtype: List[MSDLayerInfo]
+    """
+    temp_dir = None
+    cleanup_required = False
+
+    try:
+        # Extract if it's a ZIP file
+        if msd_path.is_file() and zipfile.is_zipfile(msd_path):
+            logger.info("Extracting .msd ZIP file...")
+            temp_dir = tempfile.mkdtemp(prefix='msd_')
+            extract_dir = Path(temp_dir)
+            cleanup_required = True
+
+            with zipfile.ZipFile(msd_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+
+            logger.debug(f"Extracted .msd to: {extract_dir}")
+        else:
+            logger.info(".msd file is not a ZIP, using as-is.")
+            extract_dir = msd_path
+
+        # Detect format (p20 XML vs p30 JSON)
+        is_json_format = _detect_json_format(extract_dir)
+        if is_json_format:
+            logger.info("Detected p30 JSON format")
+            return _parse_msd_layers_json(extract_dir)
+        else:
+            logger.info("Detected p20 XML format")
+            return _parse_msd_layers_xml(extract_dir)
+
+    except Exception as e:
+        logger.error(f"Error parsing .msd file: {e}", exc_info=True)
+        return []
+
+    finally:
+        # Cleanup temp directory
+        if cleanup_required and temp_dir and Path(temp_dir).exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _detect_json_format(directory):
+    """
+    Detect if MSD uses p30 JSON format or p20 XML format.
+
+    p30 uses JSON content in .xml files and has GISProject.json instead of GISProject.xml.
+
+    :param directory: Directory containing extracted MSD files.
+    :type directory: Path
+    :return: True if p30 JSON format, False if p20 XML format.
+    :rtype: bool
+    """
+    # Check for GISProject.json (p30 indicator)
+    if (directory / "GISProject.json").exists():
+        return True
+
+    # Check for Index.json (p30 indicator)
+    if (directory / "Index.json").exists():
+        return True
+
+    # Check a sample XML file to see if it contains JSON
+    xml_files = list(directory.rglob("*.xml"))[:3]  # Check first 3 XML files
+    for xml_file in xml_files:
+        try:
+            with open(xml_file, 'r', encoding='utf-8') as f:
+                content = f.read(100).strip()
+                if content.startswith('{') or content.startswith('['):
+                    return True
+        except Exception:
+            continue
+
+    return False
+
+
+def _parse_msd_layers_xml(extract_dir):
+    """
+    Parse layers from p20 XML format MSD.
+
+    :param extract_dir: Directory containing extracted MSD files.
+    :type extract_dir: Path
+    :return: List of MSDLayerInfo objects.
+    :rtype: List[MSDLayerInfo]
+    """
+    # Find the map XML
+    map_xml = _find_map_xml(extract_dir)
+    if not map_xml:
+        logger.warning(f"Could not find map XML in {extract_dir}")
+        return []
+
+    logger.debug(f"Found map XML: {map_xml}")
+
+    # Parse layer references
+    layer_refs = _parse_layer_references(map_xml, extract_dir)
+    logger.debug(f"Found {len(layer_refs)} layer references")
+
+    # Parse each layer
+    layers = []
+    for layer_ref in layer_refs:
+        layer_xml_path = extract_dir / layer_ref
+        if not layer_xml_path.exists():
+            logger.warning(f"Layer XML not found: {layer_ref}")
+            continue
+
+        layer_info = _parse_layer_xml(layer_xml_path)
+        if layer_info:
+            layers.append(layer_info)
+
+    return layers
+
+
+def _parse_msd_layers_json(extract_dir):
+    """
+    Parse layers from p30 JSON format MSD.
+
+    :param extract_dir: Directory containing extracted MSD files.
+    :type extract_dir: Path
+    :return: List of MSDLayerInfo objects.
+    :rtype: List[MSDLayerInfo]
+    """
+    # Find the map JSON/XML file (contains layer references)
+    map_file = _find_map_json(extract_dir)
+    if not map_file:
+        logger.warning(f"Could not find map file in {extract_dir}")
+        return []
+
+    logger.debug(f"Found map file: {map_file}")
+
+    # Parse layer references from JSON
+    layer_refs = _parse_layer_references_json(map_file, extract_dir)
+    logger.debug(f"Found {len(layer_refs)} layer references")
+
+    # Parse each layer
+    layers = []
+    for layer_ref in layer_refs:
+        layer_file_path = extract_dir / layer_ref
+        if not layer_file_path.exists():
+            logger.warning(f"Layer file not found: {layer_ref}")
+            continue
+
+        layer_info = _parse_layer_json(layer_file_path)
+        if layer_info:
+            layers.append(layer_info)
+
+    return layers
+
+
+def _find_map_xml(directory):
+    """
+    Find the main map XML file.
+
+    :param directory: Directory to search in.
+    :type directory: Path
+    :return: Path to map XML file or None if not found.
+    :rtype: Optional[Path]
+    """
+    # Search recursively
+    for xml_file in directory.rglob("*.xml"):
+        try:
+            tree = ET.parse(xml_file)
+            root = tree.getroot()
+            if root.find('.//Layers') is not None:
+                return xml_file
+        except ET.ParseError:
+            continue
+
+    return None
+
+
+def _get_namespace_from_root(root):
+    """
+    Extract namespace from root element.
+
+    :param root: Root XML element.
+    :type root: ET.Element
+    :return: Dictionary with namespace mapping.
+    :rtype: Dict[str, str]
+    """
+    if '}' in root.tag:
+        ns_uri = root.tag.split('}')[0].strip('{')
+        return {'typens': ns_uri}
+    return {}
+
+
+def _parse_layer_references(map_xml_path, base_dir):
+    """
+    Parse layer XML file references from map XML.
+
+    :param map_xml_path: Path to map XML file.
+    :type map_xml_path: Path
+    :param base_dir: Base directory for resolving relative paths.
+    :type base_dir: Path
+    :return: List of layer file paths.
+    :rtype: List[str]
+    """
+    tree = ET.parse(map_xml_path)
+    root = tree.getroot()
+
+    ns = _get_namespace_from_root(root)
+    layer_refs = []
+
+    # Try with namespace
+    if ns and 'typens' in ns:
+        layers_elem = root.find('.//typens:Layers', ns)
+    else:
+        layers_elem = None
+
+    if layers_elem is None:
+        layers_elem = root.find('.//Layers')
+
+    if layers_elem is not None:
+        for string_elem in layers_elem:
+            layer_path = string_elem.text
+            if layer_path and layer_path.startswith('CIMPATH='):
+                layer_path = layer_path.replace('CIMPATH=', '')
+                layer_refs.append(layer_path)
+
+    return layer_refs
+
+
+def _parse_layer_xml(layer_xml_path):
+    """
+    Parse a single layer XML file.
+
+    :param layer_xml_path: Path to layer XML file.
+    :type layer_xml_path: Path
+    :return: MSDLayerInfo object or None if parsing fails.
+    :rtype: Optional[MSDLayerInfo]
+    """
+    try:
+        tree = ET.parse(layer_xml_path)
+        root = tree.getroot()
+
+        ns = _get_namespace_from_root(root)
+        has_ns = ns and 'typens' in ns
+
+        layer_info = MSDLayerInfo()
+
+        # Helper to find elements with/without namespace
+        def find_elem(xpath_with_ns, xpath_without_ns):
+            if has_ns:
+                elem = root.find(xpath_with_ns, ns)
+                if elem is not None:
+                    return elem
+            return root.find(xpath_without_ns)
+
+        # Extract layer name
+        name_elem = find_elem('.//typens:Name', './/Name')
+        if name_elem is not None:
+            layer_info.layer_name = name_elem.text
+
+        # Extract ServiceLayerID
+        service_id_elem = find_elem('.//typens:ServiceLayerID', './/ServiceLayerID')
+        if service_id_elem is not None:
+            try:
+                layer_info.service_layer_id = int(service_id_elem.text)
+            except (ValueError, TypeError):
+                pass
+
+        # Find DataConnection element
+        data_conn_elem = find_elem('.//typens:DataConnection', './/DataConnection')
+
+        if data_conn_elem is not None:
+            # Helper for finding within data connection
+            def find_in_conn(xpath_with_ns, xpath_without_ns):
+                if has_ns:
+                    elem = data_conn_elem.find(xpath_with_ns, ns)
+                    if elem is not None:
+                        return elem
+                return data_conn_elem.find(xpath_without_ns)
+
+            # Workspace connection string
+            ws_conn_elem = find_in_conn('.//typens:WorkspaceConnectionString', './/WorkspaceConnectionString')
+            if ws_conn_elem is not None:
+                layer_info.workspace_connection = ws_conn_elem.text
+                layer_info.workspace_type = _parse_workspace_type(ws_conn_elem.text)
+
+            # Workspace factory
+            ws_factory_elem = find_in_conn('.//typens:WorkspaceFactory', './/WorkspaceFactory')
+            if ws_factory_elem is not None:
+                layer_info.workspace_factory = ws_factory_elem.text
+
+            # Dataset name
+            dataset_elem = find_in_conn('.//typens:Dataset', './/Dataset')
+            if dataset_elem is not None:
+                layer_info.dataset = dataset_elem.text
+
+            # Dataset type
+            dataset_type_elem = find_in_conn('.//typens:DatasetType', './/DatasetType')
+            if dataset_type_elem is not None:
+                layer_info.dataset_type = dataset_type_elem.text
+
+            # Feature dataset
+            feature_dataset_elem = find_in_conn('.//typens:FeatureDataset', './/FeatureDataset')
+            if feature_dataset_elem is not None:
+                layer_info.feature_dataset = feature_dataset_elem.text
+
+        return layer_info
+
+    except Exception as e:
+        logger.error(f"Error parsing layer XML {layer_xml_path}: {e}")
+        return None
+
+
+def _find_map_json(directory):
+    """
+    Find the main map file in p30 JSON format.
+
+    :param directory: Directory to search in.
+    :type directory: Path
+    :return: Path to map file or None if not found.
+    :rtype: Optional[Path]
+    """
+    # Search for files that might contain layer references
+    for json_xml_file in directory.rglob("*.xml"):
+        try:
+            with open(json_xml_file, 'r', encoding='utf-8') as f:
+                content = f.read(1000)
+                if content.strip().startswith('{') and '"layers":[' in content:
+                    return json_xml_file
+        except Exception:
+            continue
+
+    return None
+
+
+def _parse_layer_references_json(map_file_path, base_dir):
+    """
+    Parse layer file references from p30 JSON format map file.
+
+    :param map_file_path: Path to map file.
+    :type map_file_path: Path
+    :param base_dir: Base directory for resolving relative paths.
+    :type base_dir: Path
+    :return: List of layer file paths.
+    :rtype: List[str]
+    """
+    try:
+        with open(map_file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        layers = data.get("layers", [])
+        layer_refs = []
+
+        for layer in layers:
+            if isinstance(layer, str) and layer.startswith('CIMPATH='):
+                layer_path = layer.replace('CIMPATH=', '')
+                layer_refs.append(layer_path)
+
+        return layer_refs
+
+    except Exception as e:
+        logger.error(f"Error parsing layer references from JSON {map_file_path}: {e}")
+        return []
+
+
+def _parse_layer_json(layer_file_path):
+    """
+    Parse a single layer file in p30 JSON format.
+
+    :param layer_file_path: Path to layer JSON file.
+    :type layer_file_path: Path
+    :return: MSDLayerInfo object or None if parsing fails.
+    :rtype: Optional[MSDLayerInfo]
+    """
+    try:
+        with open(layer_file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        layer_info = MSDLayerInfo()
+
+        # Extract layer name
+        layer_info.layer_name = data.get("name")
+
+        # Extract ServiceLayerID
+        service_layer_id = data.get("serviceLayerID")
+        if service_layer_id is not None:
+            try:
+                layer_info.service_layer_id = int(service_layer_id)
+            except (ValueError, TypeError):
+                pass
+
+        # Extract DataConnection
+        feature_table = data.get("featureTable", {})
+        data_connection = feature_table.get("dataConnection", {})
+
+        if data_connection:
+            # Workspace connection string
+            ws_conn = data_connection.get("workspaceConnectionString")
+            if ws_conn:
+                layer_info.workspace_connection = ws_conn
+                layer_info.workspace_type = _parse_workspace_type(ws_conn)
+
+            # Workspace factory
+            ws_factory = data_connection.get("workspaceFactory")
+            if ws_factory:
+                layer_info.workspace_factory = ws_factory
+
+            # Dataset name
+            dataset = data_connection.get("dataset")
+            if dataset:
+                layer_info.dataset = dataset
+
+            # Dataset type
+            dataset_type = data_connection.get("datasetType")
+            if dataset_type:
+                layer_info.dataset_type = dataset_type
+
+            # Feature dataset
+            feature_dataset = data_connection.get("featureDataset")
+            if feature_dataset:
+                layer_info.feature_dataset = feature_dataset
+
+        return layer_info
+
+    except Exception as e:
+        logger.error(f"Error parsing layer JSON {layer_file_path}: {e}", exc_info=True)
+        return None
+
+
+def _parse_workspace_type(connection_string):
+    """
+    Determine workspace type from connection string.
+
+    :param connection_string: Database connection string.
+    :type connection_string: str
+    :return: Workspace type description (e.g., "File Geodatabase", "Enterprise Geodatabase").
+    :rtype: str
+    """
+    if not connection_string:
+        return "Unknown"
+
+    conn_lower = connection_string.lower()
+
+    if 'database=' in conn_lower and '.gdb' in conn_lower:
+        return "File Geodatabase"
+    elif 'server=' in conn_lower and ('sqlserver' in conn_lower or 'postgresql' in conn_lower):
+        return "Enterprise Geodatabase"
+    elif 'dsid=' in conn_lower:
+        return "Enterprise Geodatabase (Hosted)"
+    else:
+        return "Other"
+
+
+def process_msd_layers_for_service(service_manifest, service_name, instance_item,
+                                   service_obj, update_time):
+    """
+    Process MSD file for a service and update Layer and Layer_Service records.
+
+    This function extracts the .msd file from the service manifest, parses layer information,
+    and creates/updates Django model records for layers and their relationships to services.
+
+    :param service_manifest: The service manifest dictionary.
+    :type service_manifest: dict
+    :param service_name: Name of the service.
+    :type service_name: str
+    :param instance_item: Portal instance model object.
+    :type instance_item: Portal
+    :param service_obj: Service model object.
+    :type service_obj: Service
+    :param update_time: Timestamp for this update.
+    :type update_time: datetime
+    :return: True if processing was successful, False otherwise.
+    :rtype: bool
+    """
+    msd_path = None
+    try:
+        # Extract and copy the MSD file
+        logger.debug(f"Attempting to extract MSD for service: {service_name}")
+        msd_path = extract_msd_from_manifest(service_manifest, service_name)
+
+        if not msd_path:
+            logger.debug(f"No MSD file available for service: {service_name}")
+            return False
+
+        # Parse the MSD layers
+        logger.debug(f"Parsing MSD layers for service: {service_name}")
+        layers = parse_msd_layers(msd_path)
+
+        if not layers:
+            logger.warning(f"No layers found in MSD for service: {service_name}")
+            return False
+
+        logger.info(f"Found {len(layers)} layers in MSD for service: {service_name}")
+
+        # Process each layer
+        for layer_info in layers:
+            try:
+                # Extract database info from workspace connection
+                db_server, db_version, db_database = _extract_database_info(layer_info.workspace_connection)
+
+                # Dataset name
+                dataset_name = layer_info.dataset
+                if not dataset_name:
+                    logger.warning(f"No dataset name for layer '{layer_info.layer_name}' in service '{service_name}'")
+                    continue
+
+                logger.debug(f"Processing layer: {layer_info.layer_name} (dataset: {dataset_name}, service_layer_id: {layer_info.service_layer_id})")
+
+                # Create or update Layer record
+                layer_obj, layer_created = Layer.objects.update_or_create(
+                    portal_instance=instance_item,
+                    layer_server=db_server,
+                    layer_version=db_version,
+                    layer_database=db_database,
+                    layer_name=dataset_name,
+                    defaults={"updated_date": update_time}
+                )
+
+                if layer_created:
+                    logger.debug(f"Created new layer record: {dataset_name}")
+                else:
+                    logger.debug(f"Updated existing layer record: {dataset_name}")
+
+                # Create or update Layer_Service relationship with service_layer_id
+                _, rel_created = Layer_Service.objects.update_or_create(
+                    portal_instance=instance_item,
+                    layer_id=layer_obj,
+                    service_id=service_obj,
+                    defaults={
+                        "updated_date": update_time,
+                        "service_layer_id": layer_info.service_layer_id,
+                        "service_layer_name": layer_info.layer_name
+                    }
+                )
+
+                if rel_created:
+                    logger.debug(f"Created new layer-service relationship for: {dataset_name} (service_layer_id: {layer_info.service_layer_id})")
+                else:
+                    logger.debug(f"Updated layer-service relationship for: {dataset_name} (service_layer_id: {layer_info.service_layer_id})")
+
+            except Exception as e:
+                logger.error(f"Error processing layer '{layer_info.layer_name}' in service '{service_name}': {e}", exc_info=True)
+                continue
+
+        logger.info(f"Successfully processed MSD layers for service: {service_name}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error processing MSD for service '{service_name}': {e}", exc_info=True)
+        return False
+
+    finally:
+        # Clean up temporary MSD file
+        if msd_path and msd_path.exists():
+            try:
+                # Remove the temporary directory
+                temp_dir = msd_path.parent
+                if temp_dir.exists() and 'msd_' in temp_dir.name:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    logger.debug(f"Cleaned up temporary MSD directory: {temp_dir}")
+            except Exception as e:
+                logger.warning(f"Error cleaning up temporary MSD files: {e}")
+
+
+
+def _extract_database_info(connection_string):
+    """
+    Extract database server, version, and database name from connection string.
+
+    :param connection_string: Workspace connection string.
+    :type connection_string: str
+    :return: Tuple of (server, version, database). Returns (None, None, None) if parsing fails.
+    :rtype: tuple
+    """
+    import re
+
+    if not connection_string:
+        return None, None, None
+
+    conn_lower = connection_string.lower()
+
+    # File Geodatabase
+    if 'database=' in conn_lower and '.gdb' in conn_lower:
+        parts = connection_string.split("DATABASE=")
+        if len(parts) > 1:
+            db_database = parts[1].replace(r"\\", "\\")
+            return None, None, db_database
+
+    # Enterprise Geodatabase
+    elif 'server=' in conn_lower:
+        server_match = re.search(r'SERVER=([^;]+)', connection_string, re.IGNORECASE)
+        db_server = server_match.group(1).upper() if server_match else None
+
+        version_match = re.search(r'VERSION=([^;]+)', connection_string, re.IGNORECASE) or \
+                       re.search(r'BRANCH=([^;]+)', connection_string, re.IGNORECASE)
+        db_version = version_match.group(1).upper() if version_match else None
+
+        db_match = re.search(r'DATABASE=([^;]+)', connection_string, re.IGNORECASE)
+        db_database = db_match.group(1).upper() if db_match else None
+
+        return db_server, db_version, db_database
+
+    return None, None, None
