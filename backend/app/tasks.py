@@ -612,11 +612,13 @@ def process_databases(manifest, regex_patterns, instance_item, s_obj, update_tim
                 layer_name=dataset_name,
                 defaults={"updated_date": update_time},
             )
-            Layer_Service.objects.update_or_create(
+
+            # This prevents overwriting service_layer_id if it was set by .msd parsing
+            Layer_Service.objects.get_or_create(
                 portal_instance=instance_item,
                 layer_id=layer_obj,
                 service_id=s_obj,
-                defaults={"updated_date": update_time},
+                defaults={"updated_date": update_time}
             )
 
 
@@ -1422,8 +1424,20 @@ def process_single_service(target, instance_item, service, folder, update_time, 
                 logger.info(f"Updated existing record for service: {name}")
                 result.add_update()
 
-            logger.debug("Processing database details from service manifest")
-            process_databases(service_manifest, regex_patterns, instance_item, s_obj, update_time)
+            # First, try to process using MSD parser for more detailed layer information
+            logger.debug("Attempting to process layers using MSD parser")
+            msd_processed = utils.process_msd_layers_for_service(
+                service_manifest, name, instance_item, s_obj, update_time
+            )
+
+            if msd_processed:
+                logger.info(f"Successfully processed service '{name}' using MSD parser with layer id information")
+            else:
+                # Fallback to legacy process_databases if MSD parsing fails or is not available
+                logger.info(
+                    f"Service '{name}' processed without layer id information (MSD parsing unavailable). "
+                )
+                process_databases(service_manifest, regex_patterns, instance_item, s_obj, update_time)
             logger.debug("Database details processing completed")
 
     except Exception as e:
