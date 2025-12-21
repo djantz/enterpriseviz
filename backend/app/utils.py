@@ -1243,7 +1243,14 @@ URL_REGEX = re.compile(r"https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+[-\w./?=&%#~:]+"
 
 
 def _extract_urls_from_string(text_string):
-    """Extracts all URLs found in a string using regex."""
+    """
+    Extracts all URLs found in a string using regex.
+
+    :param text_string: String to search for URLs.
+    :type text_string: str
+    :return: List of URLs found in the string.
+    :rtype: list
+    """
     if isinstance(text_string, str):
         return URL_REGEX.findall(text_string)
     return []
@@ -1251,37 +1258,208 @@ def _extract_urls_from_string(text_string):
 
 def extract_webappbuilder(data_structure, current_path="", parent_key_for_url=None):
     """
-    Extracts URLs from ArcGIS Web AppBuilder JSON data.
+    Extracts URLs and itemIds from ArcGIS Web AppBuilder and Instant Apps JSON data with context.
 
-    Recursively traverses the data (dicts, lists, strings) to find URLs.
-
-    :param data_structure: The Web AppBuilder JSON data (as Python dict/list).
+    :param data_structure: The Web AppBuilder/Instant App JSON data (as Python dict/list).
     :type data_structure: dict or list or str
     :param current_path: Internal use for recursion: current dot-separated path.
     :type current_path: str, optional
-    :param parent_key_for_url: Internal use for recursion: key of the parent dict containing a URL string.
+    :param parent_key_for_url: Internal use for recursion: key of the parent dict.
     :type parent_key_for_url: str, optional
-    :return: List of [url, path_to_url_string, key_of_url_string] lists.
+    :return: List of [value, path_to_value, parent_key, value_type, context] lists.
+             value_type is "url" or "itemId"
+             context is "map", "datasource", "search", "filter", etc.
+    :rtype: list
+    """
+    extracted_resources = []
+
+    # First, check specific known structures for itemIds and URLs (only on initial call)
+    if not current_path:
+        itemids = []
+
+        # Primary web map reference (Web AppBuilder & Instant Apps)
+        if "map" in data_structure and isinstance(data_structure["map"], dict):
+            try:
+                map_item_id = data_structure["map"].get("itemId")
+                if map_item_id:
+                    extracted_resources.append([map_item_id, "map", "itemId", "map", "map"])
+                    itemids.append(map_item_id)
+            except:
+                pass
+
+        # Instant Apps - web map in values.webmap
+        try:
+            webmap_id = data_structure.get("values", {}).get("webmap")
+            if webmap_id and webmap_id not in itemids:
+                extracted_resources.append([webmap_id, "values.webmap", "webmap", "map", "map"])
+                itemids.append(webmap_id)
+        except:
+            pass
+
+        # Data sources (Web AppBuilder)
+        if "dataSource" in data_structure:
+            data_sources = data_structure.get("dataSource", {}).get("dataSources", {})
+            if isinstance(data_sources, dict):
+                for ds_key, ds_value in data_sources.items():
+                    if isinstance(ds_value, dict):
+                        try:
+                            ds_item_id = ds_value.get("itemId")
+                            if ds_item_id and ds_item_id not in itemids:
+                                path = f"dataSource.dataSources.{ds_key}"
+                                extracted_resources.append([ds_item_id, path, "itemId", "datasource", "datasource"])
+                                itemids.append(ds_item_id)
+                        except:
+                            pass
+
+        # Search (Instant Apps)
+        try:
+            search_config = data_structure.get("values", {}).get("searchConfiguration", {})
+            sources = search_config.get("sources", [])
+
+            for idx, source in enumerate(sources):
+                if not isinstance(source, dict):
+                    continue
+
+                # Check for layer-based search (has a service URL)
+                layer_info = source.get("layer", {})
+                if isinstance(layer_info, dict) and "url" in layer_info:
+                    search_url = layer_info["url"]
+                    path = f"values.searchConfiguration.sources[{idx}].layer.url"
+                    extracted_resources.append([search_url, path, "url", "url", "search"])
+
+                # Check for geocoder URL (world geocoding service, etc.)
+                elif "url" in source and source.get("url", "").startswith("http"):
+                    geocoder_url = source["url"]
+                    # Skip if it's a standard Esri geocoder (not a dependency we track)
+                    if "GeocodeServer" in geocoder_url and "arcgis.com" not in geocoder_url:
+                        path = f"values.searchConfiguration.sources[{idx}].url"
+                        extracted_resources.append([geocoder_url, path, "url", "url", "search"])
+        except Exception as e:
+            pass
+
+        # Also check draft search configuration
+        try:
+            draft_search_config = data_structure.get("values", {}).get("draft", {}).get("searchConfiguration", {})
+            draft_sources = draft_search_config.get("sources", [])
+
+            for idx, source in enumerate(draft_sources):
+                if not isinstance(source, dict):
+                    continue
+
+                layer_info = source.get("layer", {})
+                if isinstance(layer_info, dict) and "url" in layer_info:
+                    search_url = layer_info["url"]
+                    # Check if we already have this URL
+                    if not any(r[0] == search_url and r[4] == "search" for r in extracted_resources):
+                        path = f"values.draft.searchConfiguration.sources[{idx}].layer.url"
+                        extracted_resources.append([search_url, path, "url", "url", "search"])
+        except:
+            pass
+
+        # Filter (Instant Apps)
+        try:
+            filter_config = data_structure.get("values", {}).get("filterConfig", {})
+            layer_expressions = filter_config.get("layerExpressions", [])
+
+            for idx, layer_expr in enumerate(layer_expressions):
+                if isinstance(layer_expr, dict):
+                    layer_id = layer_expr.get("id")
+                    if layer_id:
+                        # This is a layer ID reference from the map
+                        path = f"values.filterConfig.layerExpressions[{idx}]"
+                        extracted_resources.append([layer_id, path, "id", "filter_layer_ref", "filter"])
+        except:
+            pass
+
+        # Also check draft filter configuration
+        try:
+            draft_filter_config = data_structure.get("values", {}).get("draft", {}).get("filterConfig", {})
+            draft_layer_expressions = draft_filter_config.get("layerExpressions", [])
+
+            for idx, layer_expr in enumerate(draft_layer_expressions):
+                if isinstance(layer_expr, dict):
+                    layer_id = layer_expr.get("id")
+                    if layer_id:
+                        path = f"values.draft.filterConfig.layerExpressions[{idx}]"
+                        # Check if we already have this layer_id
+                        if not any(r[0] == layer_id and r[4] == "filter" for r in extracted_resources):
+                            extracted_resources.append([layer_id, path, "id", "filter_layer_ref", "filter"])
+        except:
+            pass
+
+    # URL extraction for Web AppBuilder
+    url_results = _extract_urls_recursive(data_structure, current_path, parent_key_for_url)
+
+    # Merge URL results, avoiding duplicates
+    existing_urls = {r[0] for r in extracted_resources if r[3] == "url"}
+    for url, path, parent_key in url_results:
+        if url not in existing_urls:
+            # Determine context from path
+            if "searchLayers" in path or "search" in path.lower():
+                context = "search"
+            elif "filters" in path or "filter" in path.lower():
+                context = "filter"
+            elif "widgets" in path or "widget" in path.lower():
+                context = "widget"
+            else:
+                context = "other"
+
+            extracted_resources.append([url, path, parent_key, "url", context])
+            existing_urls.add(url)
+
+    return extracted_resources
+
+
+def _extract_urls_recursive(data_structure, current_path="", parent_key_for_url=None):
+    """
+    Helper function for recursive URL extraction.
+
+    Separated to avoid confusion with itemId extraction.
+
+    :param data_structure: Data structure to recursively search (dict, list, or str).
+    :type data_structure: dict or list or str
+    :param current_path: Current path in the data structure.
+    :type current_path: str
+    :param parent_key_for_url: Parent key containing the URL.
+    :type parent_key_for_url: str or None
+    :return: List of [url, path, parent_key] lists.
     :rtype: list
     """
     extracted_urls = []
+
     if isinstance(data_structure, dict):
         for key, value in data_structure.items():
             new_path = f"{current_path}.{key}" if current_path else key
-            extracted_urls.extend(extract_webappbuilder(value, new_path, key))
+            extracted_urls.extend(_extract_urls_recursive(value, new_path, key))
+
     elif isinstance(data_structure, list):
         for idx, item in enumerate(data_structure):
             new_path = f"{current_path}[{idx}]"
-            extracted_urls.extend(extract_webappbuilder(item, new_path, parent_key_for_url))
+            extracted_urls.extend(_extract_urls_recursive(item, new_path, parent_key_for_url))
+
     elif isinstance(data_structure, str):
         found_in_string = _extract_urls_from_string(data_structure)
         for url in found_in_string:
             extracted_urls.append([url, current_path, parent_key_for_url])
+
     return extracted_urls
 
 
 def _recursive_extract_by_key(data, target_key, current_path_list=None, results_list=None):
-    """Generic helper to recursively find values for a specific key."""
+    """
+    Generic helper to recursively find values for a specific key.
+
+    :param data: Data structure to search (dict or list).
+    :type data: dict or list
+    :param target_key: Key to search for.
+    :type target_key: str
+    :param current_path_list: Current path as list of keys.
+    :type current_path_list: list or None
+    :param results_list: Accumulated results list.
+    :type results_list: list or None
+    :return: List of (path_string, key, value, type_at_level) tuples.
+    :rtype: list
+    """
     if current_path_list is None: current_path_list = []
     if results_list is None: results_list = []
 
@@ -1306,66 +1484,572 @@ def _recursive_extract_by_key(data, target_key, current_path_list=None, results_
 
 def extract_dashboard(dashboard_data):
     """
-    Extracts all 'itemId' values from ArcGIS Dashboard JSON data.
+    Extracts itemIds from ArcGIS Dashboard JSON data with relationship context.
 
-    :param dashboard_data: The Dashboard JSON data (as Python dict/list).
-    :type dashboard_data: dict or list
-    :return: List of (path_string, key_of_itemId, itemId_value, type_value_None) tuples.
+    :param dashboard_data: The Dashboard JSON data (as Python dict).
+    :type dashboard_data: dict
+    :return: List of (path_string, context_type, itemId_value, widget_type) tuples.
     :rtype: list
     """
-    return _recursive_extract_by_key(dashboard_data, "itemId")
+    deps = []
+
+    # Widgets from multiple widget sources
+    widget_sources = [
+        ("widgets", dashboard_data.get("widgets", [])),
+        ("desktopView.widgets", dashboard_data.get("desktopView", {}).get("widgets", []))
+    ]
+
+    for source_path, widgets in widget_sources:
+        for widget_idx, widget in enumerate(widgets):
+            widget_type = widget.get("type", "unknown")
+            path_prefix = f"{source_path}[{widget_idx}]"
+
+            # Map widgets - direct web map reference
+            if widget_type == "mapWidget":
+                item_id = widget.get("itemId")
+                if item_id:
+                    deps.append((path_prefix, "map", item_id, widget_type))
+                continue
+
+            # Service datasets in other widget types
+            try:
+                datasets = widget.get("datasets", [])
+                for dataset_idx, dataset in enumerate(datasets):
+                    if dataset.get("type") == "serviceDataset":
+                        data_source = dataset.get("dataSource", {})
+                        data_source_type = data_source.get("type")
+                        path = f"{path_prefix}.datasets[{dataset_idx}]"
+
+                        # Item-based data source
+                        if data_source_type == "itemDataSource":
+                            item_id = data_source.get("itemId")
+                            if item_id:
+                                deps.append((path, "dataset", item_id, widget_type))
+
+                        # Arcade expression data source
+                        elif data_source_type == "arcadeDataSource":
+                            script = data_source.get("script", "")
+                            if script:
+                                # Use regex to find GUIDs in Arcade expressions
+                                guid_pattern = r"[0-9a-f]{8}[0-9a-f]{4}[1-5][0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}"
+                                guids = re.findall(guid_pattern, script, re.IGNORECASE)
+                                for guid in guids:
+                                    deps.append((f"{path}.script", "arcade", guid, widget_type))
+            except Exception:
+                pass
+
+    # Fallback: recursively find any itemIds we might have missed
+    # This catches edge cases and future dashboard features
+    all_item_ids = _recursive_extract_by_key(dashboard_data, "itemId")
+    existing_ids = {dep[2] for dep in deps}
+
+    for path, key, item_id, _ in all_item_ids:
+        if item_id not in existing_ids:
+            deps.append((path, "other", item_id, "unknown"))
+
+    return deps
 
 
-def extract_experiencebuilder(exb_data):
+def extract_experiencebuilder(exb_data, item=None):
     """
-    Extracts 'itemId' and URLs from ArcGIS Experience Builder JSON data.
+    Extracts itemIds and URLs from ArcGIS Experience Builder JSON data with relationship context.
 
-    Also captures the 'type' field at the same level if present.
-
-    :param exb_data: The Experience Builder JSON data (as Python dict/list).
-    :type exb_data: dict or list
-    :return: List of (path_string, key, value, type_at_level) tuples.
-             'key' will be 'itemId' or the key for the URL.
-             'value' will be the itemId or URL.
+    :param exb_data: The Experience Builder published JSON data (as Python dict).
+    :type exb_data: dict
+    :param item: Optional ArcGIS Item object to access draft data.
+    :type item: arcgis.gis.Item
+    :return: List of (path_string, context_type, value, resource_type) tuples.
     :rtype: list
     """
-    item_ids = _recursive_extract_by_key(exb_data, "itemId")
-    urls = _recursive_extract_by_key(exb_data, "_URL_")
-    return item_ids + urls
+    deps = []
+    processed_refs = set()  # Track (value, context) pairs to avoid duplicates
+
+    # Gather both published and draft data
+    data_to_process = [("published", exb_data)]
+
+    if item:
+        try:
+            draft_data = item.resources.get("config/config.json")
+            if draft_data:
+                data_to_process.append(("draft", draft_data))
+        except:
+            pass
+
+    for data_label, data in data_to_process:
+        # Build a complete map of ALL dataSource IDs (including nested children) for widget resolution
+        data_sources = data.get("dataSources", {})
+        datasource_map = {}
+
+        def process_datasource(ds_key, ds_value, parent_id=""):
+            """Recursively process datasources including nested children with concatenated IDs"""
+            if isinstance(ds_value, dict):
+                ds_type = ds_value.get("type", "unknown")
+
+                # Build the full concatenated ID as Experience Builder does
+                full_id = f"{parent_id}-{ds_key}" if parent_id else ds_key
+
+                # Store datasource info with both full ID and just the key
+                ds_info = {
+                    "type": ds_type,
+                    "value": None,
+                    "kind": None
+                }
+
+                if "itemId" in ds_value:
+                    ds_info["value"] = ds_value["itemId"]
+                    ds_info["kind"] = "itemId"
+                elif "url" in ds_value:
+                    ds_info["value"] = ds_value["url"]
+                    ds_info["kind"] = "url"
+
+                # Store under both full ID and just the key for flexible lookup
+                if ds_info["value"]:
+                    datasource_map[full_id] = ds_info
+                    datasource_map[ds_key] = ds_info
+
+                # Process nested child dataSources
+                child_datasources = ds_value.get("childDataSourceJsons", {})
+                if isinstance(child_datasources, dict):
+                    for child_key, child_value in child_datasources.items():
+                        process_datasource(child_key, child_value, full_id)
+
+        for ds_key, ds_value in data_sources.items():
+            process_datasource(ds_key, ds_value)
+
+        # Extract from widgets with their specific context types
+        widgets = data.get("widgets", {})
+        if isinstance(widgets, dict):
+            for widget_key, widget_value in widgets.items():
+                if isinstance(widget_value, dict):
+                    widget_uri = widget_value.get("uri", "")
+                    config = widget_value.get("config", {})
+
+                    # Determine context type from widget URI
+                    context_type = "widget"  # default
+                    if "search" in widget_uri:
+                        context_type = "search"
+                    elif "filter" in widget_uri:
+                        context_type = "filter"
+                    elif "table" in widget_uri:
+                        context_type = "table"
+                    elif "arcgis-map" in widget_uri or "map" in widget_uri:
+                        context_type = "map"
+                    elif "query" in widget_uri:
+                        context_type = "query"
+                    elif "feature-info" in widget_uri:
+                        context_type = "widget"
+
+                    # Check for useDataSources at widget level
+                    use_data_sources = widget_value.get("useDataSources", [])
+                    if use_data_sources:
+                        for use_ds in use_data_sources:
+                            if isinstance(use_ds, dict):
+                                # Get the specific dataSourceId (which may be a child layer)
+                                # and the root dataSourceId (which is the web map)
+                                ds_id = use_ds.get("dataSourceId")
+                                root_ds_id = use_ds.get("rootDataSourceId")
+
+                                # First, try to extract the specific layer reference (child dataSource)
+                                # This gives us layer-level granularity for search, filter, table widgets
+                                if ds_id and ds_id in datasource_map:
+                                    ds_info = datasource_map[ds_id]
+
+                                    # Only extract if it has a URL (i.e., it's a layer reference)
+                                    # and it's not the same as the root (i.e., it's actually a child)
+                                    if ds_info["kind"] == "url" and ds_id != root_ds_id:
+                                        ref_key = (ds_info["value"], context_type)
+
+                                        if ref_key not in processed_refs:
+                                            path = f"{data_label}.widgets.{widget_key}.useDataSources[{ds_id}]"
+                                            deps.append((path, context_type, ds_info["value"], ds_info["type"]))
+                                            processed_refs.add(ref_key)
+
+                                # Also extract the root dataSource if it's different and has an itemId
+                                # This captures the web map dependency for map widgets
+                                if root_ds_id and root_ds_id != ds_id and root_ds_id in datasource_map:
+                                    root_info = datasource_map[root_ds_id]
+
+                                    # Only extract root if it's an itemId (web map reference)
+                                    if root_info["kind"] == "itemId":
+                                        ref_key = (root_info["value"], context_type)
+
+                                        if ref_key not in processed_refs:
+                                            path = f"{data_label}.widgets.{widget_key}.useDataSources[root]"
+                                            deps.append((path, context_type, root_info["value"], root_info["type"]))
+                                            processed_refs.add(ref_key)
+
+                    # Survey123 forms in widget config
+                    if "surveyItemId" in config:
+                        survey_id = config["surveyItemId"]
+                        ref_key = (survey_id, "survey")
+                        if ref_key not in processed_refs:
+                            path = f"{data_label}.widgets.{widget_key}.config"
+                            deps.append((path, "survey", survey_id, "SURVEY123"))
+                            processed_refs.add(ref_key)
+
+                    # Map widgets with itemId in config
+                    if "itemId" in config:
+                        item_id = config["itemId"]
+                        # For map widgets, use "map" context
+                        map_context = "map" if context_type == "map" else "widget"
+                        ref_key = (item_id, map_context)
+                        if ref_key not in processed_refs:
+                            path = f"{data_label}.widgets.{widget_key}.config"
+                            deps.append((path, map_context, item_id, "Web Map"))
+                            processed_refs.add(ref_key)
+
+        # Extract utilities (geocoding, routing, printing services, etc.)
+        utilities = data.get("utilities", {})
+        if isinstance(utilities, dict):
+            for util_key, util_value in utilities.items():
+                if isinstance(util_value, dict):
+                    util_type = util_value.get("type", "unknown")
+
+                    # Check for itemId in utilities
+                    if "itemId" in util_value:
+                        item_id = util_value["itemId"]
+                        ref_key = (item_id, "utility")
+                        if ref_key not in processed_refs:
+                            path = f"{data_label}.utilities.{util_key}"
+                            deps.append((path, "utility", item_id, util_type))
+                            processed_refs.add(ref_key)
+
+                    # Check for itemId in orgSetting (organization utilities)
+                    org_setting = util_value.get("orgSetting", {})
+                    if isinstance(org_setting, dict) and "itemId" in org_setting:
+                        item_id = org_setting["itemId"]
+                        ref_key = (item_id, "utility")
+                        if ref_key not in processed_refs:
+                            path = f"{data_label}.utilities.{util_key}.orgSetting"
+                            deps.append((path, "utility", item_id, util_type))
+                            processed_refs.add(ref_key)
+
+                    # Check for URL in utilities
+                    if "url" in util_value:
+                        url = util_value["url"]
+                        if url and url.startswith("http"):
+                            ref_key = (url, "utility")
+                            if ref_key not in processed_refs:
+                                path = f"{data_label}.utilities.{util_key}"
+                                deps.append((path, "utility", url, util_type))
+                                processed_refs.add(ref_key)
+
+        # Extract standalone dataSources that weren't referenced by widgets
+        # These are truly just datasources without specific widget context
+        def extract_standalone_datasource(ds_key, ds_value, parent_path=""):
+            """Recursively extract standalone datasources including nested ones"""
+            if isinstance(ds_value, dict):
+                ds_type = ds_value.get("type", "unknown")
+                full_key = f"{parent_path}.{ds_key}" if parent_path else ds_key
+
+                # ItemId-based data sources
+                if "itemId" in ds_value:
+                    item_id = ds_value["itemId"]
+                    ref_key = (item_id, "datasource")
+                    if ref_key not in processed_refs:
+                        path = f"{data_label}.dataSources.{full_key}"
+                        deps.append((path, "datasource", item_id, ds_type))
+                        processed_refs.add(ref_key)
+
+                # URL-based data sources (feature layers, services)
+                if "url" in ds_value:
+                    url = ds_value["url"]
+                    if url and url.startswith("http"):
+                        ref_key = (url, "datasource")
+                        if ref_key not in processed_refs:
+                            path = f"{data_label}.dataSources.{full_key}"
+                            deps.append((path, "datasource", url, ds_type))
+                            processed_refs.add(ref_key)
+
+                # Process nested child dataSources
+                child_datasources = ds_value.get("childDataSourceJsons", {})
+                if isinstance(child_datasources, dict):
+                    for child_key, child_value in child_datasources.items():
+                        extract_standalone_datasource(child_key, child_value, full_key)
+
+        for ds_key, ds_value in data_sources.items():
+            extract_standalone_datasource(ds_key, ds_value)
+
+        # Find any itemIds or URLs we missed (fallback)
+        all_item_ids = _recursive_extract_by_key(data, "itemId")
+        all_urls = _recursive_extract_by_key(data, "_URL_")
+
+        for path, key, item_id, type_at_level in all_item_ids:
+            ref_key = (item_id, "other")
+            if ref_key not in processed_refs:
+                full_path = f"{data_label}.{path}"
+                deps.append((full_path, "other", item_id, type_at_level or "unknown"))
+                processed_refs.add(ref_key)
+
+        for path, key, url, type_at_level in all_urls:
+            if url and url.startswith("http"):
+                ref_key = (url, "other")
+                if ref_key not in processed_refs:
+                    full_path = f"{data_label}.{path}"
+                    deps.append((full_path, "other", url, type_at_level or "unknown"))
+                    processed_refs.add(ref_key)
+
+    return deps
 
 
-def extract_storymap(storymap_data, current_path_list=None, results_list=None):
+def extract_storymap(storymap_data, item=None, current_path_list=None, results_list=None):
     """
-    Extracts 'itemType' and 'itemId' pairs from ArcGIS StoryMap JSON data.
+    Extracts itemIds from ArcGIS StoryMap JSON data with relationship context.
 
-    :param storymap_data: The StoryMap JSON data (as Python dict/list).
-    :type storymap_data: dict or list
+    :param storymap_data: The StoryMap published JSON data (as Python dict).
+    :type storymap_data: dict
+    :param item: Optional ArcGIS Item object to access draft data.
+    :type item: arcgis.gis.Item
     :param current_path_list: Internal use for recursion.
     :type current_path_list: list, optional
     :param results_list: Internal use for recursion.
     :type results_list: list, optional
-    :return: List of (path_string, itemType_value, itemId_value) tuples.
+    :return: List of (path_string, context_type, itemId_value, item_type) tuples.
     :rtype: list
     """
-    if current_path_list is None: current_path_list = []
-    if results_list is None: results_list = []
+    if current_path_list is None:
+        current_path_list = []
+    if results_list is None:
+        results_list = []
 
-    if isinstance(storymap_data, dict):
-        # StoryMaps often have 'itemType' and 'itemId' at the same level describing a resource.
-        if "itemType" in storymap_data and "itemId" in storymap_data:
-            item_type = storymap_data["itemType"]
-            item_id = storymap_data["itemId"]
-            path_str = "/".join(current_path_list)
-            results_list.append((path_str, item_type, item_id))
+    # Gather both published and draft data (only on initial call)
+    if not current_path_list and item:
+        processed_ids = set()
+        data_to_process = [("published", storymap_data)]
 
-        for key, value in storymap_data.items():
-            new_path = current_path_list + [key]
-            extract_storymap(value, new_path, results_list)
-    elif isinstance(storymap_data, list):
-        for idx, item in enumerate(storymap_data):
-            new_path = current_path_list + [str(idx)]
-            extract_storymap(item, new_path, results_list)
+        # Get draft data
+        try:
+            for res in item.resources.list():
+                if "draft" in res["resource"] and "express" not in res["resource"]:
+                    draft_data = item.resources.get(res["resource"])
+                    data_to_process.append(("draft", draft_data))
+                    break  # Usually just one draft
+        except:
+            pass
+
+        # Process each data source
+        for data_label, data in data_to_process:
+            if not isinstance(data, dict) or "resources" not in data:
+                continue
+
+            resources = data.get("resources", {})
+
+            # Extract web maps
+            for resource_key, resource_value in resources.items():
+                if not isinstance(resource_value, dict):
+                    continue
+
+                resource_type = resource_value.get("type", "").lower()
+                resource_data = resource_value.get("data", {})
+
+                # Web Maps
+                if "webmap" in resource_type or "web-map" in resource_type:
+                    item_id = resource_data.get("itemId")
+                    if item_id and item_id not in processed_ids:
+                        path = f"{data_label}.resources.{resource_key}"
+                        results_list.append((path, "map", item_id, "Web Map"))
+                        processed_ids.add(item_id)
+
+                # StoryMap Themes
+                elif "story-theme" in resource_type or "theme" in resource_type:
+                    theme_id = resource_data.get("themeItemId")
+                    if theme_id and theme_id not in processed_ids:
+                        path = f"{data_label}.resources.{resource_key}"
+                        results_list.append((path, "theme", theme_id, "StoryMap Theme"))
+                        processed_ids.add(theme_id)
+
+            # Search for itemType/itemId pairs
+            _extract_storymap_recursive(data, [data_label], results_list, processed_ids)
+
+        return results_list
+
     return results_list
+
+
+def _extract_storymap_recursive(data, current_path_list, results_list, processed_ids):
+    """
+    Recursively extracts itemType/itemId pairs from StoryMap data.
+
+    Helper function for fallback extraction.
+
+    :param data: Data structure to search (dict or list).
+    :type data: dict or list
+    :param current_path_list: Current path as list of keys.
+    :type current_path_list: list
+    :param results_list: Accumulated results list.
+    :type results_list: list
+    :param processed_ids: Set of already processed item IDs.
+    :type processed_ids: set
+    :return: None (modifies results_list in place)
+    :rtype: None
+    """
+    if isinstance(data, dict):
+        # StoryMaps often have 'itemType' and 'itemId' at the same level
+        if "itemType" in data and "itemId" in data:
+            item_type = data["itemType"]
+            item_id = data["itemId"]
+            if item_id not in processed_ids:
+                path_str = ".".join(current_path_list)
+
+                # Determine context from itemType
+                if item_type in ["Web Map", "webmap"]:
+                    context = "map"
+                elif "theme" in item_type.lower():
+                    context = "theme"
+                else:
+                    context = "embed"
+
+                results_list.append((path_str, context, item_id, item_type))
+                processed_ids.add(item_id)
+
+        for key, value in data.items():
+            new_path = current_path_list + [key]
+            _extract_storymap_recursive(value, new_path, results_list, processed_ids)
+
+    elif isinstance(data, list):
+        for idx, item in enumerate(data):
+            new_path = current_path_list + [str(idx)]
+            _extract_storymap_recursive(item, new_path, results_list, processed_ids)
+
+
+def extract_quickcapture(qc_data, item=None):
+    """
+    Extracts itemIds from ArcGIS QuickCapture Project JSON data.
+
+    :param qc_data: The QuickCapture published JSON data (as Python dict).
+    :type qc_data: dict
+    :param item: Optional ArcGIS Item object to access project config.
+    :type item: arcgis.gis.Item
+    :return: List of (path_string, context_type, itemId_value, resource_type) tuples.
+    :rtype: list
+    """
+    deps = []
+
+    # Try to get the project configuration
+    project_config = None
+    if item:
+        try:
+            project_config = item.resources.get("qc.project.json")
+        except:
+            project_config = qc_data
+    else:
+        project_config = qc_data
+
+    if not project_config:
+        return deps
+
+    # Extract basemap
+    try:
+        basemap = project_config.get("basemap", {})
+        basemap_id = basemap.get("itemId")
+        if basemap_id:
+            deps.append(("basemap", "map", basemap_id, "Web Map"))
+    except:
+        pass
+
+    # Extract data sources (feature services)
+    try:
+        data_sources = project_config.get("dataSources", [])
+        for idx, ds in enumerate(data_sources):
+            if isinstance(ds, dict):
+                service_id = ds.get("featureServiceItemId")
+                if service_id:
+                    path = f"dataSources[{idx}]"
+                    deps.append((path, "datasource", service_id, "Feature Service"))
+    except:
+        pass
+
+    return deps
+
+
+def extract_hub(hub_data, item=None):
+    """
+    Extracts itemIds from ArcGIS Hub Site or Hub Page JSON data.
+
+    :param hub_data: The Hub published JSON data (as Python dict).
+    :type hub_data: dict
+    :param item: Optional ArcGIS Item object to access draft data.
+    :type item: arcgis.gis.Item
+    :return: List of (path_string, context_type, itemId_value, resource_type) tuples.
+    :rtype: list
+    """
+    deps = []
+    processed_ids = set()
+
+    # Gather both published and draft data
+    data_to_process = [("published", hub_data)]
+
+    if item:
+        try:
+            for r in item.resources.list():
+                if "draft" in r["resource"]:
+                    draft_data = item.resources.get(r["resource"])
+                    if isinstance(draft_data, dict) and "data" in draft_data:
+                        data_to_process.append(("draft", draft_data["data"]))
+                    else:
+                        data_to_process.append(("draft", draft_data))
+                    break
+        except:
+            pass
+
+    for data_label, data in data_to_process:
+        if not isinstance(data, dict):
+            continue
+
+        try:
+            layout = data.get("values", {}).get("layout", {})
+            sections = layout.get("sections", [])
+
+            for section_idx, section in enumerate(sections):
+                rows = section.get("rows", [])
+
+                for row_idx, row in enumerate(rows):
+                    cards = row.get("cards", [])
+
+                    for card_idx, card in enumerate(cards):
+                        component = card.get("component", {})
+                        component_name = component.get("name", "")
+                        settings = component.get("settings", {})
+
+                        path_base = f"{data_label}.sections[{section_idx}].rows[{row_idx}].cards[{card_idx}]"
+
+                        # Web Map cards
+                        if component_name == "webmap-card":
+                            for map_type in ["webmap", "webscene"]:
+                                item_id = settings.get(map_type)
+                                if item_id and item_id not in processed_ids:
+                                    path = f"{path_base}.{map_type}"
+                                    resource_type = "Web Scene" if map_type == "webscene" else "Web Map"
+                                    deps.append((path, "map", item_id, resource_type))
+                                    processed_ids.add(item_id)
+
+                        # App cards (references other applications)
+                        elif component_name == "app-card":
+                            item_id = settings.get("itemId")
+                            if item_id and item_id not in processed_ids:
+                                path = f"{path_base}.itemId"
+                                deps.append((path, "app", item_id, "Application"))
+                                processed_ids.add(item_id)
+
+                        # Chart cards (could be dashboards)
+                        elif component_name == "chart-card":
+                            item_id = settings.get("itemId")
+                            if item_id and item_id not in processed_ids:
+                                path = f"{path_base}.itemId"
+                                deps.append((path, "chart", item_id, "Chart"))
+                                processed_ids.add(item_id)
+
+                        # Survey cards (Survey123)
+                        elif component_name == "survey-card":
+                            survey_id = settings.get("surveyId")
+                            if survey_id and survey_id not in processed_ids:
+                                path = f"{path_base}.surveyId"
+                                deps.append((path, "survey", survey_id, "Form"))
+                                processed_ids.add(survey_id)
+        except Exception as e:
+            pass
+
+    return deps
 
 
 def combine_apps(app_queryset):
