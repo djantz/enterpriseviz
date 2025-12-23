@@ -1050,13 +1050,18 @@ def epoch_to_date(epoch_ms):
         return None
 
 
-def find_layer_usage(portal_model_instance, layer_url_to_find):
+def service_layer_details(portal_model_instance, layer_url_to_find):
     """
     Identifies web maps and apps in a portal that reference a specific layer URL.
 
+    This function checks for usage in two ways:
+    1. Specific layer ID usage: When the Map_Service/App_Service has a service_layer_id matching the layer
+    2. Full service usage: When the Map_Service/App_Service references the entire service (service_layer_id is NULL)
+
+
     :param portal_model_instance: Portal model instance to search.
     :type portal_model_instance: enterpriseviz.models.Portal
-    :param layer_url_to_find: URL of the layer to search for.
+    :param layer_url_to_find: URL of the layer to search for (e.g., "https://server/service/MapServer/5").
     :type layer_url_to_find: str
     :return: Dictionary with 'maps' (list of map dicts) and 'apps' (list of app dicts).
              Returns {'error': msg} on failure.
@@ -1065,51 +1070,177 @@ def find_layer_usage(portal_model_instance, layer_url_to_find):
     if not layer_url_to_find:
         return {"error": "Layer URL to find cannot be empty."}
 
-    normalized_layer_url = layer_url_to_find.lower().strip().rstrip('/')
+    normalized_layer_url = layer_url_to_find.strip().rstrip('/')
+
+    # Parse the URL to extract service URL and layer ID
+    url_parts = normalized_layer_url.split("/")
+    service_layer_id = None
+    service_base_url = normalized_layer_url
+
+    if url_parts and url_parts[-1].isdigit():
+        service_layer_id = int(url_parts[-1])
+        service_base_url = "/".join(url_parts[:-1])
 
     logger.debug(
-        f"Searching for layer '{normalized_layer_url}' in portal '{portal_model_instance.alias}'.")
-
-    try:
-        target_gis = connect(portal_model_instance)
-    except ConnectionError as e:
-        logger.error(f"Connection failed for portal {portal_model_instance.alias}: {e}")
-        return {"error": f"Connection failed for portal {portal_model_instance.alias}."}
+        f"Searching for layer '{normalized_layer_url}' (service: '{service_base_url}', layer_id: {service_layer_id}) in portal '{portal_model_instance.alias}'.")
 
     found_maps = []
     found_apps = []
 
     try:
-        search_query = "NOT owner:esri*"
-        all_relevant_items = target_gis.content.search(search_query,
-                                                       item_type="Web Map, Web Mapping Application, Dashboard, Web AppBuilder, Experience Builder, Form, StoryMap",
-                                                       max_items=2000, outside_org=False)
-        logger.debug(
-            f"find_layer_usage: Found {len(all_relevant_items)} candidate items in '{portal_model_instance.alias}'.")
+        # First, try to find usage via database relationships (faster and more reliable)
+        from .models import Service, Map_Service, App_Service, Webmap, App
 
-        for item in all_relevant_items:
+        # Find the service
+        try:
+            service_obj = Service.objects.get(
+                portal_instance=portal_model_instance,
+                service_url__overlap=[service_base_url]
+            )
+
+            logger.debug(f"Found service in database: {service_obj.service_name}")
+
+            # Find webmaps using this service
+            if service_layer_id is not None:
+                # Look for webmaps using this specific layer OR the entire service
+                map_services = Map_Service.objects.filter(
+                    portal_instance=portal_model_instance,
+                    service_id=service_obj
+                ).filter(
+                    Q(service_layer_id=service_layer_id) | Q(service_layer_id__isnull=True)
+                ).select_related('webmap_id')
+            else:
+                # Looking for full service usage
+                map_services = Map_Service.objects.filter(
+                    portal_instance=portal_model_instance,
+                    service_id=service_obj,
+                    service_layer_id__isnull=True
+                ).select_related('webmap_id')
+
+            for map_service in map_services:
+                webmap = map_service.webmap_id
+                found_maps.append({
+                    "portal_instance": portal_model_instance.alias,
+                    "id": webmap.webmap_id,
+                    "title": webmap.webmap_title,
+                    "url": webmap.webmap_url,
+                    "owner": webmap.webmap_owner.user_username if webmap.webmap_owner else None,
+                    "created": webmap.webmap_created,
+                    "modified": webmap.webmap_modified,
+                    "access": webmap.webmap_access,
+                    "type": "Web Map",
+                    "views": webmap.webmap_views,
+                    "usage_type": "specific_layer" if map_service.service_layer_id is not None else "full_service"
+                })
+
+            # Find apps using this service
+            if service_layer_id is not None:
+                # Look for apps using this specific layer OR the entire service
+                app_services = App_Service.objects.filter(
+                    portal_instance=portal_model_instance,
+                    service_id=service_obj
+                ).filter(
+                    Q(service_layer_id=service_layer_id) | Q(service_layer_id__isnull=True)
+                ).select_related('app_id')
+            else:
+                # Looking for full service usage
+                app_services = App_Service.objects.filter(
+                    portal_instance=portal_model_instance,
+                    service_id=service_obj,
+                    service_layer_id__isnull=True
+                ).select_related('app_id')
+
+            for app_service in app_services:
+                app = app_service.app_id
+                found_apps.append({
+                    "portal_instance": portal_model_instance.alias,
+                    "id": app.app_id,
+                    "title": app.app_title,
+                    "url": app.app_url,
+                    "owner": app.app_owner.user_username if app.app_owner else None,
+                    "created": app.app_created,
+                    "modified": app.app_modified,
+                    "access": app.app_access,
+                    "type": app.app_type,
+                    "views": app.app_views,
+                    "usage_type": "specific_layer" if app_service.service_layer_id is not None else "full_service"
+                })
+
+            logger.debug(
+                f"Found {len(found_maps)} maps and {len(found_apps)} apps using layer '{normalized_layer_url}' via database.")
+
+        except Service.DoesNotExist:
+            logger.debug(f"Service not found in database for URL: {service_base_url}, falling back to content search")
+        except Exception as db_e:
+            logger.warning(f"Error querying database relationships: {db_e}, falling back to content search")
+
+        # If we didn't find anything in the database, or if we want to double-check, search via API
+        # (This can be slower but catches items not yet synced to the database)
+        if not found_maps and not found_apps:
             try:
-                item_data_str = str(item.get_data()).lower()
-                if normalized_layer_url in item_data_str:
-                    item_details = {
-                        "portal_instance": portal_model_instance.alias, "id": item.id,
-                        "title": item.title, "url": item.homepage, "owner": item.owner,
-                        "created": epoch_to_datetime(item.created), "modified": epoch_to_datetime(item.modified),
-                        "access": item.access, "type": item.type, "views": item.numViews,
-                    }
-                    if item.type == "Web Map":
-                        found_maps.append(item_details)
-                    else:  # App types
-                        found_apps.append(item_details)
-            except Exception as item_e:
-                logger.warning(f"Error processing item '{item.id}' ({item.title}): {item_e}", exc_info=False)
+                target_gis = connect(portal_model_instance)
+            except ConnectionError as e:
+                logger.error(f"Connection failed for portal {portal_model_instance.alias}: {e}")
+                return {"error": f"Connection failed for portal {portal_model_instance.alias}."}
 
-        logger.debug(
-            f"Found {len(found_maps)} maps and {len(found_apps)} apps using layer '{normalized_layer_url}'.")
+            search_query = "NOT owner:esri*"
+            all_relevant_items = target_gis.content.search(
+                search_query,
+                item_type="Web Map, Web Mapping Application, Dashboard, Web AppBuilder, Experience Builder, Form, StoryMap",
+                max_items=2000,
+                outside_org=False
+            )
+
+            logger.debug(
+                f"find_layer_usage: Found {len(all_relevant_items)} candidate items in '{portal_model_instance.alias}'.")
+
+            normalized_search_url = normalized_layer_url.lower()
+            normalized_service_url = service_base_url.lower()
+
+            for item in all_relevant_items:
+                try:
+                    item_data_str = str(item.get_data()).lower()
+
+                    # Check if this item uses the specific layer or the full service
+                    has_specific_layer = normalized_search_url in item_data_str
+                    has_full_service = service_layer_id is not None and normalized_service_url in item_data_str
+
+                    if has_specific_layer or has_full_service:
+                        usage_type = "specific_layer" if has_specific_layer else "full_service"
+
+                        item_details = {
+                            "portal_instance": portal_model_instance.alias,
+                            "id": item.id,
+                            "title": item.title,
+                            "url": item.homepage,
+                            "owner": item.owner,
+                            "created": epoch_to_datetime(item.created),
+                            "modified": epoch_to_datetime(item.modified),
+                            "access": item.access,
+                            "type": item.type,
+                            "views": item.numViews,
+                            "usage_type": usage_type
+                        }
+
+                        if item.type == "Web Map":
+                            # Avoid duplicates from database search
+                            if not any(m["id"] == item.id for m in found_maps):
+                                found_maps.append(item_details)
+                        else:  # App types
+                            if not any(a["id"] == item.id for a in found_apps):
+                                found_apps.append(item_details)
+
+                except Exception as item_e:
+                    logger.warning(f"Error processing item '{item.id}' ({item.title}): {item_e}", exc_info=False)
+
+            logger.debug(
+                f"Found {len(found_maps)} maps and {len(found_apps)} apps using layer '{normalized_layer_url}' via API search.")
+
+
         return {"maps": found_maps, "apps": found_apps}
 
     except Exception as e:
-        logger.error(f"Error searching content in '{portal_model_instance.alias}': {e}", exc_info=True)
+        logger.error(f"Error searching for layer usage in '{portal_model_instance.alias}': {e}", exc_info=True)
         return {"error": f"Error searching content in '{portal_model_instance.alias}'."}
 
 
