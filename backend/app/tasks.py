@@ -1007,7 +1007,12 @@ def update_services(self, instance_alias, overwrite=False, credential_token=None
 
                 # Get folders for this server
                 logger.debug(f"Retrieving service folders for server {server_index+1}")
-                folders = gis_server.services.folders
+                if hasattr(gis_server, 'services') and gis_server.services is not None:
+                    try:
+                        folders = gis_server.services.folders
+                    except Exception as e:
+                        logger.warning(f"Cannot access services on {gis_server.url}: {e}")
+                        continue
 
                 # Remove system folder
                 if "System" in folders:
