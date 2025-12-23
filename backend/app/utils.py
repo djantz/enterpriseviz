@@ -1561,6 +1561,18 @@ def extract_experiencebuilder(exb_data, item=None):
     :return: List of (path_string, context_type, value, resource_type) tuples.
     :rtype: list
     """
+
+    def is_service_url(url):
+        """Check if URL is a service URL (REST endpoint) rather than an app URL"""
+        if not isinstance(url, str):
+            return False
+        url_lower = url.lower()
+        service_patterns = [
+            '/rest/services/',
+            '/rest/admin/services/'
+        ]
+        return any(pattern in url_lower for pattern in service_patterns)
+
     deps = []
     processed_refs = set()  # Track (value, context) pairs to avoid duplicates
 
@@ -1622,7 +1634,7 @@ def extract_experiencebuilder(exb_data, item=None):
             for widget_key, widget_value in widgets.items():
                 if isinstance(widget_value, dict):
                     widget_uri = widget_value.get("uri", "")
-                    config = widget_value.get("config", {})
+                    config = widget_value.get("config") or {}
 
                     # Determine context type from widget URI
                     context_type = "widget"  # default
@@ -1754,7 +1766,7 @@ def extract_experiencebuilder(exb_data, item=None):
                 # URL-based data sources (feature layers, services)
                 if "url" in ds_value:
                     url = ds_value["url"]
-                    if url and url.startswith("http"):
+                    if url and url.startswith("http") and is_service_url(url):
                         ref_key = (url, "datasource")
                         if ref_key not in processed_refs:
                             path = f"{data_label}.dataSources.{full_key}"
@@ -1782,7 +1794,7 @@ def extract_experiencebuilder(exb_data, item=None):
                 processed_refs.add(ref_key)
 
         for path, key, url, type_at_level in all_urls:
-            if url and url.startswith("http"):
+            if url and url.startswith("http") and is_service_url(url):
                 ref_key = (url, "other")
                 if ref_key not in processed_refs:
                     full_path = f"{data_label}.{path}"
