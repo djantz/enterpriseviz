@@ -853,7 +853,7 @@ def update_services(self, instance_alias, overwrite=False, credential_token=None
                                   "service_layers": service_layers,
                                   "service_mxd_server": service.get("sourceUrl", None),
                                   "service_mxd": None,
-                                  "portal_id": {service.id},
+                                  "portal_id": {service.type: service.id},
                                   "service_type": service.type,
                                   "service_description": description,
                                   "service_owner": owner,
@@ -1775,75 +1775,168 @@ def process_single_app(item, target, instance_item, update_time, result):
         if item.type == "Web Mapping Application":
             logger.debug(f"Processing Web Mapping Application: {app_id}")
 
-            if "map" in data:
-                logger.debug(f"Application {app_id} has an associated map")
-                try:
-                    map_id = data["map"]["itemId"]
-                    logger.debug(f"Retrieving web map with ID: {map_id}")
+            # Initialize webmap_obj for dependency resolution
+            webmap_obj = None
 
-                    try:
-                        map_obj = Webmap.objects.get(portal_instance=instance_item, webmap_id=map_id)
-                        logger.debug(f"Found web map: {map_obj}")
-
-                        logger.debug(f"Creating or updating app-map relationship for map: {map_id}")
-                        am_obj, rel_created = App_Map.objects.update_or_create(
-                            portal_instance=instance_item,
-                            app_id=app_obj,
-                            webmap_id=map_obj,
-                            rel_type="map",
-                            defaults={"updated_date": update_time}
-                        )
-
-                        if rel_created:
-                            logger.debug(f"Created new app-map relationship for map: {map_id}")
-                        else:
-                            logger.debug(f"Updated existing app-map relationship for map: {map_id}")
-
-                    except Webmap.DoesNotExist:
-                        logger.warning(f"Map {map_id} referenced by application {app_id} does not exist")
-                        result.add_error(f"{item.title}: map does not exist")
-                except Exception as e:
-                    logger.error(f"Error processing map reference in application {app_id}: {e}", exc_info=True)
-                    result.add_error(f"Error processing map reference in application {app_id}")
+            # Extract both itemIds and URLs
             logger.debug(f"Extracting web app builder resources for application: {app_id}")
             resources = utils.extract_webappbuilder(data)
             resource_count = len(resources)
-            logger.debug(f"Found {resource_count} resources in web app builder")
+            logger.debug(f"Found {resource_count} resources in Web Mapping Application")
 
             for resource_index, resource in enumerate(resources):
-                logger.debug(f"Processing resource {resource_index+1}/{resource_count}: {resource}")
+                logger.debug(f"Processing resource {resource_index + 1}/{resource_count}: {resource}")
 
                 try:
-                    if resource[2] == "url":
-                        logger.debug(f"Resource is a URL: {resource[0]}")
+                    if len(resource) == 5:
+                        resource_value, path, parent_key, value_type, context_type = resource
+                    else:
+                        resource_value, path, parent_key, value_type = resource
+                        context_type = "other"
 
-                        url = resource[0] if not resource[0].split("/")[-1].isdigit() else "/".join(
-                            resource[0].split("/")[:-1])
+                    logger.debug(
+                        f"Resource: value={resource_value[:100] if isinstance(resource_value, str) else resource_value}, "
+                        f"path={path}, key={parent_key}, type={value_type}, context={context_type}")
+
+                    # Handle map references (itemId-based)
+                    if context_type == "map" or (value_type == "map" and not isinstance(resource_value, str)):
+                        logger.debug(f"Processing map reference: {resource_value}")
+
+                        try:
+                            map_obj = Webmap.objects.get(portal_instance=instance_item, webmap_id=resource_value)
+                            logger.debug(f"Found web map: {map_obj}")
+
+                            # Store webmap_obj for use by dependent resources like filter_layer_ref
+                            webmap_obj = map_obj
+
+                            logger.debug(f"Creating or updating app-map relationship")
+                            am_obj, rel_created = App_Map.objects.update_or_create(
+                                portal_instance=instance_item,
+                                app_id=app_obj,
+                                webmap_id=map_obj,
+                                rel_type="map",
+                                defaults={"updated_date": update_time}
+                            )
+
+                            if rel_created:
+                                logger.debug(f"Created new app-map relationship")
+                            else:
+                                logger.debug(f"Updated existing app-map relationship")
+
+                        except Webmap.DoesNotExist:
+                            logger.warning(f"Map {resource_value} referenced by application {app_id} does not exist")
+                            result.add_error(f"{item.title}: map {resource_value} does not exist")
+
+                    # Handle data source references (itemId-based)
+                    elif context_type == "datasource" and value_type != "url":
+                        logger.debug(f"Processing data source reference: {resource_value}")
+
+                        # Fetch the item to determine its type
+                        try:
+                            ds_item = target.content.get(resource_value)
+
+                            if ds_item is None:
+                                logger.warning(f"Data source item {resource_value} not found or inaccessible, skipping")
+                                continue
+
+                            logger.debug(f"Found data source item: {ds_item.title} (Type: {ds_item.type})")
+
+                            if ds_item.type == "Web Map":
+                                try:
+                                    map_obj = Webmap.objects.get(portal_instance=instance_item,
+                                                                 webmap_id=resource_value)
+                                    logger.debug(f"Found web map: {map_obj}")
+
+                                    # Store webmap_obj for use by dependent resources like filter_layer_ref
+                                    if webmap_obj is None:
+                                        webmap_obj = map_obj
+
+                                    am_obj, rel_created = App_Map.objects.update_or_create(
+                                        portal_instance=instance_item,
+                                        app_id=app_obj,
+                                        webmap_id=map_obj,
+                                        rel_type="datasource",
+                                        defaults={"updated_date": update_time}
+                                    )
+
+                                    if rel_created:
+                                        logger.debug(f"Created new app-map relationship for data source")
+                                    else:
+                                        logger.debug(f"Updated existing app-map relationship for data source")
+
+                                except Webmap.DoesNotExist:
+                                    logger.warning(f"Map {resource_value} referenced as data source does not exist")
+                                    result.add_error(f"Map {resource_value} referenced as data source does not exist")
+
+                            elif ds_item.type in ["Feature Service", "Map Service", "Feature Layer", "Map Image Layer"]:
+                                url = ds_item.url
+                                logger.debug(f"Data source is a service: {url}")
+
+                                try:
+                                    service_obj = Service.objects.get(service_url__overlap=[url])
+                                    logger.debug(f"Found service: {service_obj}")
+
+                                    as_obj, rel_created = App_Service.objects.update_or_create(
+                                        portal_instance=instance_item,
+                                        app_id=app_obj,
+                                        service_id=service_obj,
+                                        rel_type="datasource",
+                                        defaults={"updated_date": update_time}
+                                    )
+
+                                    if rel_created:
+                                        logger.debug(f"Created new app-service relationship for data source")
+                                    else:
+                                        logger.debug(f"Updated existing app-service relationship for data source")
+
+                                except Service.DoesNotExist:
+                                    logger.warning(f"Service with URL {url} not found, skipping")
+                                    continue
+                                except MultipleObjectsReturned:
+                                    logger.warning(f"Multiple services found with URL {url}, using first match")
+                                    service_obj = Service.objects.filter(service_url__overlap=[url]).first()
+
+                                    as_obj, rel_created = App_Service.objects.update_or_create(
+                                        portal_instance=instance_item,
+                                        app_id=app_obj,
+                                        service_id=service_obj,
+                                        rel_type="datasource",
+                                        defaults={"updated_date": update_time}
+                                    )
+
+                        except Exception as e:
+                            logger.error(f"Error retrieving data source {resource_value}: {e}", exc_info=True)
+                            result.add_error(f"Error retrieving data source {resource_value}")
+
+                    # Handle URL-based references (services)
+                    elif value_type == "url":
+                        logger.debug(f"Processing URL reference: {resource_value}")
+
+                        # Normalize URL (remove layer index if present)
+                        url = resource_value if not resource_value.split("/")[-1].isdigit() else "/".join(
+                            resource_value.split("/")[:-1])
                         logger.debug(f"Normalized URL: {url}")
 
-                        # Find the service with this URL
+                        # Use the context from parsing
+                        rel_type = context_type if context_type in ["search", "filter", "widget",
+                                                                    "datasource"] else "other"
+                        logger.debug(f"Relationship type: {rel_type}")
+
                         try:
                             service_obj = Service.objects.get(service_url__overlap=[url])
                             logger.debug(f"Found service: {service_obj}")
-
-                            # Determine relationship type based on resource context.
-                            rel_type = lambda t: "search" if "searchLayers" in resource[
-                                1] else "filter" if "filters" in resource[1] else "widget" if "widgets" in resource[
-                                1] else "other"
-                            t = rel_type(resource[1])
-                            logger.debug(f"Relationship type: {t}")
 
                             logger.debug(f"Creating or updating app-service relationship")
                             as_obj, rel_created = App_Service.objects.update_or_create(
                                 portal_instance=instance_item,
                                 app_id=app_obj,
                                 service_id=service_obj,
-                                rel_type=t,
+                                rel_type=rel_type,
                                 defaults={"updated_date": update_time}
                             )
 
                             if rel_created:
-                                logger.debug(f"Created new app-service relationship")
+                                logger.debug(f"Created new app-service relationship with type '{rel_type}'")
                             else:
                                 logger.debug(f"Updated existing app-service relationship")
 
@@ -1855,78 +1948,261 @@ def process_single_app(item, target, instance_item, update_time, result):
                             service_obj = Service.objects.filter(service_url__overlap=[url]).first()
                             logger.debug(f"Selected service: {service_obj}")
 
-                            # Determine relationship type based on resource context.
-                            rel_type = lambda t: "search" if "searchLayers" in resource[
-                                1] else "filter" if "filters" in resource[1] else "widget" if "widgets" in resource[
-                                1] else "other"
-                            t = rel_type(resource[1])
-                            logger.debug(f"Relationship type: {t}")
-
-                            logger.debug(f"Creating or updating app-service relationship")
                             as_obj, rel_created = App_Service.objects.update_or_create(
                                 portal_instance=instance_item,
                                 app_id=app_obj,
                                 service_id=service_obj,
-                                rel_type=t,
+                                rel_type=rel_type,
                                 defaults={"updated_date": update_time}
                             )
 
                             if rel_created:
-                                logger.debug(f"Created new app-service relationship")
+                                logger.debug(f"Created new app-service relationship with type '{rel_type}'")
                             else:
                                 logger.debug(f"Updated existing app-service relationship")
-                    else:
-                        logger.debug(f"Resource is not a URL, skipping: {resource}")
+
+                    # Handle filter layer references (layer ID from map)
+                    elif value_type == "filter_layer_ref":
+                        logger.debug(f"Processing filter layer reference: {resource_value}")
+
+                        if not webmap_obj:
+                            logger.warning(f"Cannot resolve filter layer {resource_value}: web map not yet loaded")
+                            # Try to get the web map from the data
+                            try:
+                                webmap_id = data.get("values", {}).get("webmap")
+                                if webmap_id:
+                                    webmap_obj = Webmap.objects.get(portal_instance=instance_item, webmap_id=webmap_id)
+                            except (Webmap.DoesNotExist, KeyError, AttributeError):
+                                logger.error("Unable to find web map for filter layer resolution")
+                                continue
+
+                        # Look up the service using the webmap_layer_id
+                        try:
+                            # Find the Map_Service record that has this webmap_layer_id
+                            map_service = Map_Service.objects.get(
+                                portal_instance=instance_item,
+                                webmap_id=webmap_obj,
+                                webmap_layer_id=resource_value  # e.g., '191e2c1dee3-layer-3'
+                            )
+
+                            service_obj = map_service.service_id
+                            service_layer_id = map_service.service_layer_id
+
+                            logger.debug(
+                                f"Resolved filter layer {resource_value} to service {service_obj} (layer {service_layer_id})")
+
+                            # Now you can link to the specific Layer_Service if you want
+                            if service_layer_id is not None:
+                                try:
+                                    # Link to the specific layer in the service
+                                    layer_service = Layer_Service.objects.get(
+                                        portal_instance=instance_item,
+                                        service_id=service_obj,
+                                        service_layer_id=service_layer_id
+                                    )
+
+                                    logger.debug(
+                                        f"Found Layer_Service: {layer_service.service_layer_name} (FC: {layer_service.layer_data_source})")
+
+                                    # Create app-service relationship with layer detail
+                                    as_obj, rel_created = App_Service.objects.update_or_create(
+                                        portal_instance=instance_item,
+                                        app_id=app_obj,
+                                        service_id=service_obj,
+                                        rel_type="filter",
+                                        defaults={
+                                            "updated_date": update_time,
+                                            "service_layer_id": service_layer_id  # Store which layer
+                                        }
+                                    )
+
+                                    if rel_created:
+                                        logger.info(
+                                            f"Created app-service filter relationship: {app_obj.app_title} filters {layer_service.service_layer_name}")
+                                    else:
+                                        logger.debug(f"Updated app-service filter relationship")
+
+                                except Layer_Service.DoesNotExist:
+                                    logger.warning(
+                                        f"Layer_Service not found for service {service_obj}, layer {service_layer_id}")
+
+                                    # Still create the service relationship without layer detail
+                                    as_obj, rel_created = App_Service.objects.update_or_create(
+                                        portal_instance=instance_item,
+                                        app_id=app_obj,
+                                        service_id=service_obj,
+                                        rel_type="filter",
+                                        defaults={"updated_date": update_time}
+                                    )
+                            else:
+                                # No specific layer ID, link to service only
+                                as_obj, rel_created = App_Service.objects.update_or_create(
+                                    portal_instance=instance_item,
+                                    app_id=app_obj,
+                                    service_id=service_obj,
+                                    rel_type="filter",
+                                    defaults={"updated_date": update_time}
+                                )
+
+                        except Map_Service.DoesNotExist:
+                            logger.warning(
+                                f"Filter layer {resource_value} not found in Map_Service for web map {webmap_obj.webmap_id}")
+                            result.add_error(f"Filter layer {resource_value} not found in map")
+                            continue
+                        except Exception as e:
+                            logger.error(f"Error processing filter layer reference: {e}", exc_info=True)
+                            result.add_error(f"Error processing filter layer {resource_value}")
 
                 except Exception as e:
                     logger.error(f"Error processing resource {resource} for application {app_id}: {e}", exc_info=True)
                     result.add_error(f"Error processing resource {resource} for application {app_id}")
+
         if item.type == "StoryMap":
             logger.debug(f"Processing StoryMap application: {app_id}")
 
-            if data.get("resources", None):
-                logger.debug(f"Extracting StoryMap resources for application: {app_id}")
-                resources = utils.extract_storymap(data["resources"])
-                resource_count = len(resources)
-                logger.debug(f"Found {resource_count} resources in StoryMap")
+            logger.debug(f"Extracting StoryMap resources for application: {app_id}")
+            # Pass the item object so we can access draft data
+            resources = utils.extract_storymap(data, item=item)
+            resource_count = len(resources)
+            logger.debug(f"Found {resource_count} resources in StoryMap")
 
-                for resource_index, resource in enumerate(resources):
-                    logger.debug(f"Processing StoryMap resource {resource_index+1}/{resource_count}: {resource}")
+            for resource_index, resource in enumerate(resources):
+                path, context_type, resource_id, item_type = resource
+                logger.debug(f"Processing StoryMap resource {resource_index + 1}/{resource_count}: "
+                             f"Type={item_type}, Context={context_type}, ID={resource_id}")
 
-                    try:
-                        if resource[2] == "Web Map":
-                            map_id = resource[4]
-                            logger.debug(f"StoryMap has map {map_id}")
+                try:
+                    if context_type == "map" or item_type in ["Web Map", "webmap"]:
+                        logger.debug(f"Processing web map resource: {resource_id}")
 
-                            try:
-                                map_obj = Webmap.objects.get(webmap_id=map_id)
-                                logger.debug(f"Found web map: {map_obj}")
+                        try:
+                            map_obj = Webmap.objects.get(webmap_id=resource_id)
+                            logger.debug(f"Found web map: {map_obj}")
 
-                                logger.debug(f"Creating or updating app-map relationship for map: {map_id}")
-                                am_obj, rel_created = App_Map.objects.update_or_create(
-                                    portal_instance=instance_item,
-                                    app_id=app_obj,
-                                    webmap_id=map_obj,
-                                    rel_type="map",
-                                    defaults={"updated_date": update_time}
-                                )
+                            logger.debug(f"Creating or updating app-map relationship for map: {resource_id}")
+                            am_obj, rel_created = App_Map.objects.update_or_create(
+                                portal_instance=instance_item,
+                                app_id=app_obj,
+                                webmap_id=map_obj,
+                                rel_type="storymap",  # Specific to StoryMap embeds
+                                defaults={"updated_date": update_time}
+                            )
 
-                                if rel_created:
-                                    logger.debug(f"Created new app-map relationship for map: {map_id}")
-                                else:
-                                    logger.debug(f"Updated existing app-map relationship for map: {map_id}")
+                            if rel_created:
+                                logger.debug(f"Created new app-map relationship for StoryMap")
+                            else:
+                                logger.debug(f"Updated existing app-map relationship for StoryMap")
 
-                            except Webmap.DoesNotExist:
-                                logger.warning(f"Map {map_id} referenced by StoryMap {app_id} does not exist")
-                                result.add_error(f"Map {map_id} referenced by StoryMap {app_id} does not exist")
-                        else:
-                            logger.debug(f"Resource is not a Web Map, skipping: {resource}")
+                        except Webmap.DoesNotExist:
+                            logger.warning(f"Map {resource_id} referenced by StoryMap {app_id} does not exist")
+                            result.add_error(f"Map {resource_id} referenced by StoryMap {app_id} does not exist")
 
-                    except Exception as e:
-                        logger.error(f"Error processing StoryMap resource {resource} for application {app_id}: {e}", exc_info=True)
-                        result.add_error(f"Error processing StoryMap resource {resource} for application {app_id}")
-            else:
-                logger.debug(f"No resources found in StoryMap application: {app_id}")
+                    elif context_type == "theme":
+                        logger.debug(f"Processing StoryMap theme resource: {resource_id}")
+                        # StoryMap themes are typically styling/layout templates
+                        # You might want to track these separately or log them
+                        logger.info(f"StoryMap {app_id} uses theme {resource_id}")
+
+                    else:
+                        logger.debug(f"Processing embedded resource: {resource_id}, type={item_type}")
+
+                        # Fetch the item to determine its actual type
+                        try:
+                            story_resource = target.content.get(resource_id)
+
+                            if story_resource is None:
+                                logger.warning(f"StoryMap resource {resource_id} not found or inaccessible, skipping")
+                                continue
+
+                            logger.debug(
+                                f"Found embedded resource: {story_resource.title} (Type: {story_resource.type})")
+
+                            # Handle services embedded in StoryMaps
+                            if story_resource.type in ["Feature Service", "Map Service", "Feature Layer",
+                                                       "Map Image Layer"]:
+                                logger.debug(f"Processing service resource: {story_resource.url}")
+
+                                try:
+                                    service_obj = Service.objects.get(service_url__overlap=[story_resource.url])
+                                    logger.debug(f"Found service: {service_obj}")
+
+                                    logger.debug(f"Creating or updating app-service relationship")
+                                    as_obj, rel_created = App_Service.objects.update_or_create(
+                                        portal_instance=instance_item,
+                                        service_id=service_obj,
+                                        app_id=app_obj,
+                                        rel_type="embed",  # Embedded in StoryMap content
+                                        defaults={"updated_date": update_time}
+                                    )
+
+                                    if rel_created:
+                                        logger.debug(f"Created new app-service relationship for StoryMap embed")
+                                    else:
+                                        logger.debug(f"Updated existing app-service relationship for StoryMap embed")
+
+                                except Service.DoesNotExist:
+                                    logger.warning(
+                                        f"Service with URL {story_resource.url} not found, skipping resource")
+                                    continue
+                                except MultipleObjectsReturned:
+                                    logger.warning(
+                                        f"Multiple services found with URL {story_resource.url}, using first match")
+                                    service_obj = Service.objects.filter(
+                                        service_url__overlap=[story_resource.url]).first()
+                                    logger.debug(f"Selected service: {service_obj}")
+
+                                    as_obj, rel_created = App_Service.objects.update_or_create(
+                                        portal_instance=instance_item,
+                                        service_id=service_obj,
+                                        app_id=app_obj,
+                                        rel_type="embed",
+                                        defaults={"updated_date": update_time}
+                                    )
+
+                                    if rel_created:
+                                        logger.debug(f"Created new app-service relationship for StoryMap embed")
+                                    else:
+                                        logger.debug(f"Updated existing app-service relationship for StoryMap embed")
+
+                            elif story_resource.type == "Web Map":
+                                # Caught by fallback - handle as map
+                                logger.debug(f"Processing fallback web map resource: {resource_id}")
+
+                                try:
+                                    map_obj = Webmap.objects.get(webmap_id=resource_id)
+                                    logger.debug(f"Found web map: {map_obj}")
+
+                                    am_obj, rel_created = App_Map.objects.update_or_create(
+                                        portal_instance=instance_item,
+                                        app_id=app_obj,
+                                        webmap_id=map_obj,
+                                        rel_type="storymap",
+                                        defaults={"updated_date": update_time}
+                                    )
+
+                                    if rel_created:
+                                        logger.debug(f"Created new app-map relationship for StoryMap")
+                                    else:
+                                        logger.debug(f"Updated existing app-map relationship for StoryMap")
+
+                                except Webmap.DoesNotExist:
+                                    logger.warning(f"Map {resource_id} referenced by StoryMap {app_id} does not exist")
+                                    result.add_error(
+                                        f"Map {resource_id} referenced by StoryMap {app_id} does not exist")
+
+                            else:
+                                logger.debug(
+                                    f"Resource type {story_resource.type} not specifically handled in StoryMap, skipping")
+
+                        except Exception as e:
+                            logger.error(f"Error retrieving embedded resource {resource_id} for StoryMap {app_id}: {e}",
+                                         exc_info=True)
+                            result.add_error(f"Error retrieving embedded resource {resource_id} for StoryMap {app_id}")
+
+                except Exception as e:
+                    logger.error(f"Error processing StoryMap resource {resource} for application {app_id}: {e}",
+                                 exc_info=True)
+                    result.add_error(f"Error processing StoryMap resource {resource} for application {app_id}")
 
         if item.type == "Dashboard":
             logger.debug(f"Processing Dashboard application: {app_id}")
@@ -1937,61 +2213,70 @@ def process_single_app(item, target, instance_item, update_time, result):
             logger.debug(f"Found {resource_count} resources in Dashboard")
 
             for resource_index, resource in enumerate(resources):
-                logger.debug(f"Processing Dashboard resource {resource_index+1}/{resource_count}: {resource}")
+                logger.debug(f"Processing Dashboard resource {resource_index + 1}/{resource_count}: {resource}")
 
                 try:
-                    resource_id = resource[2]
-                    logger.debug(f"Retrieving resource item with ID: {resource_id}")
+                    path, context_type, resource_id, widget_type = resource
+                    logger.debug(
+                        f"Resource: path={path}, context={context_type}, id={resource_id}, widget={widget_type}")
 
                     try:
-                        dashboard_id = target.content.get(resource_id)
-                        logger.debug(f"Found resource item: {dashboard_id.title} (Type: {dashboard_id.type})")
+                        dashboard_resource = target.content.get(resource_id)
 
-                        if dashboard_id.type in ["Map Image Layer", "Feature Layer"]:
-                            logger.debug(f"Processing service resource: {dashboard_id.url}")
+                        if dashboard_resource is None:
+                            logger.warning(f"Dashboard resource {resource_id} not found or inaccessible, skipping")
+                            continue
+
+                        logger.debug(
+                            f"Found resource item: {dashboard_resource.title} (Type: {dashboard_resource.type})")
+
+                        if dashboard_resource.type in ["Map Image Layer", "Feature Layer", "Feature Service"]:
+                            logger.debug(f"Processing service resource: {dashboard_resource.url}")
 
                             try:
-                                service_obj = Service.objects.get(service_url__overlap=[dashboard_id.url])
+                                service_obj = Service.objects.get(service_url__overlap=[dashboard_resource.url])
                                 logger.debug(f"Found service: {service_obj}")
 
                                 logger.debug(f"Creating or updating app-service relationship")
-                                sa_obj, rel_created = App_Service.objects.update_or_create(
+                                as_obj, rel_created = App_Service.objects.update_or_create(
                                     portal_instance=instance_item,
                                     app_id=app_obj,
                                     service_id=service_obj,
-                                    rel_type="other",
+                                    rel_type=context_type,  # Use extracted context: "dataset", "arcade", "other"
                                     defaults={"updated_date": update_time}
                                 )
 
                                 if rel_created:
-                                    logger.debug(f"Created new app-service relationship")
+                                    logger.debug(f"Created new app-service relationship with type '{context_type}'")
                                 else:
                                     logger.debug(f"Updated existing app-service relationship")
 
                             except Service.DoesNotExist:
-                                logger.warning(f"Service with URL {dashboard_id.url} not found, skipping resource")
+                                logger.warning(
+                                    f"Service with URL {dashboard_resource.url} not found, skipping resource")
                                 continue
                             except MultipleObjectsReturned:
-                                logger.warning(f"Multiple services found with URL {dashboard_id.url}, using first match")
-                                service_obj = Service.objects.filter(service_url__overlap=[dashboard_id.url]).first()
+                                logger.warning(
+                                    f"Multiple services found with URL {dashboard_resource.url}, using first match")
+                                service_obj = Service.objects.filter(
+                                    service_url__overlap=[dashboard_resource.url]).first()
                                 logger.debug(f"Selected service: {service_obj}")
 
-                                logger.debug(f"Creating or updating app-service relationship")
-                                sa_obj, rel_created = App_Service.objects.update_or_create(
+                                as_obj, rel_created = App_Service.objects.update_or_create(
                                     portal_instance=instance_item,
                                     app_id=app_obj,
                                     service_id=service_obj,
-                                    rel_type="other",
+                                    rel_type=context_type,
                                     defaults={"updated_date": update_time}
                                 )
 
                                 if rel_created:
-                                    logger.debug(f"Created new app-service relationship")
+                                    logger.debug(f"Created new app-service relationship with type '{context_type}'")
                                 else:
                                     logger.debug(f"Updated existing app-service relationship")
 
-                        elif dashboard_id.type == "Web Map":
-                            map_id = dashboard_id.id
+                        elif dashboard_resource.type == "Web Map":
+                            map_id = dashboard_resource.id
                             logger.debug(f"Processing web map resource: {map_id}")
 
                             try:
@@ -2003,27 +2288,29 @@ def process_single_app(item, target, instance_item, update_time, result):
                                     portal_instance=instance_item,
                                     app_id=app_obj,
                                     webmap_id=map_obj,
-                                    rel_type="map",
+                                    rel_type=context_type,  # Will be "map" for mapWidget
                                     defaults={"updated_date": update_time}
                                 )
 
                                 if rel_created:
-                                    logger.debug(f"Created new app-map relationship for map: {map_id}")
+                                    logger.debug(f"Created new app-map relationship with type '{context_type}'")
                                 else:
-                                    logger.debug(f"Updated existing app-map relationship for map: {map_id}")
+                                    logger.debug(f"Updated existing app-map relationship")
 
                             except Webmap.DoesNotExist:
                                 logger.warning(f"Map {map_id} referenced by Dashboard {app_id} does not exist")
                                 result.add_error(f"Map {map_id} referenced by Dashboard {app_id} does not exist")
                         else:
-                            logger.debug(f"Resource type {dashboard_id.type} not supported, skipping")
+                            logger.debug(f"Resource type {dashboard_resource.type} not supported, skipping")
 
                     except Exception as e:
-                        logger.error(f"Error retrieving resource {resource_id} for Dashboard {app_id}: {e}", exc_info=True)
+                        logger.error(f"Error retrieving resource {resource_id} for Dashboard {app_id}: {e}",
+                                     exc_info=True)
                         result.add_error(f"Error retrieving resource {resource_id} for Dashboard {app_id}")
 
                 except Exception as e:
-                    logger.error(f"Error processing Dashboard resource {resource} for application {app_id}: {e}", exc_info=True)
+                    logger.error(f"Error processing Dashboard resource {resource} for application {app_id}: {e}",
+                                 exc_info=True)
                     result.add_error(f"Error processing Dashboard resource {resource} for application {app_id}")
 
         if item.type == "Form":
@@ -2092,128 +2379,359 @@ def process_single_app(item, target, instance_item, update_time, result):
             logger.debug(f"Processing Web Experience (Experience Builder) application: {app_id}")
 
             logger.debug(f"Extracting Experience Builder resources for application: {app_id}")
-            resources = utils.extract_experiencebuilder(data)
+            # Pass the item object so we can access draft data
+            resources = utils.extract_experiencebuilder(data, item=item)
             resource_count = len(resources)
             logger.debug(f"Found {resource_count} resources in Experience Builder")
 
             for resource_index, resource in enumerate(resources):
-                resource_type = resource[3] if len(resource) > 3 else "unknown"
-                resource_id = resource[2] if len(resource) > 2 else "unknown"
-                logger.debug(f"Processing Experience Builder resource {resource_index+1}/{resource_count}: Type={resource_type}, ID={resource_id}")
+                path, context_type, resource_value, resource_type = resource
+                logger.debug(f"Processing Experience Builder resource {resource_index + 1}/{resource_count}: "
+                             f"Type={resource_type}, Context={context_type}, Value={resource_value[:50]}...")
 
                 try:
-                    if resource_type == "WEB_MAP":
-                        logger.debug(f"Processing web map resource: {resource_id}")
+                    # Determine if this is an itemId or URL
+                    is_url = isinstance(resource_value, str) and resource_value.startswith("http")
+
+                    if is_url:
+                        # Handle URL-based resources (services)
+                        logger.debug(f"Processing URL-based resource: {resource_value}")
 
                         try:
-                            map_obj = Webmap.objects.get(webmap_id=resource_id)
-                            logger.debug(f"Found web map: {map_obj}")
+                            service_obj = Service.objects.get(service_url__overlap=[resource_value])
+                            logger.debug(f"Found service: {service_obj}")
 
-                            logger.debug(f"Creating or updating app-map relationship for map: {resource_id}")
-                            am_obj, rel_created = App_Map.objects.update_or_create(
+                            logger.debug(f"Creating or updating app-service relationship")
+                            as_obj, rel_created = App_Service.objects.update_or_create(
                                 portal_instance=instance_item,
-                                webmap_id=map_obj,
+                                service_id=service_obj,
                                 app_id=app_obj,
+                                rel_type=context_type,  # "datasource", "other"
+                                defaults={"updated_date": update_time}
+                            )
+
+                            if rel_created:
+                                logger.debug(f"Created new app-service relationship with type '{context_type}'")
+                            else:
+                                logger.debug(f"Updated existing app-service relationship")
+
+                        except Service.DoesNotExist:
+                            logger.warning(f"Service with URL {resource_value} not found, skipping resource")
+                            continue
+                        except MultipleObjectsReturned:
+                            logger.warning(f"Multiple services found with URL {resource_value}, using first match")
+                            service_obj = Service.objects.filter(service_url__overlap=[resource_value]).first()
+                            logger.debug(f"Selected service: {service_obj}")
+
+                            as_obj, rel_created = App_Service.objects.update_or_create(
+                                portal_instance=instance_item,
+                                service_id=service_obj,
+                                app_id=app_obj,
+                                rel_type=context_type,
+                                defaults={"updated_date": update_time}
+                            )
+
+                            if rel_created:
+                                logger.debug(f"Created new app-service relationship with type '{context_type}'")
+                            else:
+                                logger.debug(f"Updated existing app-service relationship")
+
+                    else:
+                        # Handle itemId-based resources
+                        resource_id = resource_value
+                        logger.debug(f"Processing itemId-based resource: {resource_id}")
+
+                        # Fetch the item to determine its type
+                        try:
+                            exb_resource = target.content.get(resource_id)
+
+                            if exb_resource is None:
+                                logger.warning(f"Experience Builder resource {resource_id} not found or inaccessible, skipping")
+                                continue
+
+                            logger.debug(f"Found resource item: {exb_resource.title} (Type: {exb_resource.type})")
+
+                            # Handle different resource types
+                            if exb_resource.type == "Web Map":
+                                logger.debug(f"Processing web map resource: {resource_id}")
+
+                                try:
+                                    map_obj = Webmap.objects.get(webmap_id=resource_id)
+                                    logger.debug(f"Found web map: {map_obj}")
+
+                                    # Use context_type: "map", "datasource", "widget", etc.
+                                    map_context = context_type if context_type in ["map", "datasource",
+                                                                                   "widget"] else "map"
+
+                                    logger.debug(f"Creating or updating app-map relationship for map: {resource_id}")
+                                    am_obj, rel_created = App_Map.objects.update_or_create(
+                                        portal_instance=instance_item,
+                                        webmap_id=map_obj,
+                                        app_id=app_obj,
+                                        rel_type=map_context,
+                                        defaults={"updated_date": update_time}
+                                    )
+
+                                    if rel_created:
+                                        logger.debug(f"Created new app-map relationship with type '{map_context}'")
+                                    else:
+                                        logger.debug(f"Updated existing app-map relationship")
+
+                                except Webmap.DoesNotExist:
+                                    logger.warning(
+                                        f"Map {resource_id} referenced by Experience Builder {app_id} does not exist")
+                                    result.add_error(
+                                        f"Map {resource_id} referenced by Experience Builder {app_id} does not exist")
+
+                            elif exb_resource.type in ["Feature Service", "Map Service", "Feature Layer",
+                                                       "Map Image Layer"]:
+                                logger.debug(f"Processing service resource: {exb_resource.url}")
+
+                                try:
+                                    service_obj = Service.objects.get(service_url__overlap=[exb_resource.url])
+                                    logger.debug(f"Found service: {service_obj}")
+
+                                    logger.debug(f"Creating or updating app-service relationship")
+                                    as_obj, rel_created = App_Service.objects.update_or_create(
+                                        portal_instance=instance_item,
+                                        service_id=service_obj,
+                                        app_id=app_obj,
+                                        rel_type=context_type,  # "datasource", "widget", "other"
+                                        defaults={"updated_date": update_time}
+                                    )
+
+                                    if rel_created:
+                                        logger.debug(f"Created new app-service relationship with type '{context_type}'")
+                                    else:
+                                        logger.debug(f"Updated existing app-service relationship")
+
+                                except Service.DoesNotExist:
+                                    logger.warning(f"Service with URL {exb_resource.url} not found, skipping resource")
+                                    continue
+                                except MultipleObjectsReturned:
+                                    logger.warning(
+                                        f"Multiple services found with URL {exb_resource.url}, using first match")
+                                    service_obj = Service.objects.filter(
+                                        service_url__overlap=[exb_resource.url]).first()
+                                    logger.debug(f"Selected service: {service_obj}")
+
+                                    as_obj, rel_created = App_Service.objects.update_or_create(
+                                        portal_instance=instance_item,
+                                        service_id=service_obj,
+                                        app_id=app_obj,
+                                        rel_type=context_type,
+                                        defaults={"updated_date": update_time}
+                                    )
+
+                                    if rel_created:
+                                        logger.debug(f"Created new app-service relationship with type '{context_type}'")
+                                    else:
+                                        logger.debug(f"Updated existing app-service relationship")
+
+                            elif exb_resource.type == "Form":
+                                logger.debug(f"Processing Survey123 form resource: {resource_id}")
+
+                                # Get the form's related services (same pattern as standalone Form processing)
+                                logger.debug(
+                                    f"Retrieving related Survey2Service items for embedded Form: {resource_id}")
+                                try:
+                                    related_items = exb_resource.related_items("Survey2Service", "forward")
+                                    form_service_count = len(related_items)
+                                    logger.debug(
+                                        f"Found {form_service_count} related Survey2Service items for form {resource_id}")
+
+                                    for svc_index, form_service in enumerate(related_items):
+                                        form_service_url = getattr(form_service, 'url', 'unknown')
+                                        logger.debug(
+                                            f"Processing Survey2Service resource {svc_index + 1}/{form_service_count}: {form_service_url}")
+
+                                        try:
+                                            logger.debug(f"Embedded form has service {form_service_url}")
+
+                                            try:
+                                                service_obj = Service.objects.get(
+                                                    service_url__overlap=[form_service_url])
+                                                logger.debug(f"Found service: {service_obj}")
+
+                                                # Use context_type "survey" to indicate this came from an embedded form
+                                                logger.debug(f"Creating or updating app-service relationship")
+                                                sa_obj, rel_created = App_Service.objects.update_or_create(
+                                                    portal_instance=instance_item,
+                                                    app_id=app_obj,
+                                                    service_id=service_obj,
+                                                    rel_type="survey",  # Use "survey" context for form-related services
+                                                    defaults={"updated_date": update_time}
+                                                )
+
+                                                if rel_created:
+                                                    logger.debug(
+                                                        f"Created new app-service relationship for embedded form service")
+                                                else:
+                                                    logger.debug(
+                                                        f"Updated existing app-service relationship for embedded form service")
+
+                                            except Service.DoesNotExist:
+                                                logger.warning(
+                                                    f"Service with URL {form_service_url} not found, skipping resource")
+                                                continue
+                                            except MultipleObjectsReturned:
+                                                logger.warning(
+                                                    f"Multiple services found with URL {form_service_url}, using first match")
+                                                service_obj = Service.objects.filter(
+                                                    service_url__overlap=[form_service_url]).first()
+                                                logger.debug(f"Selected service: {service_obj}")
+
+                                                sa_obj, rel_created = App_Service.objects.update_or_create(
+                                                    portal_instance=instance_item,
+                                                    app_id=app_obj,
+                                                    service_id=service_obj,
+                                                    rel_type="survey",
+                                                    defaults={"updated_date": update_time}
+                                                )
+
+                                                if rel_created:
+                                                    logger.debug(
+                                                        f"Created new app-service relationship for embedded form service")
+                                                else:
+                                                    logger.debug(
+                                                        f"Updated existing app-service relationship for embedded form service")
+
+                                        except Exception as e:
+                                            logger.error(
+                                                f"Error processing Survey2Service resource {form_service_url} for embedded Form {resource_id}: {e}",
+                                                exc_info=True)
+                                            result.add_error(
+                                                f"Error processing Survey2Service resource {form_service_url} for embedded Form {resource_id}")
+
+                                except Exception as e:
+                                    logger.error(
+                                        f"Error retrieving related Survey2Service items for embedded Form {resource_id}: {e}",
+                                        exc_info=True)
+                                    result.add_error(
+                                        f"Error retrieving related Survey2Service items for embedded Form {resource_id}")
+
+                            else:
+                                logger.debug(f"Resource type {exb_resource.type} not specifically handled, skipping")
+
+                        except Exception as e:
+                            logger.error(
+                                f"Error retrieving resource {resource_id} for Experience Builder {app_id}: {e}",
+                                exc_info=True)
+                            result.add_error(f"Error retrieving resource {resource_id} for Experience Builder {app_id}")
+
+                except Exception as e:
+                    logger.error(
+                        f"Error processing Experience Builder resource {resource} for application {app_id}: {e}",
+                        exc_info=True)
+                    result.add_error(
+                        f"Error processing Experience Builder resource {resource} for application {app_id}")
+
+        if item.type == "QuickCapture Project":
+            logger.debug(f"Processing QuickCapture Project: {app_id}")
+
+            resources = utils.extract_quickcapture(data, item=item)
+            resource_count = len(resources)
+            logger.debug(f"Found {resource_count} resources in QuickCapture Project")
+
+            for resource_index, resource in enumerate(resources):
+                path, context_type, resource_id, resource_type = resource
+
+                try:
+                    if context_type == "map":
+                        # Handle basemap
+                        try:
+                            map_obj = Webmap.objects.get(webmap_id=resource_id)
+                            App_Map.objects.update_or_create(
+                                portal_instance=instance_item,
+                                app_id=app_obj,
+                                webmap_id=map_obj,
                                 rel_type="map",
                                 defaults={"updated_date": update_time}
                             )
-
-                            if rel_created:
-                                logger.debug(f"Created new app-map relationship for map: {resource_id}")
-                            else:
-                                logger.debug(f"Updated existing app-map relationship for map: {resource_id}")
-
                         except Webmap.DoesNotExist:
-                            logger.warning(f"Map {resource_id} referenced by Experience Builder {app_id} does not exist")
-                            result.add_error(f"Map {resource_id} referenced by Experience Builder {app_id} does not exist")
+                            logger.warning(f"Map {resource_id} referenced by QuickCapture does not exist")
+                            result.add_error(f"Map {resource_id} referenced by QuickCapture does not exist")
 
-                    elif resource_type == "FEATURE_LAYER":
-                        logger.debug(f"Processing feature layer resource: {resource_id}")
-
+                    elif context_type == "datasource":
+                        # Handle feature service data sources
                         try:
-                            service_obj = Service.objects.get(service_url__overlap=[resource_id])
-                            logger.debug(f"Found service: {service_obj}")
+                            qc_resource = target.content.get(resource_id)
 
-                            logger.debug(f"Creating or updating app-service relationship")
-                            as_obj, rel_created = App_Service.objects.update_or_create(
-                                portal_instance=instance_item,
-                                service_id=service_obj,
-                                app_id=app_obj,
-                                defaults={"updated_date": update_time}
-                            )
+                            if qc_resource is None:
+                                logger.warning(f"QuickCapture resource {resource_id} not found or inaccessible, skipping")
+                                continue
 
-                            if rel_created:
-                                logger.debug(f"Created new app-service relationship")
-                            else:
-                                logger.debug(f"Updated existing app-service relationship")
-
+                            if qc_resource.type in ["Feature Service", "Feature Layer"]:
+                                service_obj = Service.objects.get(service_url__overlap=[qc_resource.url])
+                                App_Service.objects.update_or_create(
+                                    portal_instance=instance_item,
+                                    app_id=app_obj,
+                                    service_id=service_obj,
+                                    rel_type="datasource",
+                                    defaults={"updated_date": update_time}
+                                )
                         except Service.DoesNotExist:
-                            logger.warning(f"Service with URL {resource_id} not found, skipping resource")
-                            continue
-                        except MultipleObjectsReturned:
-                            logger.warning(f"Multiple services found with URL {resource_id}, using first match")
-                            service_obj = Service.objects.filter(service_url__overlap=[resource_id]).first()
-                            logger.debug(f"Selected service: {service_obj}")
-
-                            logger.debug(f"Creating or updating app-service relationship")
-                            as_obj, rel_created = App_Service.objects.update_or_create(
-                                portal_instance=instance_item,
-                                service_id=service_obj,
-                                app_id=app_obj,
-                                defaults={"updated_date": update_time}
-                            )
-
-                            if rel_created:
-                                logger.debug(f"Created new app-service relationship")
-                            else:
-                                logger.debug(f"Updated existing app-service relationship")
-
-                    elif resource_type == "GEOCODING":
-                        logger.debug(f"Processing geocoding resource: {resource_id}")
-
-                        try:
-                            service_obj = Service.objects.get(service_url__overlap=[resource_id])
-                            logger.debug(f"Found service: {service_obj}")
-
-                            logger.debug(f"Creating or updating app-service relationship")
-                            as_obj, rel_created = App_Service.objects.update_or_create(
-                                portal_instance=instance_item,
-                                service_id=service_obj,
-                                app_id=app_obj,
-                                defaults={"updated_date": update_time}
-                            )
-
-                            if rel_created:
-                                logger.debug(f"Created new app-service relationship")
-                            else:
-                                logger.debug(f"Updated existing app-service relationship")
-
-                        except Service.DoesNotExist:
-                            logger.warning(f"Service with URL {resource_id} not found, skipping resource")
-                            continue
-                        except MultipleObjectsReturned:
-                            logger.warning(f"Multiple services found with URL {resource_id}, using first match")
-                            service_obj = Service.objects.filter(service_url__overlap=[resource_id]).first()
-                            logger.debug(f"Selected service: {service_obj}")
-
-                            logger.debug(f"Creating or updating app-service relationship")
-                            as_obj, rel_created = App_Service.objects.update_or_create(
-                                portal_instance=instance_item,
-                                service_id=service_obj,
-                                app_id=app_obj,
-                                defaults={"updated_date": update_time}
-                            )
-
-                            if rel_created:
-                                logger.debug(f"Created new app-service relationship")
-                            else:
-                                logger.debug(f"Updated existing app-service relationship")
-                    else:
-                        logger.debug(f"Resource type {resource_type} not supported, skipping")
+                            logger.warning(f"Service for QuickCapture data source not found")
+                        except Exception as e:
+                            logger.error(f"Error processing QuickCapture data source: {e}")
 
                 except Exception as e:
-                    logger.error(f"Error processing Experience Builder resource {resource} for application {app_id}: {e}", exc_info=True)
-                    result.add_error(f"Error processing Experience Builder resource {resource} for application {app_id}")
+                    logger.error(f"Error processing QuickCapture resource: {e}")
+
+        if item.type in ["Hub Site Application", "Hub Page"]:
+            logger.debug(f"Processing {item.type}: {app_id}")
+
+            resources = utils.extract_hub(data, item=item)
+            resource_count = len(resources)
+            logger.debug(f"Found {resource_count} resources in Hub")
+
+            for resource_index, resource in enumerate(resources):
+                path, context_type, resource_id, resource_type = resource
+
+                try:
+                    if context_type in ["map"]:
+                        # Handle web maps and web scenes
+                        try:
+                            map_obj = Webmap.objects.get(webmap_id=resource_id)
+                            App_Map.objects.update_or_create(
+                                portal_instance=instance_item,
+                                app_id=app_obj,
+                                webmap_id=map_obj,
+                                rel_type="embed",
+                                defaults={"updated_date": update_time}
+                            )
+                        except Webmap.DoesNotExist:
+                            logger.warning(f"Map {resource_id} referenced by Hub does not exist")
+
+                    elif context_type == "app":
+                        # Hub references other apps - you might want to track this
+                        logger.info(f"Hub {app_id} references app {resource_id}")
+                        # Optional: Create App_App relationship if tracking app-to-app dependencies
+
+                    elif context_type == "survey":
+                        # Handle Survey123 forms (same as Experience Builder)
+                        try:
+                            survey_resource = target.content.get(resource_id)
+
+                            if survey_resource is None:
+                                logger.warning(f"Survey resource {resource_id} not found or inaccessible, skipping")
+                                continue
+
+                            related_items = survey_resource.related_items("Survey2Service", "forward")
+                            for form_service in related_items:
+                                service_obj = Service.objects.get(service_url__overlap=[form_service.url])
+                                App_Service.objects.update_or_create(
+                                    portal_instance=instance_item,
+                                    app_id=app_obj,
+                                    service_id=service_obj,
+                                    rel_type="survey",
+                                    defaults={"updated_date": update_time}
+                                )
+                        except Exception as e:
+                            logger.error(f"Error processing Hub survey: {e}")
+
+                except Exception as e:
+                    logger.error(f"Error processing Hub resource: {e}")
 
     except Exception as e:
         logger.error(f"Unable to process application '{app_id}' - '{app_title}': {e}", exc_info=True)
