@@ -2880,6 +2880,7 @@ def update_users(self, instance_alias, overwrite=False, credential_token=None):
 
         logger.debug("Retrieving ArcGIS Pro license information from portal")
         try:
+            current_licensed_users = {}
             licenses = target.admin.license.get("ArcGIS Pro")
             if licenses:
                 logger.info("Successfully retrieved ArcGIS Pro license information")
@@ -2890,121 +2891,80 @@ def update_users(self, instance_alias, overwrite=False, credential_token=None):
                     desktop_basic_n = licenses.report.to_numpy()[3][4]
                     desktop_std_n = licenses.report.to_numpy()[4][4]
 
-                    adv_count = len(desktop_adv_n)
-                    basic_count = len(desktop_basic_n)
-                    std_count = len(desktop_std_n)
-                    logger.debug(f"Found {adv_count} Advanced, {basic_count} Basic, and {std_count} Standard licenses")
+                    # Extract all licensed users in one go
+                    license_data = [
+                        (desktop_adv_n, 'desktopAdvN'),
+                        (desktop_basic_n, 'desktopBasicN'),
+                        (desktop_std_n, 'desktopStdN')
+                    ]
 
-                    logger.debug(f"Processing {adv_count} Advanced licenses")
-                    adv_success = 0
-                    adv_errors = 0
+                    all_licensed_users = [
+                        {
+                            'username': user_license["user"],
+                            'last_used': user_license["lastUsed"],
+                            'license_type': license_type
+                        }
+                        for license_list, license_type in license_data
+                        for user_license in license_list
+                    ]
 
-                    for license_index, user_license in enumerate(desktop_adv_n):
-                        user = user_license["user"]
-                        last_used = user_license["lastUsed"]
-                        logger.debug(f"Processing Advanced license {license_index+1}/{adv_count} for user: {user}")
+                    current_licensed_users = {user['username'] for user in all_licensed_users}
 
-                        if last_used:
-                            try:
-                                last_used = datetime.strptime(last_used, "%B %d, %Y").date()
-                                logger.debug(f"Last used date: {last_used}")
-                            except Exception as e:
-                                logger.warning(f"Error parsing last used date '{last_used}' for user {user}: {e}")
-                                last_used = None
+                    # Process all users
+                    success_count = 0
+                    error_count = 0
 
-                        try:
-                            update_entry = User.objects.get(portal_instance=instance_item, user_username__exact=user)
-                            update_entry.user_pro_license = "desktopAdvN"
-                            update_entry.user_pro_last = last_used
-                            update_entry.save()
-                            logger.debug(f"Updated Advanced license information for user: {user}")
-                            adv_success += 1
-                        except User.DoesNotExist:
-                            logger.warning(f"User {user} not found in database for Advanced license update")
-                            result.add_error(f"User {user} not found in database for Advanced license update")
-                            adv_errors += 1
-                        except Exception as e:
-                            logger.error(f"Error updating Advanced license for user {user}: {e}", exc_info=True)
-                            result.add_error(f"Error with licenses: {e}")
-                            adv_errors += 1
-
-                    logger.info(f"Advanced license processing completed: {adv_success} successful, {adv_errors} errors")
-
-                    logger.debug(f"Processing {basic_count} Basic licenses")
-                    basic_success = 0
-                    basic_errors = 0
-
-                    for license_index, user_license in enumerate(desktop_basic_n):
-                        user = user_license["user"]
-                        last_used = user_license["lastUsed"]
-                        logger.debug(f"Processing Basic license {license_index+1}/{basic_count} for user: {user}")
+                    for user_data in all_licensed_users:
+                        username = user_data['username']
+                        last_used = user_data['last_used']
+                        license_type = user_data['license_type']
 
                         if last_used:
                             try:
                                 last_used = datetime.strptime(last_used, "%B %d, %Y").date()
-                                logger.debug(f"Last used date: {last_used}")
                             except Exception as e:
-                                logger.warning(f"Error parsing last used date '{last_used}' for user {user}: {e}")
+                                logger.warning(f"Error parsing last used date '{last_used}' for user {username}: {e}")
                                 last_used = None
 
                         try:
-                            update_entry = User.objects.get(portal_instance=instance_item, user_username__exact=user)
-                            update_entry.user_pro_license = "desktopBasicN"
+                            update_entry = User.objects.get(portal_instance=instance_item, user_username__exact=username)
+                            update_entry.user_pro_license = license_type
                             update_entry.user_pro_last = last_used
                             update_entry.save()
-                            logger.debug(f"Updated Basic license information for user: {user}")
-                            basic_success += 1
+                            success_count += 1
                         except User.DoesNotExist:
-                            logger.warning(f"User {user} not found in database for Basic license update")
-                            result.add_error(f"User {user} not found in database for Basic license update")
-                            basic_errors += 1
+                            logger.warning(f"User {username} not found in database")
+                            result.add_error(f"User {username} not found in database")
+                            error_count += 1
                         except Exception as e:
-                            logger.error(f"Error updating Basic license for user {user}: {e}", exc_info=True)
+                            logger.error(f"Error updating license for user {username}: {e}", exc_info=True)
                             result.add_error(f"Error with licenses: {e}")
-                            basic_errors += 1
+                            error_count += 1
 
-                    logger.info(f"Basic license processing completed: {basic_success} successful, {basic_errors} errors")
-
-                    logger.debug(f"Processing {std_count} Standard licenses")
-                    std_success = 0
-                    std_errors = 0
-
-                    for license_index, user_license in enumerate(desktop_std_n):
-                        user = user_license["user"]
-                        last_used = user_license["lastUsed"]
-                        logger.debug(f"Processing Standard license {license_index+1}/{std_count} for user: {user}")
-
-                        if last_used:
-                            try:
-                                last_used = datetime.strptime(last_used, "%B %d, %Y").date()
-                                logger.debug(f"Last used date: {last_used}")
-                            except Exception as e:
-                                logger.warning(f"Error parsing last used date '{last_used}' for user {user}: {e}")
-                                last_used = None
-
-                        try:
-                            update_entry = User.objects.get(portal_instance=instance_item, user_username__exact=user)
-                            update_entry.user_pro_license = "desktopStdN"
-                            update_entry.user_pro_last = last_used
-                            update_entry.save()
-                            logger.debug(f"Updated Standard license information for user: {user}")
-                            std_success += 1
-                        except User.DoesNotExist:
-                            logger.warning(f"User {user} not found in database for Standard license update")
-                            result.add_error(f"User {user} not found in database for Standard license update")
-                            std_errors += 1
-                        except Exception as e:
-                            logger.error(f"Error updating Standard license for user {user}: {e}", exc_info=True)
-                            result.add_error(f"Error with licenses: {e}")
-                            std_errors += 1
-
-                    logger.info(f"Standard license processing completed: {std_success} successful, {std_errors} errors")
+                    logger.info(f"License processing completed: {success_count} successful, {error_count} errors")
 
                 except Exception as e:
                     logger.error(f"Error extracting license information from report: {e}", exc_info=True)
                     result.add_error("Error extracting license information from report")
             else:
-                logger.debug("No ArcGIS Pro license information available")
+                logger.info("No ArcGIS Pro license information available")
+
+            # Clear licenses for users not in current license report
+            logger.debug("Clearing licenses for users no longer in license report")
+            users_to_clear = User.objects.filter(
+                portal_instance=instance_item,
+                user_pro_license__isnull=False
+            ).exclude(user_username__in=current_licensed_users)
+
+            cleared_count = 0
+            for user in users_to_clear:
+                logger.debug(f"Clearing license for user: {user.user_username}")
+                user.user_pro_license = None
+                user.user_pro_last = None
+                user.save()
+                cleared_count += 1
+
+            logger.info(f"Cleared licenses for {cleared_count} users no longer in license report")
         except Exception as e:
             logger.error(f"Error retrieving ArcGIS Pro license information: {e}", exc_info=True)
             result.add_error("Error retrieving ArcGIS Pro license information")
