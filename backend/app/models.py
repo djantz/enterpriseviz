@@ -391,6 +391,7 @@ class Layer_Service(models.Model):
 
 
     class Meta:
+        db_table = 'layer_service'
         unique_together = ['portal_instance', 'layer_id', 'service_id']
         indexes = [
             models.Index(fields=['service_id', 'service_layer_id'], name='idx_service_layer')
