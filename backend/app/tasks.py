@@ -532,8 +532,8 @@ def delete_outdated_records(instance_item, update_time, models, result=None):
         qs = model.objects.filter(portal_instance=instance_item, updated_date__lt=update_time)
         deleted_count, _ = qs.delete()
 
-        if i == 0:
-            logger.info(f"Deleted {deleted_count} records from {model}.")
+        logger.info(f"Deleted {deleted_count} records from {model}.")
+        if result is not None:
             result.add_delete(deleted_count)
         else:
             logger.info(f"Deleted {deleted_records.count()} records from {model}")
@@ -610,8 +610,7 @@ def process_databases(manifest, regex_patterns, instance_item, s_obj, update_tim
                 defaults={"updated_date": update_time},
             )
 
-            # This prevents overwriting service_layer_id if it was set by .msd parsing
-            Layer_Service.objects.get_or_create(
+            Layer_Service.objects.update_or_create(
                 portal_instance=instance_item,
                 layer_id=layer_obj,
                 service_id=s_obj,
