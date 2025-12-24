@@ -448,7 +448,7 @@ def link_services_to_webmap(instance_item, webmap_obj, services):
     :type webmap_obj: Webmap
     :param services: List of service data as tuples (service_url, service_layer_id, webmap_layer_id).
                     service_layer_id and webmap_layer_id may be None.
-    :type services: list[tuple | str]
+    :type services: list[tuple[str, int | None, str | None]]
     :return: None
     :rtype: None
     """
@@ -529,14 +529,15 @@ def delete_outdated_records(instance_item, update_time, models, result=None):
     :type result:
     """
     for i ,model in enumerate(models):
-        deleted_records = model.objects.filter(portal_instance=instance_item, updated_date__lt=update_time)
-        deleted_records.delete()
+        qs = model.objects.filter(portal_instance=instance_item, updated_date__lt=update_time)
+        deleted_count, _ = qs.delete()
 
         if i == 0:
-            logger.info(f"Deleted {deleted_records.count()} records from {model}.")
-            result.add_delete(deleted_records.count())
+            logger.info(f"Deleted {deleted_count} records from {model}.")
+            result.add_delete(deleted_count)
         else:
             logger.info(f"Deleted {deleted_records.count()} records from {model}")
+            logger.info(f"Deleted {deleted_count} records from {model}")
 
 
 def compile_regex_patterns():
@@ -1003,12 +1004,14 @@ def update_services(self, instance_alias, overwrite=False, credential_token=None
 
                 # Get folders for this server
                 logger.debug(f"Retrieving service folders for server {server_index+1}")
-                if hasattr(gis_server, 'services') and gis_server.services is not None:
-                    try:
-                        folders = gis_server.services.folders
-                    except Exception as e:
-                        logger.warning(f"Cannot access services on {gis_server.url}: {e}")
-                        continue
+                if not hasattr(gis_server, "services") or gis_server.services is None:
+                    logger.warning(f"Server {gis_server} has no services collection, skipping")
+                    continue
+                try:
+                    folders = gis_server.services.folders
+                except Exception as e:
+                    logger.warning(f"Cannot access services on {gis_server.url}: {e}")
+                    continue
 
                 # Remove system folder
                 if "System" in folders:
@@ -2001,8 +2004,7 @@ def process_single_app(item, target, instance_item, update_time, result):
                                         service_layer_id=service_layer_id
                                     )
 
-                                    logger.debug(
-                                        f"Found Layer_Service: {layer_service.service_layer_name} (FC: {layer_service.layer_data_source})")
+                                    logger.debug(f"Found Layer_Service: {layer_service.service_layer_name}")
 
                                     # Create app-service relationship with layer detail
                                     _, rel_created = App_Service.objects.update_or_create(

@@ -1440,7 +1440,7 @@ def extract_webappbuilder(data_structure, current_path="", parent_key_for_url=No
                                 extracted_resources.append([ds_item_id, path, "itemId", "datasource", "datasource"])
                                 itemids.append(ds_item_id)
                         except:
-                            pass
+                            logger.error(f"Failed to extract itemId from data structure at {path}")
 
         # Search (Instant Apps)
         try:
@@ -1485,7 +1485,7 @@ def extract_webappbuilder(data_structure, current_path="", parent_key_for_url=No
                         path = f"values.draft.searchConfiguration.sources[{idx}].layer.url"
                         extracted_resources.append([search_url, path, "url", "url", "search"])
         except:
-            pass
+            logger.error("Failed to extract search URLs from draft search configuration")
 
         # Filter (Instant Apps)
         try:
@@ -1500,7 +1500,7 @@ def extract_webappbuilder(data_structure, current_path="", parent_key_for_url=No
                         path = f"values.filterConfig.layerExpressions[{idx}]"
                         extracted_resources.append([layer_id, path, "id", "filter_layer_ref", "filter"])
         except:
-            pass
+            logger.error("Failed to extract filter layer references from filter configuration")
 
         # Also check draft filter configuration
         try:
@@ -1516,7 +1516,7 @@ def extract_webappbuilder(data_structure, current_path="", parent_key_for_url=No
                         if not any(r[0] == layer_id and r[4] == "filter" for r in extracted_resources):
                             extracted_resources.append([layer_id, path, "id", "filter_layer_ref", "filter"])
         except:
-            pass
+            logger.error("Failed to extract filter layer references from draft filter configuration")
 
     # URL extraction for Web AppBuilder
     url_results = _extract_urls_recursive(data_structure, current_path, parent_key_for_url)
@@ -1716,7 +1716,7 @@ def extract_experiencebuilder(exb_data, item=None):
             if draft_data:
                 data_to_process.append(("draft", draft_data))
         except:
-            pass
+            logger.error("Failed to retrieve draft data from Experience Builder item")
 
     for data_label, data in data_to_process:
         # Build a complete map of ALL dataSource IDs (including nested children) for widget resolution
@@ -2088,7 +2088,7 @@ def extract_quickcapture(qc_data, item=None):
         if basemap_id:
             deps.append(("basemap", "map", basemap_id, "Web Map"))
     except:
-        pass
+        logger.error("Failed to extract basemap from QuickCapture project config")
 
     # Extract data sources (feature services)
     try:
@@ -2100,7 +2100,7 @@ def extract_quickcapture(qc_data, item=None):
                     path = f"dataSources[{idx}]"
                     deps.append((path, "datasource", service_id, "Feature Service"))
     except:
-        pass
+        logger.error("Failed to extract data sources from QuickCapture project config")
 
     return deps
 
@@ -2133,7 +2133,7 @@ def extract_hub(hub_data, item=None):
                         data_to_process.append(("draft", draft_data))
                     break
         except:
-            pass
+            logger.error("Failed to retrieve draft data for Hub item")
 
     for data_label, data in data_to_process:
         if not isinstance(data, dict):
@@ -2709,33 +2709,18 @@ class MSDLayerInfo:
     :vartype workspace_type: str or None
     """
 
-    def __init__(self):
-        self.service_layer_id = None
-        self.layer_name = None
-        self.dataset = None
-        self.dataset_type = None
-        self.feature_dataset = None
-        self.workspace_connection = None
-        self.workspace_factory = None
-        self.workspace_type = None
+    service_layer_id: Optional[int] = None
+    layer_name: Optional[str] = None
+    dataset: Optional[str] = None
+    dataset_type: Optional[str] = None
+    feature_dataset: Optional[str] = None
+    workspace_connection: Optional[str] = None
+    workspace_factory: Optional[str] = None
+    workspace_type: Optional[str] = None
 
     def to_dict(self):
-        """
-        Convert to dictionary.
-
-        :return: Dictionary representation of layer info.
-        :rtype: dict
-        """
-        return {
-            'service_layer_id': self.service_layer_id,
-            'layer_name': self.layer_name,
-            'dataset': self.dataset,
-            'dataset_type': self.dataset_type,
-            'feature_dataset': self.feature_dataset,
-            'workspace_connection': self.workspace_connection,
-            'workspace_factory': self.workspace_factory,
-            'workspace_type': self.workspace_type
-        }
+        """Convert to dictionary."""
+        return asdict(self)
 
 
 def extract_msd_from_manifest(service_manifest, service_name="service"):
@@ -2879,7 +2864,7 @@ def _detect_json_format(directory):
                 content = f.read(100).strip()
                 if content.startswith('{') or content.startswith('['):
                     return True
-        except Exception:
+        except Exception as e:
             logger.debug(f"Error reading {xml_file} for format detection: {e}")
             continue
 

@@ -442,6 +442,7 @@ class App_Service(models.Model):
         ('other', 'Other'),
     )
     rel_type = models.CharField(choices=types, null=True)
+    service_layer_id = models.IntegerField(null=True, blank=True)
     updated_date = models.DateTimeField(blank=True, null=True)
 
     def __str__(self):
