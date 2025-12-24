@@ -1331,7 +1331,7 @@ def layerid_view(request, instance):
             return HttpResponse(headers={"HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Provide a layer URL."})})
 
         try:
-            layer_usage_result = utils.find_layer_usage(portal, layer_url_searched)
+            layer_usage_result = utils.service_layer_details(portal, layer_url_searched)
             if "error" in layer_usage_result:
                 error_msg = layer_usage_result["error"]
                 logger.warning(f"Error from find_layer_usage for '{layer_url_searched}': {error_msg}")

@@ -77,13 +77,11 @@ DJANGO_APPS = [
 ]
 THIRD_PARTY_APPS = [
     'django_htmx',
-    'django_tasks',
     'django_celery_beat',
     'django_celery_results',
     'social_django',
     'django_tables2',
     'django_filters',
-    'django_tasks.backends.database',
     'csp',
 ]
 
@@ -302,13 +300,6 @@ LOGGING = {
 
 }
 
-TASKS = {
-    "default": {
-        "BACKEND": "django_tasks.backends.database.DatabaseBackend"
-        # "BACKEND": "django_tasks.backends.immediate.ImmediateBackend"
-    }
-}
-
 # Celery
 # ------------------------------------------------------------------------------
 if USE_TZ:
@@ -372,7 +363,7 @@ CONTENT_SECURITY_POLICY = {
             "https://cdn.jsdelivr.net",
             "https://cdn.datatables.net",
             "https://js.arcgis.com",
-            # UNSAFE_INLINE
+            UNSAFE_INLINE
         ],
 
         "img-src": [

@@ -10,6 +10,50 @@ their ArcGIS ecosystem.
 * **Esri Integration:** Specifically designed for use with Esri Enterprise Portal and ArcGIS Online.
 * **Docker Compose Ready:**  Simplified deployment and setup using Docker Compose.
 
+## Layer Tracking and Environment Support
+
+EnterpriseViz provides comprehensive layer tracking with automatic adaptation to different environment types:
+
+### Layer Discovery Methods
+
+EnterpriseViz uses a two-tier approach to discover and track layer information:
+
+1. **Enhanced MSD Parsing (Recommended)**
+   - Extracts detailed layer information from ArcGIS Server .msd (Map Service Definition) files
+   - Provides **precise layer index tracking** (e.g., distinguishes MapServer/0 from MapServer/5)
+   - Determines the exact datasource for each service layer
+   - Ideal for Enterprise Portal environments with full .msd file access
+
+2. **Service Manifest Parsing (Automatic Fallback)**
+   - Parses layer information from database connection strings in service manifests
+   - Automatically activates when MSD parsing is unavailable
+   - Fully functional in **disconnected environments** or when .msd files are not available
+
+      **Limitations:**
+     - Unable to determine specific layer data sources, only sources at the service level
+     - Layer tracking operates at the **layer name level** rather than specific service indices
+     - Less precision in distinguishing usage of specific layer indices within the same service
+     - Layer detail pages will show all services containing that layers data source
+
+### Finding Layer Usage
+
+The "Find Layer Usage" feature works in both modes:
+
+**With MSD Parsing:**
+
+Result includes usage_type field:
+  - "specific_layer": Item uses MapServer/5 specifically
+  - "full_service": Item uses entire service (all layers)
+
+
+**Without MSD Parsing:**
+
+Result includes usage_type field:
+* "full_service": Item uses the service (cannot distinguish specific layer)
+
+
+Both modes successfully identify all maps and applications using your layers.
+
 ## Installation
 
 This deployment package is designed for easy setup with Docker Compose. Follow these steps:
@@ -131,6 +175,7 @@ Once you've configured the `.env` files, you can deploy EnterpriseViz using Dock
             * **Schedule Refreshes:** Set up recurring data refreshes.
                 * The schedule window also displays result information from refreshes performed within the past 24
                   hours.
+            * **Run Tools:** Access portal management tools (see "Portal Tools" section below).
 
     * **Details Pages:**
 
@@ -177,6 +222,80 @@ Once you've configured the `.env` files, you can deploy EnterpriseViz using Dock
             * Configure minimum metadata score threshold (50%, 75%, 90%, 100%)
             * Choose between immediate (webhook) or daily processing
 
+## Limitations
+
+Currently, EnterpriseViz has the following known limitation:
+
+* **App-to-App Dependencies:** Dependencies between applications (e.g., a Map Series containing embedded Web AppBuilder apps, or Hub Sites linking to Dashboards) are not tracked or visualized. The system tracks:
+  - App → Service dependencies
+  - App → Web Map dependencies
+  - Web Map → Service dependencies
+  - Service → Layer dependencies
+  
+  However, relationships where one app directly references or embeds another app are not captured in the dependency graph.
+
+## Changelog
+
+### December 2025 - Dependency Tracking & Layer Management
+* **MSD Parser Implementation** - Extract detailed layer information from .msd files for precise layer index tracking (MapServer/0 vs MapServer/5)
+* * **Service Manifest Fallback** - Automatic fallback to service manifest parsing for disconnected environments
+* **Layer DataSource Tracking** - Added `service_layer_id` and `webmap_layer_id` fields for precise dependency tracking
+* **Enhanced Experience Builder Extraction** - Added layer-level granularity for Experience Builder apps with proper widget type detection (search, filter, table, map)
+* **App Type Context** - Enhanced dependency extraction for Web AppBuilder, Instant Apps, Dashboards, StoryMaps with proper context tracking
+
+### November 2025 - Visualization Improvements
+* **New Dependency Graph** - Replaced D3 with Cytoscape.js and Dagre layout for improved visualization
+* **Enhanced Layer Details** - Improved layer location display (server, database, version information)
+* **Graph Navigation Controls** - Added action bar with zoom, pan, and layout controls
+* **App Type Display** - Show specific app item types in dependency graphs
+
+### October 2025 - Accessibility & Security
+* **Comprehensive Accessibility Improvements** - ARIA labels, semantic HTML, keyboard navigation
+* **Content Security Policy** - Removed inline styles and `unsafe-eval` requirements
+* **Form Accessibility** - Enhanced Calcite form components with proper labeling and validation
+* **Table Navigation** - Accessible column sorting and pagination without eval()
+
+### September 2025 - Webhooks
+* **Webhook Integration** - Real-time processing of ArcGIS Portal events
+* **Webhook Secret Management** - Secure validation of incoming webhook requests
+* **Immediate Event Processing** - Process item updates, sharing changes, and deletions in real-time
+* **Public Unshare Automation** - Webhook-triggered enforcement of metadata quality standards
+
+### August 2025 - Portal Management Tools
+* **ArcGIS Pro License Management** - Automated removal from inactive users with configurable grace periods
+* **Inactive User Management** - Identify, notify, disable, or delete inactive users with content transfer options
+* **Public Item Unsharing** - Enforce metadata score requirements (50%, 75%, 90%, 100% thresholds)
+* **Admin Email Notifications** - Configurable email alerts for portal administrators
+* **Tool Scheduling** - Schedule automatic runs or execute on-demand
+
+### June 2025 - Logging & Monitoring
+* **Database Logging System** - Comprehensive logging with configurable levels (INFO, WARNING, ERROR, DEBUG, CRITICAL)
+* **Log Viewer** - Web interface for viewing and filtering application logs
+* **Request Context Tracking** - Enhanced logging with request information and Celery task context
+* **Settings Panel** - Centralized configuration for logging, email, theme, and service usage
+
+### May 2025 - Security & Performance
+* **Credential Encryption** - Encrypted storage of portal credentials using configurable encryption keys
+* **Credential Manager** - Temporary credential handling with Redis cache
+* **Improved Form Validation** - Enhanced schedule and settings form validation
+* **Celery Task Improvements** - Parallel processing with configurable concurrency
+
+### Version 2.0 (April 2025) - Major Architecture Update
+* **Docker Compose Deployment** - Simplified deployment with containerization
+* **ArcGIS API Update** - Updated to arcgis-python-api 2.x
+* **WebMap Processing Refactor** - Using operationalLayers instead of deprecated WebMap class
+* **Enhanced Service Tracking** - Improved service and layer relationship tracking
+* **Schedule Management** - Configurable recurring data refreshes with cron scheduling
+
+### Pre-2.0 (2021-2025) - Initial Development
+* **Core Functionality** - Initial implementation of dependency visualization
+* **Portal Integration** - Support for ArcGIS Enterprise Portal and ArcGIS Online
+* **Multi-Item Type Support** - Services, Web Maps, Applications, Layers
+* **Basic Refresh** - Manual refresh capabilities for portal data
+* **User Authentication** - OAuth integration with ArcGIS Portal/AGOL
+
+---
+
 ## Screenshots
 
 ![Home](images/home_page.png)
@@ -186,6 +305,7 @@ Once you've configured the `.env` files, you can deploy EnterpriseViz using Dock
 ![Schedule Refresh](images/schedule.png)
 ![Logs](images/logs.png)
 ![Portal Tools](images/portal_tools.png)
+![Notify](images/notify.png)
 
 ## ERD (Entity-Relationship Diagram)
 
@@ -197,8 +317,9 @@ This project was inspired by **Mapping Item Dependencies Across ArcGIS Enterpris
 by **Seth Lewis, Ayan Mitra, Stephanie Deitrick**
 (https://community.esri.com/t5/devsummit-past-user-presentations/mapping-item-dependencies-across-arcgis-enterprise/ta-p/909500)
 
-D3 collapsible tree graph used from **D3.js Drag and Drop, Zoomable, Panning, Collapsible Tree with auto-sizing.**
-by **Rob Schmuecker** (https://gist.github.com/robschmuecker/7880033)
+Data extraction patterns for various ArcGIS application types reference approaches from **Esri's ArcGIS API for Python**
+[Esri's ArcGIS API for Python](https://github.com/Esri/arcgis-python-api)
+(licensed under the Apache License 2.0).
 
 Portions of this project originally used the Gentelella template by **Giri Bhatnagar**
 (https://github.com/GiriB/django-gentelella)
@@ -232,4 +353,5 @@ THE SOFTWARE.
 This project is licensed under the **MIT License**.
 
 You are free to use, modify, and distribute this software under the terms of the MIT License. See the [LICENSE](LICENSE)
-file for details. 
+file for details.
+

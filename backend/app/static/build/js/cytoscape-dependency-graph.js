@@ -149,7 +149,7 @@ function initDependencyGraph(containerId, data) {
         var isDirect = (
             sourceNode && targetNode &&
             sourceNode.type.toLowerCase() === 'service' &&
-            targetNode.type.toLowerCase() === 'app'
+            targetNode.id.toLowerCase().includes('app-')
         );
 
         var edgeData = {
@@ -213,7 +213,7 @@ function initDependencyGraph(containerId, data) {
                     'curve-style': 'taxi',
                     'arrow-scale': 1,
                     'taxi-direction': 'horizontal',
-                    'taxi-turn': '25%'
+                    'taxi-turn': '20px'
                 }
             },
             {

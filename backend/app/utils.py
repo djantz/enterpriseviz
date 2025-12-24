@@ -21,14 +21,19 @@ import json
 import logging
 import re
 import secrets
+import shutil
+import tempfile
+import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone as dt_timezone
 from itertools import combinations, groupby
 from operator import itemgetter
+from pathlib import Path
+from typing import Dict, List, Optional
 
 import requests
 from arcgis import gis
-from arcgis.mapping import WebMap
 from cryptography.fernet import Fernet
 from django.conf import settings
 from django.core.cache import cache
@@ -43,7 +48,7 @@ from fuzzywuzzy import fuzz
 from tabulate import tabulate
 
 from . import tasks
-from .models import Webmap, Service, Layer, App, Portal, SiteSettings
+from .models import Webmap, Service, Layer, App, Portal, SiteSettings, Layer_Service
 
 logger = logging.getLogger('enterpriseviz.utils')
 
@@ -1045,13 +1050,18 @@ def epoch_to_date(epoch_ms):
         return None
 
 
-def find_layer_usage(portal_model_instance, layer_url_to_find):
+def service_layer_details(portal_model_instance, layer_url_to_find):
     """
     Identifies web maps and apps in a portal that reference a specific layer URL.
 
+    This function checks for usage in two ways:
+    1. Specific layer ID usage: When the Map_Service/App_Service has a service_layer_id matching the layer
+    2. Full service usage: When the Map_Service/App_Service references the entire service (service_layer_id is NULL)
+
+
     :param portal_model_instance: Portal model instance to search.
     :type portal_model_instance: enterpriseviz.models.Portal
-    :param layer_url_to_find: URL of the layer to search for.
+    :param layer_url_to_find: URL of the layer to search for (e.g., "https://server/service/MapServer/5").
     :type layer_url_to_find: str
     :return: Dictionary with 'maps' (list of map dicts) and 'apps' (list of app dicts).
              Returns {'error': msg} on failure.
@@ -1060,51 +1070,177 @@ def find_layer_usage(portal_model_instance, layer_url_to_find):
     if not layer_url_to_find:
         return {"error": "Layer URL to find cannot be empty."}
 
-    normalized_layer_url = layer_url_to_find.lower().strip().rstrip('/')
+    normalized_layer_url = layer_url_to_find.strip().rstrip('/')
+
+    # Parse the URL to extract service URL and layer ID
+    url_parts = normalized_layer_url.split("/")
+    service_layer_id = None
+    service_base_url = normalized_layer_url
+
+    if url_parts and url_parts[-1].isdigit():
+        service_layer_id = int(url_parts[-1])
+        service_base_url = "/".join(url_parts[:-1])
 
     logger.debug(
-        f"Searching for layer '{normalized_layer_url}' in portal '{portal_model_instance.alias}'.")
-
-    try:
-        target_gis = connect(portal_model_instance)
-    except ConnectionError as e:
-        logger.error(f"Connection failed for portal {portal_model_instance.alias}: {e}")
-        return {"error": f"Connection failed for portal {portal_model_instance.alias}."}
+        f"Searching for layer '{normalized_layer_url}' (service: '{service_base_url}', layer_id: {service_layer_id}) in portal '{portal_model_instance.alias}'.")
 
     found_maps = []
     found_apps = []
 
     try:
-        search_query = "NOT owner:esri*"
-        all_relevant_items = target_gis.content.search(search_query,
-                                                       item_type="Web Map, Web Mapping Application, Dashboard, Web AppBuilder, Experience Builder, Form, StoryMap",
-                                                       max_items=2000, outside_org=False)
-        logger.debug(
-            f"find_layer_usage: Found {len(all_relevant_items)} candidate items in '{portal_model_instance.alias}'.")
+        # First, try to find usage via database relationships (faster and more reliable)
+        from .models import Service, Map_Service, App_Service, Webmap, App
 
-        for item in all_relevant_items:
+        # Find the service
+        try:
+            service_obj = Service.objects.get(
+                portal_instance=portal_model_instance,
+                service_url__overlap=[service_base_url]
+            )
+
+            logger.debug(f"Found service in database: {service_obj.service_name}")
+
+            # Find webmaps using this service
+            if service_layer_id is not None:
+                # Look for webmaps using this specific layer OR the entire service
+                map_services = Map_Service.objects.filter(
+                    portal_instance=portal_model_instance,
+                    service_id=service_obj
+                ).filter(
+                    Q(service_layer_id=service_layer_id) | Q(service_layer_id__isnull=True)
+                ).select_related('webmap_id')
+            else:
+                # Looking for full service usage
+                map_services = Map_Service.objects.filter(
+                    portal_instance=portal_model_instance,
+                    service_id=service_obj,
+                    service_layer_id__isnull=True
+                ).select_related('webmap_id')
+
+            for map_service in map_services:
+                webmap = map_service.webmap_id
+                found_maps.append({
+                    "portal_instance": portal_model_instance.alias,
+                    "id": webmap.webmap_id,
+                    "title": webmap.webmap_title,
+                    "url": webmap.webmap_url,
+                    "owner": webmap.webmap_owner.user_username if webmap.webmap_owner else None,
+                    "created": webmap.webmap_created,
+                    "modified": webmap.webmap_modified,
+                    "access": webmap.webmap_access,
+                    "type": "Web Map",
+                    "views": webmap.webmap_views,
+                    "usage_type": "specific_layer" if map_service.service_layer_id is not None else "full_service"
+                })
+
+            # Find apps using this service
+            if service_layer_id is not None:
+                # Look for apps using this specific layer OR the entire service
+                app_services = App_Service.objects.filter(
+                    portal_instance=portal_model_instance,
+                    service_id=service_obj
+                ).filter(
+                    Q(service_layer_id=service_layer_id) | Q(service_layer_id__isnull=True)
+                ).select_related('app_id')
+            else:
+                # Looking for full service usage
+                app_services = App_Service.objects.filter(
+                    portal_instance=portal_model_instance,
+                    service_id=service_obj,
+                    service_layer_id__isnull=True
+                ).select_related('app_id')
+
+            for app_service in app_services:
+                app = app_service.app_id
+                found_apps.append({
+                    "portal_instance": portal_model_instance.alias,
+                    "id": app.app_id,
+                    "title": app.app_title,
+                    "url": app.app_url,
+                    "owner": app.app_owner.user_username if app.app_owner else None,
+                    "created": app.app_created,
+                    "modified": app.app_modified,
+                    "access": app.app_access,
+                    "type": app.app_type,
+                    "views": app.app_views,
+                    "usage_type": "specific_layer" if app_service.service_layer_id is not None else "full_service"
+                })
+
+            logger.debug(
+                f"Found {len(found_maps)} maps and {len(found_apps)} apps using layer '{normalized_layer_url}' via database.")
+
+        except Service.DoesNotExist:
+            logger.debug(f"Service not found in database for URL: {service_base_url}, falling back to content search")
+        except Exception as db_e:
+            logger.warning(f"Error querying database relationships: {db_e}, falling back to content search")
+
+        # If we didn't find anything in the database, or if we want to double-check, search via API
+        # (This can be slower but catches items not yet synced to the database)
+        if not found_maps and not found_apps:
             try:
-                item_data_str = str(item.get_data()).lower()
-                if normalized_layer_url in item_data_str:
-                    item_details = {
-                        "portal_instance": portal_model_instance.alias, "id": item.id,
-                        "title": item.title, "url": item.homepage, "owner": item.owner,
-                        "created": epoch_to_datetime(item.created), "modified": epoch_to_datetime(item.modified),
-                        "access": item.access, "type": item.type, "views": item.numViews,
-                    }
-                    if item.type == "Web Map":
-                        found_maps.append(item_details)
-                    else:  # App types
-                        found_apps.append(item_details)
-            except Exception as item_e:
-                logger.warning(f"Error processing item '{item.id}' ({item.title}): {item_e}", exc_info=False)
+                target_gis = connect(portal_model_instance)
+            except ConnectionError as e:
+                logger.error(f"Connection failed for portal {portal_model_instance.alias}: {e}")
+                return {"error": f"Connection failed for portal {portal_model_instance.alias}."}
 
-        logger.debug(
-            f"Found {len(found_maps)} maps and {len(found_apps)} apps using layer '{normalized_layer_url}'.")
+            search_query = "NOT owner:esri*"
+            all_relevant_items = target_gis.content.search(
+                search_query,
+                item_type="Web Map, Web Mapping Application, Dashboard, Web AppBuilder, Experience Builder, Form, StoryMap",
+                max_items=2000,
+                outside_org=False
+            )
+
+            logger.debug(
+                f"Found {len(all_relevant_items)} candidate items in '{portal_model_instance.alias}'.")
+
+            normalized_search_url = normalized_layer_url.lower()
+            normalized_service_url = service_base_url.lower()
+
+            for item in all_relevant_items:
+                try:
+                    item_data_str = str(item.get_data()).lower()
+
+                    # Check if this item uses the specific layer or the full service
+                    has_specific_layer = normalized_search_url in item_data_str
+                    has_full_service = service_layer_id is not None and normalized_service_url in item_data_str
+
+                    if has_specific_layer or has_full_service:
+                        usage_type = "specific_layer" if has_specific_layer else "full_service"
+
+                        item_details = {
+                            "portal_instance": portal_model_instance.alias,
+                            "id": item.id,
+                            "title": item.title,
+                            "url": item.homepage,
+                            "owner": item.owner,
+                            "created": epoch_to_datetime(item.created),
+                            "modified": epoch_to_datetime(item.modified),
+                            "access": item.access,
+                            "type": item.type,
+                            "views": item.numViews,
+                            "usage_type": usage_type
+                        }
+
+                        if item.type == "Web Map":
+                            # Avoid duplicates from database search
+                            if not any(m["id"] == item.id for m in found_maps):
+                                found_maps.append(item_details)
+                        else:  # App types
+                            if not any(a["id"] == item.id for a in found_apps):
+                                found_apps.append(item_details)
+
+                except Exception as item_e:
+                    logger.warning(f"Error processing item '{item.id}' ({item.title}): {item_e}", exc_info=False)
+
+            logger.debug(
+                f"Found {len(found_maps)} maps and {len(found_apps)} apps using layer '{normalized_layer_url}' via API search.")
+
+
         return {"maps": found_maps, "apps": found_apps}
 
     except Exception as e:
-        logger.error(f"Error searching content in '{portal_model_instance.alias}': {e}", exc_info=True)
+        logger.error(f"Error searching for layer usage in '{portal_model_instance.alias}': {e}", exc_info=True)
         return {"error": f"Error searching content in '{portal_model_instance.alias}'."}
 
 
@@ -1238,7 +1374,14 @@ URL_REGEX = re.compile(r"https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+[-\w./?=&%#~:]+"
 
 
 def _extract_urls_from_string(text_string):
-    """Extracts all URLs found in a string using regex."""
+    """
+    Extracts all URLs found in a string using regex.
+
+    :param text_string: String to search for URLs.
+    :type text_string: str
+    :return: List of URLs found in the string.
+    :rtype: list
+    """
     if isinstance(text_string, str):
         return URL_REGEX.findall(text_string)
     return []
@@ -1246,37 +1389,208 @@ def _extract_urls_from_string(text_string):
 
 def extract_webappbuilder(data_structure, current_path="", parent_key_for_url=None):
     """
-    Extracts URLs from ArcGIS Web AppBuilder JSON data.
+    Extracts URLs and itemIds from ArcGIS Web AppBuilder and Instant Apps JSON data with context.
 
-    Recursively traverses the data (dicts, lists, strings) to find URLs.
-
-    :param data_structure: The Web AppBuilder JSON data (as Python dict/list).
+    :param data_structure: The Web AppBuilder/Instant App JSON data (as Python dict/list).
     :type data_structure: dict or list or str
     :param current_path: Internal use for recursion: current dot-separated path.
     :type current_path: str, optional
-    :param parent_key_for_url: Internal use for recursion: key of the parent dict containing a URL string.
+    :param parent_key_for_url: Internal use for recursion: key of the parent dict.
     :type parent_key_for_url: str, optional
-    :return: List of [url, path_to_url_string, key_of_url_string] lists.
+    :return: List of [value, path_to_value, parent_key, value_type, context] lists.
+             value_type is "url" or "itemId"
+             context is "map", "datasource", "search", "filter", etc.
+    :rtype: list
+    """
+    extracted_resources = []
+
+    # First, check specific known structures for itemIds and URLs (only on initial call)
+    if not current_path:
+        itemids = []
+
+        # Primary web map reference (Web AppBuilder & Instant Apps)
+        if "map" in data_structure and isinstance(data_structure["map"], dict):
+            try:
+                map_item_id = data_structure["map"].get("itemId")
+                if map_item_id:
+                    extracted_resources.append([map_item_id, "map", "itemId", "map", "map"])
+                    itemids.append(map_item_id)
+            except Exception:
+                logger.debug("Failed to extract map itemId from data structure")
+
+        # Instant Apps - web map in values.webmap
+        try:
+            webmap_id = data_structure.get("values", {}).get("webmap")
+            if webmap_id and webmap_id not in itemids:
+                extracted_resources.append([webmap_id, "values.webmap", "webmap", "map", "map"])
+                itemids.append(webmap_id)
+        except Exception:
+            logger.debug("Failed to extract map itemId from data structure")
+
+        # Data sources (Web AppBuilder)
+        if "dataSource" in data_structure:
+            data_sources = data_structure.get("dataSource", {}).get("dataSources", {})
+            if isinstance(data_sources, dict):
+                for ds_key, ds_value in data_sources.items():
+                    if isinstance(ds_value, dict):
+                        try:
+                            ds_item_id = ds_value.get("itemId")
+                            if ds_item_id and ds_item_id not in itemids:
+                                path = f"dataSource.dataSources.{ds_key}"
+                                extracted_resources.append([ds_item_id, path, "itemId", "datasource", "datasource"])
+                                itemids.append(ds_item_id)
+                        except:
+                            logger.error(f"Failed to extract itemId from data structure at {path}")
+
+        # Search (Instant Apps)
+        try:
+            search_config = data_structure.get("values", {}).get("searchConfiguration", {})
+            sources = search_config.get("sources", [])
+
+            for idx, source in enumerate(sources):
+                if not isinstance(source, dict):
+                    continue
+
+                # Check for layer-based search (has a service URL)
+                layer_info = source.get("layer", {})
+                if isinstance(layer_info, dict) and "url" in layer_info:
+                    search_url = layer_info["url"]
+                    path = f"values.searchConfiguration.sources[{idx}].layer.url"
+                    extracted_resources.append([search_url, path, "url", "url", "search"])
+
+                # Check for geocoder URL (world geocoding service, etc.)
+                elif "url" in source and source.get("url", "").startswith("http"):
+                    geocoder_url = source["url"]
+                    # Skip if it's a standard Esri geocoder (not a dependency we track)
+                    if "GeocodeServer" in geocoder_url and "arcgis.com" not in geocoder_url:
+                        path = f"values.searchConfiguration.sources[{idx}].url"
+                        extracted_resources.append([geocoder_url, path, "url", "url", "search"])
+        except Exception as e:
+            pass
+
+        # Also check draft search configuration
+        try:
+            draft_search_config = data_structure.get("values", {}).get("draft", {}).get("searchConfiguration", {})
+            draft_sources = draft_search_config.get("sources", [])
+
+            for idx, source in enumerate(draft_sources):
+                if not isinstance(source, dict):
+                    continue
+
+                layer_info = source.get("layer", {})
+                if isinstance(layer_info, dict) and "url" in layer_info:
+                    search_url = layer_info["url"]
+                    # Check if we already have this URL
+                    if not any(r[0] == search_url and r[4] == "search" for r in extracted_resources):
+                        path = f"values.draft.searchConfiguration.sources[{idx}].layer.url"
+                        extracted_resources.append([search_url, path, "url", "url", "search"])
+        except:
+            logger.error("Failed to extract search URLs from draft search configuration")
+
+        # Filter (Instant Apps)
+        try:
+            filter_config = data_structure.get("values", {}).get("filterConfig", {})
+            layer_expressions = filter_config.get("layerExpressions", [])
+
+            for idx, layer_expr in enumerate(layer_expressions):
+                if isinstance(layer_expr, dict):
+                    layer_id = layer_expr.get("id")
+                    if layer_id:
+                        # This is a layer ID reference from the map
+                        path = f"values.filterConfig.layerExpressions[{idx}]"
+                        extracted_resources.append([layer_id, path, "id", "filter_layer_ref", "filter"])
+        except:
+            logger.error("Failed to extract filter layer references from filter configuration")
+
+        # Also check draft filter configuration
+        try:
+            draft_filter_config = data_structure.get("values", {}).get("draft", {}).get("filterConfig", {})
+            draft_layer_expressions = draft_filter_config.get("layerExpressions", [])
+
+            for idx, layer_expr in enumerate(draft_layer_expressions):
+                if isinstance(layer_expr, dict):
+                    layer_id = layer_expr.get("id")
+                    if layer_id:
+                        path = f"values.draft.filterConfig.layerExpressions[{idx}]"
+                        # Check if we already have this layer_id
+                        if not any(r[0] == layer_id and r[4] == "filter" for r in extracted_resources):
+                            extracted_resources.append([layer_id, path, "id", "filter_layer_ref", "filter"])
+        except:
+            logger.error("Failed to extract filter layer references from draft filter configuration")
+
+    # URL extraction for Web AppBuilder
+    url_results = _extract_urls_recursive(data_structure, current_path, parent_key_for_url)
+
+    # Merge URL results, avoiding duplicates
+    existing_urls = {r[0] for r in extracted_resources if r[3] == "url"}
+    for url, path, parent_key in url_results:
+        if url not in existing_urls:
+            # Determine context from path
+            if "searchLayers" in path or "search" in path.lower():
+                context = "search"
+            elif "filters" in path or "filter" in path.lower():
+                context = "filter"
+            elif "widgets" in path or "widget" in path.lower():
+                context = "widget"
+            else:
+                context = "other"
+
+            extracted_resources.append([url, path, parent_key, "url", context])
+            existing_urls.add(url)
+
+    return extracted_resources
+
+
+def _extract_urls_recursive(data_structure, current_path="", parent_key_for_url=None):
+    """
+    Helper function for recursive URL extraction.
+
+    Separated to avoid confusion with itemId extraction.
+
+    :param data_structure: Data structure to recursively search (dict, list, or str).
+    :type data_structure: dict or list or str
+    :param current_path: Current path in the data structure.
+    :type current_path: str
+    :param parent_key_for_url: Parent key containing the URL.
+    :type parent_key_for_url: str or None
+    :return: List of [url, path, parent_key] lists.
     :rtype: list
     """
     extracted_urls = []
+
     if isinstance(data_structure, dict):
         for key, value in data_structure.items():
             new_path = f"{current_path}.{key}" if current_path else key
-            extracted_urls.extend(extract_webappbuilder(value, new_path, key))
+            extracted_urls.extend(_extract_urls_recursive(value, new_path, key))
+
     elif isinstance(data_structure, list):
         for idx, item in enumerate(data_structure):
             new_path = f"{current_path}[{idx}]"
-            extracted_urls.extend(extract_webappbuilder(item, new_path, parent_key_for_url))
+            extracted_urls.extend(_extract_urls_recursive(item, new_path, parent_key_for_url))
+
     elif isinstance(data_structure, str):
         found_in_string = _extract_urls_from_string(data_structure)
         for url in found_in_string:
             extracted_urls.append([url, current_path, parent_key_for_url])
+
     return extracted_urls
 
 
 def _recursive_extract_by_key(data, target_key, current_path_list=None, results_list=None):
-    """Generic helper to recursively find values for a specific key."""
+    """
+    Generic helper to recursively find values for a specific key.
+
+    :param data: Data structure to search (dict or list).
+    :type data: dict or list
+    :param target_key: Key to search for.
+    :type target_key: str
+    :param current_path_list: Current path as list of keys.
+    :type current_path_list: list or None
+    :param results_list: Accumulated results list.
+    :type results_list: list or None
+    :return: List of (path_string, key, value, type_at_level) tuples.
+    :rtype: list
+    """
     if current_path_list is None: current_path_list = []
     if results_list is None: results_list = []
 
@@ -1301,66 +1615,584 @@ def _recursive_extract_by_key(data, target_key, current_path_list=None, results_
 
 def extract_dashboard(dashboard_data):
     """
-    Extracts all 'itemId' values from ArcGIS Dashboard JSON data.
+    Extracts itemIds from ArcGIS Dashboard JSON data with relationship context.
 
-    :param dashboard_data: The Dashboard JSON data (as Python dict/list).
-    :type dashboard_data: dict or list
-    :return: List of (path_string, key_of_itemId, itemId_value, type_value_None) tuples.
+    :param dashboard_data: The Dashboard JSON data (as Python dict).
+    :type dashboard_data: dict
+    :return: List of (path_string, context_type, itemId_value, widget_type) tuples.
     :rtype: list
     """
-    return _recursive_extract_by_key(dashboard_data, "itemId")
+    deps = []
+
+    # Widgets from multiple widget sources
+    widget_sources = [
+        ("widgets", dashboard_data.get("widgets", [])),
+        ("desktopView.widgets", dashboard_data.get("desktopView", {}).get("widgets", []))
+    ]
+
+    for source_path, widgets in widget_sources:
+        for widget_idx, widget in enumerate(widgets):
+            widget_type = widget.get("type", "unknown")
+            path_prefix = f"{source_path}[{widget_idx}]"
+
+            # Map widgets - direct web map reference
+            if widget_type == "mapWidget":
+                item_id = widget.get("itemId")
+                if item_id:
+                    deps.append((path_prefix, "map", item_id, widget_type))
+                continue
+
+            # Service datasets in other widget types
+            try:
+                datasets = widget.get("datasets", [])
+                for dataset_idx, dataset in enumerate(datasets):
+                    if dataset.get("type") == "serviceDataset":
+                        data_source = dataset.get("dataSource", {})
+                        data_source_type = data_source.get("type")
+                        path = f"{path_prefix}.datasets[{dataset_idx}]"
+
+                        # Item-based data source
+                        if data_source_type == "itemDataSource":
+                            item_id = data_source.get("itemId")
+                            if item_id:
+                                deps.append((path, "dataset", item_id, widget_type))
+
+                        # Arcade expression data source
+                        elif data_source_type == "arcadeDataSource":
+                            script = data_source.get("script", "")
+                            if script:
+                                # Use regex to find GUIDs in Arcade expressions
+                                guid_pattern = r"[0-9a-f]{8}[0-9a-f]{4}[1-5][0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}"
+                                guids = re.findall(guid_pattern, script, re.IGNORECASE)
+                                for guid in guids:
+                                    deps.append((f"{path}.script", "arcade", guid, widget_type))
+            except Exception:
+                logger.debug(f"Error extracting datasets from widget at index {widget_idx}")
+
+    # Fallback: recursively find any itemIds we might have missed
+    # This catches edge cases and future dashboard features
+    all_item_ids = _recursive_extract_by_key(dashboard_data, "itemId")
+    existing_ids = {dep[2] for dep in deps}
+
+    for path, _key, item_id, _ in all_item_ids:
+        if item_id not in existing_ids:
+            deps.append((path, "other", item_id, "unknown"))
+
+    return deps
 
 
-def extract_experiencebuilder(exb_data):
+def extract_experiencebuilder(exb_data, item=None):
     """
-    Extracts 'itemId' and URLs from ArcGIS Experience Builder JSON data.
+    Extracts itemIds and URLs from ArcGIS Experience Builder JSON data with relationship context.
 
-    Also captures the 'type' field at the same level if present.
-
-    :param exb_data: The Experience Builder JSON data (as Python dict/list).
-    :type exb_data: dict or list
-    :return: List of (path_string, key, value, type_at_level) tuples.
-             'key' will be 'itemId' or the key for the URL.
-             'value' will be the itemId or URL.
+    :param exb_data: The Experience Builder published JSON data (as Python dict).
+    :type exb_data: dict
+    :param item: Optional ArcGIS Item object to access draft data.
+    :type item: arcgis.gis.Item
+    :return: List of (path_string, context_type, value, resource_type) tuples.
     :rtype: list
     """
-    item_ids = _recursive_extract_by_key(exb_data, "itemId")
-    urls = _recursive_extract_by_key(exb_data, "_URL_")
-    return item_ids + urls
+
+    def is_service_url(url):
+        """Check if URL is a service URL (REST endpoint) rather than an app URL"""
+        if not isinstance(url, str):
+            return False
+        url_lower = url.lower()
+        service_patterns = [
+            '/rest/services/',
+            '/rest/admin/services/'
+        ]
+        return any(pattern in url_lower for pattern in service_patterns)
+
+    deps = []
+    processed_refs = set()  # Track (value, context) pairs to avoid duplicates
+
+    # Gather both published and draft data
+    data_to_process = [("published", exb_data)]
+
+    if item:
+        try:
+            draft_data = item.resources.get("config/config.json")
+            if draft_data:
+                data_to_process.append(("draft", draft_data))
+        except:
+            logger.error("Failed to retrieve draft data from Experience Builder item")
+
+    for data_label, data in data_to_process:
+        # Build a complete map of ALL dataSource IDs (including nested children) for widget resolution
+        data_sources = data.get("dataSources", {})
+        datasource_map = {}
+
+        def process_datasource(ds_key, ds_value, parent_id=""):
+            """Recursively process datasources including nested children with concatenated IDs"""
+            if isinstance(ds_value, dict):
+                ds_type = ds_value.get("type", "unknown")
+
+                # Build the full concatenated ID as Experience Builder does
+                full_id = f"{parent_id}-{ds_key}" if parent_id else ds_key
+
+                # Store datasource info with both full ID and just the key
+                ds_info = {
+                    "type": ds_type,
+                    "value": None,
+                    "kind": None
+                }
+
+                if "itemId" in ds_value:
+                    ds_info["value"] = ds_value["itemId"]
+                    ds_info["kind"] = "itemId"
+                elif "url" in ds_value:
+                    ds_info["value"] = ds_value["url"]
+                    ds_info["kind"] = "url"
+
+                # Store under both full ID and just the key for flexible lookup
+                if ds_info["value"]:
+                    datasource_map[full_id] = ds_info
+                    datasource_map[ds_key] = ds_info
+
+                # Process nested child dataSources
+                child_datasources = ds_value.get("childDataSourceJsons", {})
+                if isinstance(child_datasources, dict):
+                    for child_key, child_value in child_datasources.items():
+                        process_datasource(child_key, child_value, full_id)
+
+        for ds_key, ds_value in data_sources.items():
+            process_datasource(ds_key, ds_value)
+
+        # Extract from widgets with their specific context types
+        widgets = data.get("widgets", {})
+        if isinstance(widgets, dict):
+            for widget_key, widget_value in widgets.items():
+                if isinstance(widget_value, dict):
+                    widget_uri = widget_value.get("uri", "")
+                    config = widget_value.get("config") or {}
+
+                    # Determine context type from widget URI
+                    context_type = "widget"  # default
+                    if "search" in widget_uri:
+                        context_type = "search"
+                    elif "filter" in widget_uri:
+                        context_type = "filter"
+                    elif "table" in widget_uri:
+                        context_type = "table"
+                    elif "arcgis-map" in widget_uri or "map" in widget_uri:
+                        context_type = "map"
+                    elif "query" in widget_uri:
+                        context_type = "query"
+                    elif "feature-info" in widget_uri:
+                        context_type = "widget"
+
+                    # Check for useDataSources at widget level
+                    use_data_sources = widget_value.get("useDataSources", [])
+                    if use_data_sources:
+                        for use_ds in use_data_sources:
+                            if isinstance(use_ds, dict):
+                                # Get the specific dataSourceId (which may be a child layer)
+                                # and the root dataSourceId (which is the web map)
+                                ds_id = use_ds.get("dataSourceId")
+                                root_ds_id = use_ds.get("rootDataSourceId")
+
+                                # First, try to extract the specific layer reference (child dataSource)
+                                # This gives us layer-level granularity for search, filter, table widgets
+                                if ds_id and ds_id in datasource_map:
+                                    ds_info = datasource_map[ds_id]
+
+                                    # Only extract if it has a URL (i.e., it's a layer reference)
+                                    # and it's not the same as the root (i.e., it's actually a child)
+                                    if ds_info["kind"] == "url" and ds_id != root_ds_id:
+                                        ref_key = (ds_info["value"], context_type)
+
+                                        if ref_key not in processed_refs:
+                                            path = f"{data_label}.widgets.{widget_key}.useDataSources[{ds_id}]"
+                                            deps.append((path, context_type, ds_info["value"], ds_info["type"]))
+                                            processed_refs.add(ref_key)
+
+                                # Also extract the root dataSource if it's different and has an itemId
+                                # This captures the web map dependency for map widgets
+                                if root_ds_id and root_ds_id != ds_id and root_ds_id in datasource_map:
+                                    root_info = datasource_map[root_ds_id]
+
+                                    # Only extract root if it's an itemId (web map reference)
+                                    if root_info["kind"] == "itemId":
+                                        ref_key = (root_info["value"], context_type)
+
+                                        if ref_key not in processed_refs:
+                                            path = f"{data_label}.widgets.{widget_key}.useDataSources[root]"
+                                            deps.append((path, context_type, root_info["value"], root_info["type"]))
+                                            processed_refs.add(ref_key)
+
+                    # Survey123 forms in widget config
+                    if "surveyItemId" in config:
+                        survey_id = config["surveyItemId"]
+                        ref_key = (survey_id, "survey")
+                        if ref_key not in processed_refs:
+                            path = f"{data_label}.widgets.{widget_key}.config"
+                            deps.append((path, "survey", survey_id, "SURVEY123"))
+                            processed_refs.add(ref_key)
+
+                    # Map widgets with itemId in config
+                    if "itemId" in config:
+                        item_id = config["itemId"]
+                        # For map widgets, use "map" context
+                        map_context = "map" if context_type == "map" else "widget"
+                        ref_key = (item_id, map_context)
+                        if ref_key not in processed_refs:
+                            path = f"{data_label}.widgets.{widget_key}.config"
+                            deps.append((path, map_context, item_id, "Web Map"))
+                            processed_refs.add(ref_key)
+
+        # Extract utilities (geocoding, routing, printing services, etc.)
+        utilities = data.get("utilities", {})
+        if isinstance(utilities, dict):
+            for util_key, util_value in utilities.items():
+                if isinstance(util_value, dict):
+                    util_type = util_value.get("type", "unknown")
+
+                    # Check for itemId in utilities
+                    if "itemId" in util_value:
+                        item_id = util_value["itemId"]
+                        ref_key = (item_id, "utility")
+                        if ref_key not in processed_refs:
+                            path = f"{data_label}.utilities.{util_key}"
+                            deps.append((path, "utility", item_id, util_type))
+                            processed_refs.add(ref_key)
+
+                    # Check for itemId in orgSetting (organization utilities)
+                    org_setting = util_value.get("orgSetting", {})
+                    if isinstance(org_setting, dict) and "itemId" in org_setting:
+                        item_id = org_setting["itemId"]
+                        ref_key = (item_id, "utility")
+                        if ref_key not in processed_refs:
+                            path = f"{data_label}.utilities.{util_key}.orgSetting"
+                            deps.append((path, "utility", item_id, util_type))
+                            processed_refs.add(ref_key)
+
+                    # Check for URL in utilities
+                    if "url" in util_value:
+                        url = util_value["url"]
+                        if url and url.startswith("http"):
+                            ref_key = (url, "utility")
+                            if ref_key not in processed_refs:
+                                path = f"{data_label}.utilities.{util_key}"
+                                deps.append((path, "utility", url, util_type))
+                                processed_refs.add(ref_key)
+
+        # Extract standalone dataSources that weren't referenced by widgets
+        # These are truly just datasources without specific widget context
+        def extract_standalone_datasource(ds_key, ds_value, parent_path=""):
+            """Recursively extract standalone datasources including nested ones"""
+            if isinstance(ds_value, dict):
+                ds_type = ds_value.get("type", "unknown")
+                full_key = f"{parent_path}.{ds_key}" if parent_path else ds_key
+
+                # ItemId-based data sources
+                if "itemId" in ds_value:
+                    item_id = ds_value["itemId"]
+                    ref_key = (item_id, "datasource")
+                    if ref_key not in processed_refs:
+                        path = f"{data_label}.dataSources.{full_key}"
+                        deps.append((path, "datasource", item_id, ds_type))
+                        processed_refs.add(ref_key)
+
+                # URL-based data sources (feature layers, services)
+                if "url" in ds_value:
+                    url = ds_value["url"]
+                    if url and url.startswith("http") and is_service_url(url):
+                        ref_key = (url, "datasource")
+                        if ref_key not in processed_refs:
+                            path = f"{data_label}.dataSources.{full_key}"
+                            deps.append((path, "datasource", url, ds_type))
+                            processed_refs.add(ref_key)
+
+                # Process nested child dataSources
+                child_datasources = ds_value.get("childDataSourceJsons", {})
+                if isinstance(child_datasources, dict):
+                    for child_key, child_value in child_datasources.items():
+                        extract_standalone_datasource(child_key, child_value, full_key)
+
+        for ds_key, ds_value in data_sources.items():
+            extract_standalone_datasource(ds_key, ds_value)
+
+        # Find any itemIds or URLs we missed (fallback)
+        all_item_ids = _recursive_extract_by_key(data, "itemId")
+        all_urls = _recursive_extract_by_key(data, "_URL_")
+
+        for path, _key, item_id, type_at_level in all_item_ids:
+            ref_key = (item_id, "other")
+            if ref_key not in processed_refs:
+                full_path = f"{data_label}.{path}"
+                deps.append((full_path, "other", item_id, type_at_level or "unknown"))
+                processed_refs.add(ref_key)
+
+        for path, _key, url, type_at_level in all_urls:
+            if url and url.startswith("http") and is_service_url(url):
+                ref_key = (url, "other")
+                if ref_key not in processed_refs:
+                    full_path = f"{data_label}.{path}"
+                    deps.append((full_path, "other", url, type_at_level or "unknown"))
+                    processed_refs.add(ref_key)
+
+    return deps
 
 
-def extract_storymap(storymap_data, current_path_list=None, results_list=None):
+def extract_storymap(storymap_data, item=None, current_path_list=None, results_list=None):
     """
-    Extracts 'itemType' and 'itemId' pairs from ArcGIS StoryMap JSON data.
+    Extracts itemIds from ArcGIS StoryMap JSON data with relationship context.
 
-    :param storymap_data: The StoryMap JSON data (as Python dict/list).
-    :type storymap_data: dict or list
+    :param storymap_data: The StoryMap published JSON data (as Python dict).
+    :type storymap_data: dict
+    :param item: Optional ArcGIS Item object to access draft data.
+    :type item: arcgis.gis.Item
     :param current_path_list: Internal use for recursion.
     :type current_path_list: list, optional
     :param results_list: Internal use for recursion.
     :type results_list: list, optional
-    :return: List of (path_string, itemType_value, itemId_value) tuples.
+    :return: List of (path_string, context_type, itemId_value, item_type) tuples.
     :rtype: list
     """
-    if current_path_list is None: current_path_list = []
-    if results_list is None: results_list = []
+    if current_path_list is None:
+        current_path_list = []
+    if results_list is None:
+        results_list = []
 
-    if isinstance(storymap_data, dict):
-        # StoryMaps often have 'itemType' and 'itemId' at the same level describing a resource.
-        if "itemType" in storymap_data and "itemId" in storymap_data:
-            item_type = storymap_data["itemType"]
-            item_id = storymap_data["itemId"]
-            path_str = "/".join(current_path_list)
-            results_list.append((path_str, item_type, item_id))
+    # Gather both published and draft data (only on initial call)
+    if not current_path_list and item:
+        processed_ids = set()
+        data_to_process = [("published", storymap_data)]
 
-        for key, value in storymap_data.items():
-            new_path = current_path_list + [key]
-            extract_storymap(value, new_path, results_list)
-    elif isinstance(storymap_data, list):
-        for idx, item in enumerate(storymap_data):
-            new_path = current_path_list + [str(idx)]
-            extract_storymap(item, new_path, results_list)
+        # Get draft data
+        try:
+            for res in item.resources.list():
+                if "draft" in res["resource"] and "express" not in res["resource"]:
+                    draft_data = item.resources.get(res["resource"])
+                    data_to_process.append(("draft", draft_data))
+                    break  # Usually just one draft
+        except Exception:
+            logger.debug("Failed to retrieve draft data for StoryMap")
+
+        # Process each data source
+        for data_label, data in data_to_process:
+            if not isinstance(data, dict) or "resources" not in data:
+                continue
+
+            resources = data.get("resources", {})
+
+            # Extract web maps
+            for resource_key, resource_value in resources.items():
+                if not isinstance(resource_value, dict):
+                    continue
+
+                resource_type = resource_value.get("type", "").lower()
+                resource_data = resource_value.get("data", {})
+
+                # Web Maps
+                if "webmap" in resource_type or "web-map" in resource_type:
+                    item_id = resource_data.get("itemId")
+                    if item_id and item_id not in processed_ids:
+                        path = f"{data_label}.resources.{resource_key}"
+                        results_list.append((path, "map", item_id, "Web Map"))
+                        processed_ids.add(item_id)
+
+                # StoryMap Themes
+                elif "story-theme" in resource_type or "theme" in resource_type:
+                    theme_id = resource_data.get("themeItemId")
+                    if theme_id and theme_id not in processed_ids:
+                        path = f"{data_label}.resources.{resource_key}"
+                        results_list.append((path, "theme", theme_id, "StoryMap Theme"))
+                        processed_ids.add(theme_id)
+
+            # Search for itemType/itemId pairs
+            _extract_storymap_recursive(data, [data_label], results_list, processed_ids)
+
+        return results_list
+
     return results_list
+
+
+def _extract_storymap_recursive(data, current_path_list, results_list, processed_ids):
+    """
+    Recursively extracts itemType/itemId pairs from StoryMap data.
+
+    Helper function for fallback extraction.
+
+    :param data: Data structure to search (dict or list).
+    :type data: dict or list
+    :param current_path_list: Current path as list of keys.
+    :type current_path_list: list
+    :param results_list: Accumulated results list.
+    :type results_list: list
+    :param processed_ids: Set of already processed item IDs.
+    :type processed_ids: set
+    :return: None (modifies results_list in place)
+    :rtype: None
+    """
+    if isinstance(data, dict):
+        # StoryMaps often have 'itemType' and 'itemId' at the same level
+        if "itemType" in data and "itemId" in data:
+            item_type = data["itemType"]
+            item_id = data["itemId"]
+            if item_id not in processed_ids:
+                path_str = ".".join(current_path_list)
+
+                # Determine context from itemType
+                if item_type in ["Web Map", "webmap"]:
+                    context = "map"
+                elif "theme" in item_type.lower():
+                    context = "theme"
+                else:
+                    context = "embed"
+
+                results_list.append((path_str, context, item_id, item_type))
+                processed_ids.add(item_id)
+
+        for key, value in data.items():
+            new_path = current_path_list + [key]
+            _extract_storymap_recursive(value, new_path, results_list, processed_ids)
+
+    elif isinstance(data, list):
+        for idx, item in enumerate(data):
+            new_path = current_path_list + [str(idx)]
+            _extract_storymap_recursive(item, new_path, results_list, processed_ids)
+
+
+def extract_quickcapture(qc_data, item=None):
+    """
+    Extracts itemIds from ArcGIS QuickCapture Project JSON data.
+
+    :param qc_data: The QuickCapture published JSON data (as Python dict).
+    :type qc_data: dict
+    :param item: Optional ArcGIS Item object to access project config.
+    :type item: arcgis.gis.Item
+    :return: List of (path_string, context_type, itemId_value, resource_type) tuples.
+    :rtype: list
+    """
+    deps = []
+
+    # Try to get the project configuration
+    project_config = None
+    if item:
+        try:
+            project_config = item.resources.get("qc.project.json")
+        except:
+            project_config = qc_data
+    else:
+        project_config = qc_data
+
+    if not project_config:
+        return deps
+
+    # Extract basemap
+    try:
+        basemap = project_config.get("basemap", {})
+        basemap_id = basemap.get("itemId")
+        if basemap_id:
+            deps.append(("basemap", "map", basemap_id, "Web Map"))
+    except:
+        logger.error("Failed to extract basemap from QuickCapture project config")
+
+    # Extract data sources (feature services)
+    try:
+        data_sources = project_config.get("dataSources", [])
+        for idx, ds in enumerate(data_sources):
+            if isinstance(ds, dict):
+                service_id = ds.get("featureServiceItemId")
+                if service_id:
+                    path = f"dataSources[{idx}]"
+                    deps.append((path, "datasource", service_id, "Feature Service"))
+    except:
+        logger.error("Failed to extract data sources from QuickCapture project config")
+
+    return deps
+
+
+def extract_hub(hub_data, item=None):
+    """
+    Extracts itemIds from ArcGIS Hub Site or Hub Page JSON data.
+
+    :param hub_data: The Hub published JSON data (as Python dict).
+    :type hub_data: dict
+    :param item: Optional ArcGIS Item object to access draft data.
+    :type item: arcgis.gis.Item
+    :return: List of (path_string, context_type, itemId_value, resource_type) tuples.
+    :rtype: list
+    """
+    deps = []
+    processed_ids = set()
+
+    # Gather both published and draft data
+    data_to_process = [("published", hub_data)]
+
+    if item:
+        try:
+            for r in item.resources.list():
+                if "draft" in r["resource"]:
+                    draft_data = item.resources.get(r["resource"])
+                    if isinstance(draft_data, dict) and "data" in draft_data:
+                        data_to_process.append(("draft", draft_data["data"]))
+                    else:
+                        data_to_process.append(("draft", draft_data))
+                    break
+        except:
+            logger.error("Failed to retrieve draft data for Hub item")
+
+    for data_label, data in data_to_process:
+        if not isinstance(data, dict):
+            continue
+
+        try:
+            layout = data.get("values", {}).get("layout", {})
+            sections = layout.get("sections", [])
+
+            for section_idx, section in enumerate(sections):
+                rows = section.get("rows", [])
+
+                for row_idx, row in enumerate(rows):
+                    cards = row.get("cards", [])
+
+                    for card_idx, card in enumerate(cards):
+                        component = card.get("component", {})
+                        component_name = component.get("name", "")
+                        settings = component.get("settings", {})
+
+                        path_base = f"{data_label}.sections[{section_idx}].rows[{row_idx}].cards[{card_idx}]"
+
+                        # Web Map cards
+                        if component_name == "webmap-card":
+                            for map_type in ["webmap", "webscene"]:
+                                item_id = settings.get(map_type)
+                                if item_id and item_id not in processed_ids:
+                                    path = f"{path_base}.{map_type}"
+                                    resource_type = "Web Scene" if map_type == "webscene" else "Web Map"
+                                    deps.append((path, "map", item_id, resource_type))
+                                    processed_ids.add(item_id)
+
+                        # App cards (references other applications)
+                        elif component_name == "app-card":
+                            item_id = settings.get("itemId")
+                            if item_id and item_id not in processed_ids:
+                                path = f"{path_base}.itemId"
+                                deps.append((path, "app", item_id, "Application"))
+                                processed_ids.add(item_id)
+
+                        # Chart cards (could be dashboards)
+                        elif component_name == "chart-card":
+                            item_id = settings.get("itemId")
+                            if item_id and item_id not in processed_ids:
+                                path = f"{path_base}.itemId"
+                                deps.append((path, "chart", item_id, "Chart"))
+                                processed_ids.add(item_id)
+
+                        # Survey cards (Survey123)
+                        elif component_name == "survey-card":
+                            survey_id = settings.get("surveyId")
+                            if survey_id and survey_id not in processed_ids:
+                                path = f"{path_base}.surveyId"
+                                deps.append((path, "survey", survey_id, "Form"))
+                                processed_ids.add(survey_id)
+        except Exception as e:
+            pass
+
+    return deps
 
 
 def combine_apps(app_queryset):
@@ -1852,3 +2684,704 @@ def _process_user_event(portal_instance, event_id, operation):
     """Process user webhook events."""
     logger.info(f"Processing user webhook - ID: {event_id}, Operation: {operation}")
     tasks.process_user.delay(portal_instance.alias, event_id, operation)
+
+
+@dataclass
+class MSDLayerInfo:
+    """
+    Container for parsed MSD layer information.
+
+    :ivar service_layer_id: Layer index within the service (e.g., 0, 1, 2).
+    :vartype service_layer_id: int or None
+    :ivar layer_name: Display name of the layer.
+    :vartype layer_name: str or None
+    :ivar dataset: Dataset name (feature class name).
+    :vartype dataset: str or None
+    :ivar dataset_type: Type of dataset (e.g., 'esriDTFeatureClass').
+    :vartype dataset_type: str or None
+    :ivar feature_dataset: Parent feature dataset name if applicable.
+    :vartype feature_dataset: str or None
+    :ivar workspace_connection: Database connection string.
+    :vartype workspace_connection: str or None
+    :ivar workspace_factory: Workspace factory type.
+    :vartype workspace_factory: str or None
+    :ivar workspace_type: Type of workspace (e.g., 'esriDataSourcesGDB.SdeWorkspaceFactory').
+    :vartype workspace_type: str or None
+    """
+
+    service_layer_id: Optional[int] = None
+    layer_name: Optional[str] = None
+    dataset: Optional[str] = None
+    dataset_type: Optional[str] = None
+    feature_dataset: Optional[str] = None
+    workspace_connection: Optional[str] = None
+    workspace_factory: Optional[str] = None
+    workspace_type: Optional[str] = None
+
+    def to_dict(self):
+        """Convert to dictionary."""
+        return asdict(self)
+
+
+def extract_msd_from_manifest(service_manifest, service_name="service"):
+    """
+    Extract .msd file path from service manifest and copy it locally for processing.
+
+    The .msd file is not accessible through REST API and must be accessed directly
+    from the server file system. This function extracts the file path from the manifest,
+    checks if it's accessible, and creates a local copy for processing.
+
+    :param service_manifest: The service manifest dictionary (already retrieved).
+    :type service_manifest: dict
+    :param service_name: Name of the service for logging purposes.
+    :type service_name: str
+    :return: Path to local copy of .msd file or None if failed.
+    :rtype: Optional[Path]
+    """
+    try:
+        # Find the .msd resource in the manifest
+        resources = service_manifest.get("resources", [])
+        msd_resource = None
+
+        for resource in resources:
+            server_path = resource.get("serverPath", "")
+            if server_path.endswith(".msd"):
+                msd_resource = resource
+                break
+
+        if not msd_resource:
+            logger.debug(f"No .msd file found in manifest for service: {service_name}")
+            return None
+
+        # Get the server path to the .msd file
+        msd_server_path = Path(msd_resource.get("serverPath", ""))
+
+        if not msd_server_path:
+            logger.warning(f"Empty server path for .msd file in service: {service_name}")
+            return None
+
+        logger.debug(f"Found .msd file path: {msd_server_path}")
+
+        # Check if the file is accessible
+        if not msd_server_path.exists():
+            logger.warning(f"MSD file not accessible at path: {msd_server_path}. "
+                         f"This script must be run on a machine with access to the ArcGIS Server file system.")
+            return None
+
+        # Create a temporary copy to avoid modifying the original
+        temp_dir = Path(tempfile.mkdtemp(prefix='msd_'))
+        local_msd_path = temp_dir / msd_server_path.name
+
+        logger.debug(f"Copying .msd file to temporary location: {local_msd_path}")
+        shutil.copy2(msd_server_path, local_msd_path)
+
+        logger.info(f"Successfully copied .msd file for service '{service_name}' to: {local_msd_path}")
+        return local_msd_path
+
+    except PermissionError as e:
+        logger.error(f"Permission denied accessing .msd file for service '{service_name}': {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error extracting .msd file for service '{service_name}': {e}", exc_info=True)
+        return None
+
+
+def parse_msd_layers(msd_path):
+    """
+    Parse layer information from an .msd file.
+
+    Supports both ArcGIS Pro 2.x (p20) and 3.x (p30) formats:
+    - p20: Traditional XML with namespaces
+    - p30: JSON content in .xml files
+
+    :param msd_path: Path to .msd file or extracted directory.
+    :type msd_path: Path
+    :return: List of MSDLayerInfo objects.
+    :rtype: List[MSDLayerInfo]
+    """
+    temp_dir = None
+    cleanup_required = False
+
+    try:
+        # Extract if it's a ZIP file
+        if msd_path.is_file() and zipfile.is_zipfile(msd_path):
+            logger.info("Extracting .msd ZIP file...")
+            temp_dir = tempfile.mkdtemp(prefix='msd_')
+            extract_dir = Path(temp_dir)
+            cleanup_required = True
+
+            with zipfile.ZipFile(msd_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+
+            logger.debug(f"Extracted .msd to: {extract_dir}")
+        else:
+            logger.info(".msd file is not a ZIP, using as-is.")
+            extract_dir = msd_path
+
+        # Detect format (p20 XML vs p30 JSON)
+        is_json_format = _detect_json_format(extract_dir)
+        if is_json_format:
+            logger.info("Detected p30 JSON format")
+            return _parse_msd_layers_json(extract_dir)
+        else:
+            logger.info("Detected p20 XML format")
+            return _parse_msd_layers_xml(extract_dir)
+
+    except Exception as e:
+        logger.error(f"Error parsing .msd file: {e}", exc_info=True)
+        return []
+
+    finally:
+        # Cleanup temp directory
+        if cleanup_required and temp_dir and Path(temp_dir).exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _detect_json_format(directory):
+    """
+    Detect if MSD uses p30 JSON format or p20 XML format.
+
+    p30 uses JSON content in .xml files and has GISProject.json instead of GISProject.xml.
+
+    :param directory: Directory containing extracted MSD files.
+    :type directory: Path
+    :return: True if p30 JSON format, False if p20 XML format.
+    :rtype: bool
+    """
+    # Check for GISProject.json (p30 indicator)
+    if (directory / "GISProject.json").exists():
+        return True
+
+    # Check for Index.json (p30 indicator)
+    if (directory / "Index.json").exists():
+        return True
+
+    # Check a sample XML file to see if it contains JSON
+    xml_files = list(directory.rglob("*.xml"))[:3]  # Check first 3 XML files
+    for xml_file in xml_files:
+        try:
+            with open(xml_file, 'r', encoding='utf-8') as f:
+                content = f.read(100).strip()
+                if content.startswith('{') or content.startswith('['):
+                    return True
+        except Exception as e:
+            logger.debug(f"Error reading {xml_file} for format detection: {e}")
+            continue
+
+    return False
+
+
+def _parse_msd_layers_xml(extract_dir):
+    """
+    Parse layers from p20 XML format MSD.
+
+    :param extract_dir: Directory containing extracted MSD files.
+    :type extract_dir: Path
+    :return: List of MSDLayerInfo objects.
+    :rtype: List[MSDLayerInfo]
+    """
+    # Find the map XML
+    map_xml = _find_map_xml(extract_dir)
+    if not map_xml:
+        logger.warning(f"Could not find map XML in {extract_dir}")
+        return []
+
+    logger.debug(f"Found map XML: {map_xml}")
+
+    # Parse layer references
+    layer_refs = _parse_layer_references(map_xml)
+    logger.debug(f"Found {len(layer_refs)} layer references")
+
+    # Parse each layer
+    layers = []
+    for layer_ref in layer_refs:
+        layer_xml_path = extract_dir / layer_ref
+        if not layer_xml_path.exists():
+            logger.warning(f"Layer XML not found: {layer_ref}")
+            continue
+
+        layer_info = _parse_layer_xml(layer_xml_path)
+        if layer_info:
+            layers.append(layer_info)
+
+    return layers
+
+
+def _parse_msd_layers_json(extract_dir):
+    """
+    Parse layers from p30 JSON format MSD.
+
+    :param extract_dir: Directory containing extracted MSD files.
+    :type extract_dir: Path
+    :return: List of MSDLayerInfo objects.
+    :rtype: List[MSDLayerInfo]
+    """
+    # Find the map JSON/XML file (contains layer references)
+    map_file = _find_map_json(extract_dir)
+    if not map_file:
+        logger.warning(f"Could not find map file in {extract_dir}")
+        return []
+
+    logger.debug(f"Found map file: {map_file}")
+
+    # Parse layer references from JSON
+    layer_refs = _parse_layer_references_json(map_file)
+    logger.debug(f"Found {len(layer_refs)} layer references")
+
+    # Parse each layer
+    layers = []
+    for layer_ref in layer_refs:
+        layer_file_path = extract_dir / layer_ref
+        if not layer_file_path.exists():
+            logger.warning(f"Layer file not found: {layer_ref}")
+            continue
+
+        layer_info = _parse_layer_json(layer_file_path)
+        if layer_info:
+            layers.append(layer_info)
+
+    return layers
+
+
+def _find_map_xml(directory):
+    """
+    Find the main map XML file.
+
+    :param directory: Directory to search in.
+    :type directory: Path
+    :return: Path to map XML file or None if not found.
+    :rtype: Optional[Path]
+    """
+    # Search recursively
+    for xml_file in directory.rglob("*.xml"):
+        try:
+            tree = ET.parse(xml_file)
+            root = tree.getroot()
+            if root.find('.//Layers') is not None:
+                return xml_file
+        except ET.ParseError:
+            continue
+
+    return None
+
+
+def _get_namespace_from_root(root):
+    """
+    Extract namespace from root element.
+
+    :param root: Root XML element.
+    :type root: ET.Element
+    :return: Dictionary with namespace mapping.
+    :rtype: Dict[str, str]
+    """
+    if '}' in root.tag:
+        ns_uri = root.tag.split('}')[0].strip('{')
+        return {'typens': ns_uri}
+    return {}
+
+
+def _parse_layer_references(map_xml_path):
+    """
+    Parse layer XML file references from map XML.
+
+    :param map_xml_path: Path to map XML file.
+    :type map_xml_path: Path
+    :return: List of layer file paths.
+    :rtype: List[str]
+    """
+    tree = ET.parse(map_xml_path)
+    root = tree.getroot()
+
+    ns = _get_namespace_from_root(root)
+    layer_refs = []
+
+    # Try with namespace
+    if ns and 'typens' in ns:
+        layers_elem = root.find('.//typens:Layers', ns)
+    else:
+        layers_elem = None
+
+    if layers_elem is None:
+        layers_elem = root.find('.//Layers')
+
+    if layers_elem is not None:
+        for string_elem in layers_elem:
+            layer_path = string_elem.text
+            if layer_path and layer_path.startswith('CIMPATH='):
+                layer_path = layer_path.replace('CIMPATH=', '')
+                layer_refs.append(layer_path)
+
+    return layer_refs
+
+
+def _parse_layer_xml(layer_xml_path):
+    """
+    Parse a single layer XML file.
+
+    :param layer_xml_path: Path to layer XML file.
+    :type layer_xml_path: Path
+    :return: MSDLayerInfo object or None if parsing fails.
+    :rtype: Optional[MSDLayerInfo]
+    """
+    try:
+        tree = ET.parse(layer_xml_path)
+        root = tree.getroot()
+
+        ns = _get_namespace_from_root(root)
+        has_ns = ns and 'typens' in ns
+
+        layer_info = MSDLayerInfo()
+
+        # Helper to find elements with/without namespace
+        def find_elem(xpath_with_ns, xpath_without_ns):
+            if has_ns:
+                elem = root.find(xpath_with_ns, ns)
+                if elem is not None:
+                    return elem
+            return root.find(xpath_without_ns)
+
+        # Extract layer name
+        name_elem = find_elem('.//typens:Name', './/Name')
+        if name_elem is not None:
+            layer_info.layer_name = name_elem.text
+
+        # Extract ServiceLayerID
+        service_id_elem = find_elem('.//typens:ServiceLayerID', './/ServiceLayerID')
+        if service_id_elem is not None:
+            try:
+                layer_info.service_layer_id = int(service_id_elem.text)
+            except (ValueError, TypeError):
+                pass
+
+        # Find DataConnection element
+        data_conn_elem = find_elem('.//typens:DataConnection', './/DataConnection')
+
+        if data_conn_elem is not None:
+            # Helper for finding within data connection
+            def find_in_conn(xpath_with_ns, xpath_without_ns):
+                if has_ns:
+                    elem = data_conn_elem.find(xpath_with_ns, ns)
+                    if elem is not None:
+                        return elem
+                return data_conn_elem.find(xpath_without_ns)
+
+            # Workspace connection string
+            ws_conn_elem = find_in_conn('.//typens:WorkspaceConnectionString', './/WorkspaceConnectionString')
+            if ws_conn_elem is not None:
+                layer_info.workspace_connection = ws_conn_elem.text
+                layer_info.workspace_type = _parse_workspace_type(ws_conn_elem.text)
+
+            # Workspace factory
+            ws_factory_elem = find_in_conn('.//typens:WorkspaceFactory', './/WorkspaceFactory')
+            if ws_factory_elem is not None:
+                layer_info.workspace_factory = ws_factory_elem.text
+
+            # Dataset name
+            dataset_elem = find_in_conn('.//typens:Dataset', './/Dataset')
+            if dataset_elem is not None:
+                layer_info.dataset = dataset_elem.text
+
+            # Dataset type
+            dataset_type_elem = find_in_conn('.//typens:DatasetType', './/DatasetType')
+            if dataset_type_elem is not None:
+                layer_info.dataset_type = dataset_type_elem.text
+
+            # Feature dataset
+            feature_dataset_elem = find_in_conn('.//typens:FeatureDataset', './/FeatureDataset')
+            if feature_dataset_elem is not None:
+                layer_info.feature_dataset = feature_dataset_elem.text
+
+        return layer_info
+
+    except Exception as e:
+        logger.error(f"Error parsing layer XML {layer_xml_path}: {e}")
+        return None
+
+
+def _find_map_json(directory):
+    """
+    Find the main map file in p30 JSON format.
+
+    :param directory: Directory to search in.
+    :type directory: Path
+    :return: Path to map file or None if not found.
+    :rtype: Optional[Path]
+    """
+    # Search for files that might contain layer references
+    for json_xml_file in directory.rglob("*.xml"):
+        try:
+            with open(json_xml_file, 'r', encoding='utf-8') as f:
+                content = f.read(1000)
+                if content.strip().startswith('{') and '"layers":[' in content:
+                    return json_xml_file
+        except Exception:
+            continue
+
+    return None
+
+
+def _parse_layer_references_json(map_file_path):
+    """
+    Parse layer file references from p30 JSON format map file.
+
+    :param map_file_path: Path to map file.
+    :type map_file_path: Path
+    :return: List of layer file paths.
+    :rtype: List[str]
+    """
+    try:
+        with open(map_file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        layers = data.get("layers", [])
+        layer_refs = []
+
+        for layer in layers:
+            if isinstance(layer, str) and layer.startswith('CIMPATH='):
+                layer_path = layer.replace('CIMPATH=', '')
+                layer_refs.append(layer_path)
+
+        return layer_refs
+
+    except Exception as e:
+        logger.error(f"Error parsing layer references from JSON {map_file_path}: {e}")
+        return []
+
+
+def _parse_layer_json(layer_file_path):
+    """
+    Parse a single layer file in p30 JSON format.
+
+    :param layer_file_path: Path to layer JSON file.
+    :type layer_file_path: Path
+    :return: MSDLayerInfo object or None if parsing fails.
+    :rtype: Optional[MSDLayerInfo]
+    """
+    try:
+        with open(layer_file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        layer_info = MSDLayerInfo()
+
+        # Extract layer name
+        layer_info.layer_name = data.get("name")
+
+        # Extract ServiceLayerID
+        service_layer_id = data.get("serviceLayerID")
+        if service_layer_id is not None:
+            try:
+                layer_info.service_layer_id = int(service_layer_id)
+            except (ValueError, TypeError):
+                pass
+
+        # Extract DataConnection
+        feature_table = data.get("featureTable", {})
+        data_connection = feature_table.get("dataConnection", {})
+
+        if data_connection:
+            # Workspace connection string
+            ws_conn = data_connection.get("workspaceConnectionString")
+            if ws_conn:
+                layer_info.workspace_connection = ws_conn
+                layer_info.workspace_type = _parse_workspace_type(ws_conn)
+
+            # Workspace factory
+            ws_factory = data_connection.get("workspaceFactory")
+            if ws_factory:
+                layer_info.workspace_factory = ws_factory
+
+            # Dataset name
+            dataset = data_connection.get("dataset")
+            if dataset:
+                layer_info.dataset = dataset
+
+            # Dataset type
+            dataset_type = data_connection.get("datasetType")
+            if dataset_type:
+                layer_info.dataset_type = dataset_type
+
+            # Feature dataset
+            feature_dataset = data_connection.get("featureDataset")
+            if feature_dataset:
+                layer_info.feature_dataset = feature_dataset
+
+        return layer_info
+
+    except Exception as e:
+        logger.error(f"Error parsing layer JSON {layer_file_path}: {e}", exc_info=True)
+        return None
+
+
+def _parse_workspace_type(connection_string):
+    """
+    Determine workspace type from connection string.
+
+    :param connection_string: Database connection string.
+    :type connection_string: str
+    :return: Workspace type description (e.g., "File Geodatabase", "Enterprise Geodatabase").
+    :rtype: str
+    """
+    if not connection_string:
+        return "Unknown"
+
+    conn_lower = connection_string.lower()
+
+    if 'database=' in conn_lower and '.gdb' in conn_lower:
+        return "File Geodatabase"
+    elif 'server=' in conn_lower and ('sqlserver' in conn_lower or 'postgresql' in conn_lower):
+        return "Enterprise Geodatabase"
+    elif 'dsid=' in conn_lower:
+        return "Enterprise Geodatabase (Hosted)"
+    else:
+        return "Other"
+
+
+def process_msd_layers_for_service(service_manifest, service_name, instance_item,
+                                   service_obj, update_time):
+    """
+    Process MSD file for a service and update Layer and Layer_Service records.
+
+    This function extracts the .msd file from the service manifest, parses layer information,
+    and creates/updates Django model records for layers and their relationships to services.
+
+    :param service_manifest: The service manifest dictionary.
+    :type service_manifest: dict
+    :param service_name: Name of the service.
+    :type service_name: str
+    :param instance_item: Portal instance model object.
+    :type instance_item: Portal
+    :param service_obj: Service model object.
+    :type service_obj: Service
+    :param update_time: Timestamp for this update.
+    :type update_time: datetime
+    :return: True if processing was successful, False otherwise.
+    :rtype: bool
+    """
+    msd_path = None
+    try:
+        # Extract and copy the MSD file
+        logger.debug(f"Attempting to extract MSD for service: {service_name}")
+        msd_path = extract_msd_from_manifest(service_manifest, service_name)
+
+        if not msd_path:
+            logger.debug(f"No MSD file available for service: {service_name}")
+            return False
+
+        # Parse the MSD layers
+        logger.debug(f"Parsing MSD layers for service: {service_name}")
+        layers = parse_msd_layers(msd_path)
+
+        if not layers:
+            logger.warning(f"No layers found in MSD for service: {service_name}")
+            return False
+
+        logger.info(f"Found {len(layers)} layers in MSD for service: {service_name}")
+
+        # Process each layer
+        for layer_info in layers:
+            try:
+                # Extract database info from workspace connection
+                db_server, db_version, db_database = _extract_database_info(layer_info.workspace_connection)
+
+                # Dataset name
+                dataset_name = layer_info.dataset
+                if not dataset_name:
+                    logger.warning(f"No dataset name for layer '{layer_info.layer_name}' in service '{service_name}'")
+                    continue
+
+                logger.debug(f"Processing layer: {layer_info.layer_name} (dataset: {dataset_name}, service_layer_id: {layer_info.service_layer_id})")
+
+                # Create or update Layer record
+                layer_obj, layer_created = Layer.objects.update_or_create(
+                    portal_instance=instance_item,
+                    layer_server=db_server,
+                    layer_version=db_version,
+                    layer_database=db_database,
+                    layer_name=dataset_name,
+                    defaults={"updated_date": update_time}
+                )
+
+                if layer_created:
+                    logger.debug(f"Created new layer record: {dataset_name}")
+                else:
+                    logger.debug(f"Updated existing layer record: {dataset_name}")
+
+                # Create or update Layer_Service relationship with service_layer_id
+                _, rel_created = Layer_Service.objects.update_or_create(
+                    portal_instance=instance_item,
+                    layer_id=layer_obj,
+                    service_id=service_obj,
+                    defaults={
+                        "updated_date": update_time,
+                        "service_layer_id": layer_info.service_layer_id,
+                        "service_layer_name": layer_info.layer_name
+                    }
+                )
+
+                if rel_created:
+                    logger.debug(f"Created new layer-service relationship for: {dataset_name} (service_layer_id: {layer_info.service_layer_id})")
+                else:
+                    logger.debug(f"Updated layer-service relationship for: {dataset_name} (service_layer_id: {layer_info.service_layer_id})")
+
+            except Exception as e:
+                logger.error(f"Error processing layer '{layer_info.layer_name}' in service '{service_name}': {e}", exc_info=True)
+                continue
+
+        logger.info(f"Successfully processed MSD layers for service: {service_name}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error processing MSD for service '{service_name}': {e}", exc_info=True)
+        return False
+
+    finally:
+        # Clean up temporary MSD file
+        if msd_path and msd_path.exists():
+            try:
+                # Remove the temporary directory
+                temp_dir = msd_path.parent
+                if temp_dir.exists() and temp_dir.name.startswith('msd_'):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    logger.debug(f"Cleaned up temporary MSD directory: {temp_dir}")
+            except Exception as e:
+                logger.warning(f"Error cleaning up temporary MSD files: {e}")
+
+
+
+def _extract_database_info(connection_string):
+    """
+    Extract database server, version, and database name from connection string.
+
+    :param connection_string: Workspace connection string.
+    :type connection_string: str
+    :return: Tuple of (server, version, database). Returns (None, None, None) if parsing fails.
+    :rtype: tuple
+    """
+
+    if not connection_string:
+        return None, None, None
+
+    conn_lower = connection_string.lower()
+
+    # File Geodatabase
+    if 'database=' in conn_lower and '.gdb' in conn_lower:
+        parts = connection_string.split("DATABASE=")
+        if len(parts) > 1:
+            db_database = parts[1].replace(r"\\", "\\")
+            return None, None, db_database
+
+    # Enterprise Geodatabase
+    elif 'server=' in conn_lower:
+        server_match = re.search(r'SERVER=([^;]+)', connection_string, re.IGNORECASE)
+        db_server = server_match.group(1).upper() if server_match else None
+
+        version_match = re.search(r'VERSION=([^;]+)', connection_string, re.IGNORECASE) or \
+                       re.search(r'BRANCH=([^;]+)', connection_string, re.IGNORECASE)
+        db_version = version_match.group(1).upper() if version_match else None
+
+        db_match = re.search(r'DATABASE=([^;]+)', connection_string, re.IGNORECASE)
+        db_database = db_match.group(1).upper() if db_match else None
+
+        return db_server, db_version, db_database
+
+    return None, None, None
