@@ -236,58 +236,58 @@ Currently, EnterpriseViz has the following known limitation:
 
 ## Changelog
 
-#### December 2025 - Dependency Tracking & Layer Management
+### December 2025 - Dependency Tracking & Layer Management
 * **MSD Parser Implementation** - Extract detailed layer information from .msd files for precise layer index tracking (MapServer/0 vs MapServer/5)
 * * **Service Manifest Fallback** - Automatic fallback to service manifest parsing for disconnected environments
 * **Layer DataSource Tracking** - Added `service_layer_id` and `webmap_layer_id` fields for precise dependency tracking
 * **Enhanced Experience Builder Extraction** - Added layer-level granularity for Experience Builder apps with proper widget type detection (search, filter, table, map)
 * **App Type Context** - Enhanced dependency extraction for Web AppBuilder, Instant Apps, Dashboards, StoryMaps with proper context tracking
 
-#### November 2025 - Visualization Improvements
+### November 2025 - Visualization Improvements
 * **New Dependency Graph** - Replaced D3 with Cytoscape.js and Dagre layout for improved visualization
 * **Enhanced Layer Details** - Improved layer location display (server, database, version information)
 * **Graph Navigation Controls** - Added action bar with zoom, pan, and layout controls
 * **App Type Display** - Show specific app item types in dependency graphs
 
-#### October 2025 - Accessibility & Security
+### October 2025 - Accessibility & Security
 * **Comprehensive Accessibility Improvements** - ARIA labels, semantic HTML, keyboard navigation
 * **Content Security Policy** - Removed inline styles and `unsafe-eval` requirements
 * **Form Accessibility** - Enhanced Calcite form components with proper labeling and validation
 * **Table Navigation** - Accessible column sorting and pagination without eval()
 
-#### September 2025 - Webhooks
+### September 2025 - Webhooks
 * **Webhook Integration** - Real-time processing of ArcGIS Portal events
 * **Webhook Secret Management** - Secure validation of incoming webhook requests
 * **Immediate Event Processing** - Process item updates, sharing changes, and deletions in real-time
 * **Public Unshare Automation** - Webhook-triggered enforcement of metadata quality standards
 
-#### August 2025 - Portal Management Tools
+### August 2025 - Portal Management Tools
 * **ArcGIS Pro License Management** - Automated removal from inactive users with configurable grace periods
 * **Inactive User Management** - Identify, notify, disable, or delete inactive users with content transfer options
 * **Public Item Unsharing** - Enforce metadata score requirements (50%, 75%, 90%, 100% thresholds)
 * **Admin Email Notifications** - Configurable email alerts for portal administrators
 * **Tool Scheduling** - Schedule automatic runs or execute on-demand
 
-#### June 2025 - Logging & Monitoring
+### June 2025 - Logging & Monitoring
 * **Database Logging System** - Comprehensive logging with configurable levels (INFO, WARNING, ERROR, DEBUG, CRITICAL)
 * **Log Viewer** - Web interface for viewing and filtering application logs
 * **Request Context Tracking** - Enhanced logging with request information and Celery task context
 * **Settings Panel** - Centralized configuration for logging, email, theme, and service usage
 
-#### May 2025 - Security & Performance
+### May 2025 - Security & Performance
 * **Credential Encryption** - Encrypted storage of portal credentials using configurable encryption keys
 * **Credential Manager** - Temporary credential handling with Redis cache
 * **Improved Form Validation** - Enhanced schedule and settings form validation
 * **Celery Task Improvements** - Parallel processing with configurable concurrency
 
-#### Version 2.0 (April 2025) - Major Architecture Update
+### Version 2.0 (April 2025) - Major Architecture Update
 * **Docker Compose Deployment** - Simplified deployment with containerization
 * **ArcGIS API Update** - Updated to arcgis-python-api 2.x
 * **WebMap Processing Refactor** - Using operationalLayers instead of deprecated WebMap class
 * **Enhanced Service Tracking** - Improved service and layer relationship tracking
 * **Schedule Management** - Configurable recurring data refreshes with cron scheduling
 
-#### Pre-2.0 (2021-2025) - Initial Development
+### Pre-2.0 (2021-2025) - Initial Development
 * **Core Functionality** - Initial implementation of dependency visualization
 * **Portal Integration** - Support for ArcGIS Enterprise Portal and ArcGIS Online
 * **Multi-Item Type Support** - Services, Web Maps, Applications, Layers
@@ -318,7 +318,7 @@ by **Seth Lewis, Ayan Mitra, Stephanie Deitrick**
 (https://community.esri.com/t5/devsummit-past-user-presentations/mapping-item-dependencies-across-arcgis-enterprise/ta-p/909500)
 
 Data extraction patterns for various ArcGIS application types reference approaches from **Esri's ArcGIS API for Python**
-(https://github.com/Esri/arcgis-python-api)
+[Esri's ArcGIS API for Python](https://github.com/Esri/arcgis-python-api)
 (licensed under the Apache License 2.0).
 
 Portions of this project originally used the Gentelella template by **Giri Bhatnagar**

@@ -1192,7 +1192,7 @@ def service_layer_details(portal_model_instance, layer_url_to_find):
             )
 
             logger.debug(
-                f"find_layer_usage: Found {len(all_relevant_items)} candidate items in '{portal_model_instance.alias}'.")
+                f"Found {len(all_relevant_items)} candidate items in '{portal_model_instance.alias}'.")
 
             normalized_search_url = normalized_layer_url.lower()
             normalized_service_url = service_base_url.lower()
@@ -1415,8 +1415,8 @@ def extract_webappbuilder(data_structure, current_path="", parent_key_for_url=No
                 if map_item_id:
                     extracted_resources.append([map_item_id, "map", "itemId", "map", "map"])
                     itemids.append(map_item_id)
-            except:
-                pass
+            except Exception:
+                logger.debug("Failed to extract map itemId from data structure")
 
         # Instant Apps - web map in values.webmap
         try:
@@ -1424,8 +1424,8 @@ def extract_webappbuilder(data_structure, current_path="", parent_key_for_url=No
             if webmap_id and webmap_id not in itemids:
                 extracted_resources.append([webmap_id, "values.webmap", "webmap", "map", "map"])
                 itemids.append(webmap_id)
-        except:
-            pass
+        except Exception:
+            logger.debug("Failed to extract map itemId from data structure")
 
         # Data sources (Web AppBuilder)
         if "dataSource" in data_structure:
@@ -1667,14 +1667,14 @@ def extract_dashboard(dashboard_data):
                                 for guid in guids:
                                     deps.append((f"{path}.script", "arcade", guid, widget_type))
             except Exception:
-                pass
+                logger.debug(f"Error extracting datasets from widget at index {widget_idx}")
 
     # Fallback: recursively find any itemIds we might have missed
     # This catches edge cases and future dashboard features
     all_item_ids = _recursive_extract_by_key(dashboard_data, "itemId")
     existing_ids = {dep[2] for dep in deps}
 
-    for path, key, item_id, _ in all_item_ids:
+    for path, _key, item_id, _ in all_item_ids:
         if item_id not in existing_ids:
             deps.append((path, "other", item_id, "unknown"))
 
@@ -1917,14 +1917,14 @@ def extract_experiencebuilder(exb_data, item=None):
         all_item_ids = _recursive_extract_by_key(data, "itemId")
         all_urls = _recursive_extract_by_key(data, "_URL_")
 
-        for path, key, item_id, type_at_level in all_item_ids:
+        for path, _key, item_id, type_at_level in all_item_ids:
             ref_key = (item_id, "other")
             if ref_key not in processed_refs:
                 full_path = f"{data_label}.{path}"
                 deps.append((full_path, "other", item_id, type_at_level or "unknown"))
                 processed_refs.add(ref_key)
 
-        for path, key, url, type_at_level in all_urls:
+        for path, _key, url, type_at_level in all_urls:
             if url and url.startswith("http") and is_service_url(url):
                 ref_key = (url, "other")
                 if ref_key not in processed_refs:
@@ -1967,8 +1967,8 @@ def extract_storymap(storymap_data, item=None, current_path_list=None, results_l
                     draft_data = item.resources.get(res["resource"])
                     data_to_process.append(("draft", draft_data))
                     break  # Usually just one draft
-        except:
-            pass
+        except Exception:
+            logger.debug("Failed to retrieve draft data for StoryMap")
 
         # Process each data source
         for data_label, data in data_to_process:
@@ -2686,6 +2686,7 @@ def _process_user_event(portal_instance, event_id, operation):
     tasks.process_user.delay(portal_instance.alias, event_id, operation)
 
 
+@dataclass
 class MSDLayerInfo:
     """
     Container for parsed MSD layer information.
@@ -2879,6 +2880,7 @@ def _detect_json_format(directory):
                 if content.startswith('{') or content.startswith('['):
                     return True
         except Exception:
+            logger.debug(f"Error reading {xml_file} for format detection: {e}")
             continue
 
     return False
@@ -2902,7 +2904,7 @@ def _parse_msd_layers_xml(extract_dir):
     logger.debug(f"Found map XML: {map_xml}")
 
     # Parse layer references
-    layer_refs = _parse_layer_references(map_xml, extract_dir)
+    layer_refs = _parse_layer_references(map_xml)
     logger.debug(f"Found {len(layer_refs)} layer references")
 
     # Parse each layer
@@ -2938,7 +2940,7 @@ def _parse_msd_layers_json(extract_dir):
     logger.debug(f"Found map file: {map_file}")
 
     # Parse layer references from JSON
-    layer_refs = _parse_layer_references_json(map_file, extract_dir)
+    layer_refs = _parse_layer_references_json(map_file)
     logger.debug(f"Found {len(layer_refs)} layer references")
 
     # Parse each layer
@@ -2993,14 +2995,12 @@ def _get_namespace_from_root(root):
     return {}
 
 
-def _parse_layer_references(map_xml_path, base_dir):
+def _parse_layer_references(map_xml_path):
     """
     Parse layer XML file references from map XML.
 
     :param map_xml_path: Path to map XML file.
     :type map_xml_path: Path
-    :param base_dir: Base directory for resolving relative paths.
-    :type base_dir: Path
     :return: List of layer file paths.
     :rtype: List[str]
     """
@@ -3135,14 +3135,12 @@ def _find_map_json(directory):
     return None
 
 
-def _parse_layer_references_json(map_file_path, base_dir):
+def _parse_layer_references_json(map_file_path):
     """
     Parse layer file references from p30 JSON format map file.
 
     :param map_file_path: Path to map file.
     :type map_file_path: Path
-    :param base_dir: Base directory for resolving relative paths.
-    :type base_dir: Path
     :return: List of layer file paths.
     :rtype: List[str]
     """
@@ -3357,7 +3355,7 @@ def process_msd_layers_for_service(service_manifest, service_name, instance_item
             try:
                 # Remove the temporary directory
                 temp_dir = msd_path.parent
-                if temp_dir.exists() and 'msd_' in temp_dir.name:
+                if temp_dir.exists() and temp_dir.name.startswith('msd_'):
                     shutil.rmtree(temp_dir, ignore_errors=True)
                     logger.debug(f"Cleaned up temporary MSD directory: {temp_dir}")
             except Exception as e:
@@ -3374,7 +3372,6 @@ def _extract_database_info(connection_string):
     :return: Tuple of (server, version, database). Returns (None, None, None) if parsing fails.
     :rtype: tuple
     """
-    import re
 
     if not connection_string:
         return None, None, None

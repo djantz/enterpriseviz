@@ -408,7 +408,6 @@ class App_Map(models.Model):
     app_id = models.ForeignKey(App, on_delete=models.CASCADE)
     webmap_id = models.ForeignKey(Webmap, on_delete=models.CASCADE)
     types = (
-        ("widget", "Widget"),
         ("search", "Search"),
         ("filter", "Filter"),
         ('map', 'Primary Map Reference'),  # Web Mapping Application, Dashboard
