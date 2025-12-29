@@ -548,6 +548,179 @@ def delete_outdated_records(instance_item, update_time, models, result=None):
             logger.info(f"Deleted {deleted_count} records from {model}")
 
 
+@celery_logging_context
+def check_deleted_items(instance_alias, credential_token, item_type, update_time):
+    """
+    Check if items that weren't modified since last update still exist in the portal.
+    This detects deletions that occurred between updates by fetching all portal items
+    in bulk and comparing against the database.
+
+    :param instance_alias: Alias of the portal instance
+    :type instance_alias: str
+    :param credential_token: Token for temporary credentials (optional)
+    :type credential_token: str
+    :param item_type: Type of item to check ('webmap', 'service', 'webapp')
+    :type item_type: str
+    :param update_time: The timestamp of the current update cycle
+    :type update_time: datetime
+    :return: Dictionary with metrics (checked, still_exist, deleted)
+    :rtype: dict
+    :raises Exception: If the check fails, ensuring delete_outdated_records won't run
+    """
+    logger.info(f"Starting check_deleted_items for {item_type} in portal '{instance_alias}'")
+
+    # Model mapping for bulk updates
+    MODEL_MAP = {
+        'webmap': Webmap,
+        'service': Service,
+        'webapp': App
+    }
+
+    try:
+        instance_item = Portal.objects.get(alias=instance_alias)
+        target = utils.connect(instance_item, credential_token)
+    except Exception as e:
+        logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+        raise Exception(f"Cannot check deleted items - connection failed: {e}") from e
+
+    try:
+        # Determine item type configuration
+        if item_type == 'webmap':
+            last_update = instance_item.webmap_updated
+            items_to_check = Webmap.objects.filter(
+                portal_instance=instance_item,
+                updated_date__lt=update_time
+            )
+            id_field = 'webmap_id'
+            portal_filter = 'type:"Web Map"'
+        elif item_type == 'service':
+            last_update = instance_item.service_updated
+            items_to_check = Service.objects.filter(
+                portal_instance=instance_item,
+                updated_date__lt=update_time
+            )
+            id_field = 'portal_id'
+            portal_filter = 'type:"Feature Service" OR type:"Map Service" OR type:"Feature Layer" OR type:"Map Image Layer"'
+        elif item_type == 'webapp':
+            last_update = instance_item.webapp_updated
+            items_to_check = App.objects.filter(
+                portal_instance=instance_item,
+                updated_date__lt=update_time
+            )
+            id_field = 'app_id'
+            portal_filter = 'type:"Web Mapping Application" OR type:"Dashboard" OR type:"StoryMap" OR type:"Web Experience" OR type:"Form" OR type:"QuickCapture Project" OR type:"Hub Site Application" OR type:"Hub Page"'
+        else:
+            logger.error(f"Unknown item_type: {item_type}")
+            raise ValueError(f"Unknown item_type: {item_type}")
+
+        total_to_check = items_to_check.count()
+        logger.info(f"Checking {total_to_check} {item_type} items that weren't modified since {last_update}")
+
+        if total_to_check == 0:
+            logger.info(f"No {item_type} items to check for deletions")
+            return {'checked': 0, 'still_exist': 0, 'deleted': 0}
+
+        # Build query to fetch ALL items of this type from portal
+        if instance_item.portal_type == "agol":
+            org_id = instance_item.org_id
+            query = f'orgid:{org_id} AND NOT owner:esri*'
+        else:
+            query = "NOT owner:esri*"
+
+        logger.debug(f"Fetching all {item_type} items from portal with query: {query}")
+
+        # Fetch all portal items
+        portal_items_result = target.content.advanced_search(
+            query=query,
+            max_items=-1,
+            return_count=False,
+            filter=portal_filter
+        )
+
+        # Extract portal item IDs into a set for fast lookup
+        portal_item_ids = set()
+        for portal_item in portal_items_result.get("results", []):
+            portal_item_ids.add(portal_item.id)
+
+        logger.info(f"Found {len(portal_item_ids)} {item_type} items currently in portal")
+
+        # Compare database items against portal items
+        updated_count = 0
+        checked_count = 0
+
+        # Process database items in batches
+        batch_size = 500
+        items_batch = []
+
+        for item in items_to_check.iterator(chunk_size=batch_size):
+            try:
+                checked_count += 1
+
+                # Get the portal ID(s) for this item
+                if item_type == 'service':
+                    portal_ids = getattr(item, id_field, {})
+                    if not portal_ids:
+                        continue
+
+                    # Check if any of the service's portal IDs still exist in portal
+                    if isinstance(portal_ids, dict):
+                        # Extract the actual IDs from the dict values
+                        if any(pid in portal_item_ids for pid in portal_ids.values()):
+                            items_batch.append(item.pk)
+                            updated_count += 1
+                        else:
+                            logger.info(f"Service '{item.service_name}' with portal_ids {portal_ids} no longer exists in portal")
+                    else:
+                        # Fallback for set or other iterables
+                        if any(pid in portal_item_ids for pid in portal_ids):
+                            items_batch.append(item.pk)
+                            updated_count += 1
+                        else:
+                            logger.info(f"Service '{item.service_name}' with portal_ids {portal_ids} no longer exists in portal")
+                else:
+                    # For webmaps and webapps, portal_id is a simple string field
+                    portal_id = getattr(item, id_field, None)
+                    if not portal_id:
+                        continue
+
+                    if portal_id in portal_item_ids:
+                        items_batch.append(item.pk)
+                        updated_count += 1
+                    else:
+                        logger.info(f"{item_type.capitalize()} with ID '{portal_id}' no longer exists in portal")
+
+                # Bulk update timestamps when batch is full
+                if len(items_batch) >= batch_size:
+                    model = MODEL_MAP[item_type]
+                    model.objects.filter(pk__in=items_batch).update(updated_date=update_time)
+                    logger.debug(f"Bulk updated {len(items_batch)} {item_type} items, processed {checked_count}/{total_to_check}")
+                    items_batch = []
+
+            except Exception as e:
+                logger.warning(f"Error checking {item_type} item {getattr(item, 'pk', 'unknown')}: {e}")
+                continue
+
+        # Update remaining items in final batch
+        if items_batch:
+            model = MODEL_MAP[item_type]
+            model.objects.filter(pk__in=items_batch).update(updated_date=update_time)
+            logger.debug(f"Bulk updated final {len(items_batch)} {item_type} items")
+
+        deleted_count = total_to_check - updated_count
+        logger.info(f"Completed checking {checked_count} {item_type} items. "
+                   f"Still exist: {updated_count}, Will be removed: {deleted_count}")
+
+        return {
+            'checked': checked_count,
+            'still_exist': updated_count,
+            'deleted': deleted_count
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking deleted items for {item_type}: {e}", exc_info=True)
+        # Re-raise to prevent delete_outdated_records from running
+        raise Exception(f"Failed to check deleted items for {item_type}") from e
+
 def compile_regex_patterns():
     """Compile and return regex patterns for connection string extraction."""
     patterns = {
