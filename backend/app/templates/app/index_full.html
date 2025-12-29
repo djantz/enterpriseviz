@@ -182,12 +182,34 @@
 
             {% if request.path != '/enterpriseviz/' %}
               {% if user.is_superuser %}
-                <calcite-button kind="inverse" scale="s" width="auto" icon-start="refresh"
-                                hx-post="{% url 'enterpriseviz:refresh_portal' %}"
-                                hx-vals='{"instance": "{{ instance }}", "items": "webmaps"}'
-                                hx-target="previous #progress-container"
-                                hx-swap="innerHTML" label="Refresh web maps">Refresh
-                </calcite-button>
+                <calcite-split-button primary-icon-start="refresh" dropdown-icon-type="chevron" kind="inverse"
+                                      scale="s" primary-text="Refresh" primary-label="Refresh webmaps"
+                                      placement="bottom-end" dropdown-label="More refresh options" width="auto"
+                                      hx-post="{% url 'enterpriseviz:refresh_portal' %}"
+                                      hx-vals='{"instance": "{{ instance }}", "items": "webmaps"}'
+                                      hx-target="previous #progress-container"
+                                      hx-trigger="calciteSplitButtonPrimaryClick"
+                                      hx-swap="innerHTML" class="calcite-dropdown-color">
+                  <calcite-dropdown-group selection-mode="none" scale="s">
+                    <calcite-dropdown-item
+                      hx-post="{% url 'enterpriseviz:refresh_portal' %}"
+                      hx-vals='{"instance": "{{ instance }}", "items": "webmaps", "full_refresh": "false"}'
+                      hx-target="previous #progress-container"
+                      hx-swap="innerHTML"
+                      label="Incremental Refresh" icon-start="clock-forward">
+                      Incremental Refresh
+                    </calcite-dropdown-item>
+                    <calcite-dropdown-item
+                      hx-post="{% url 'enterpriseviz:refresh_portal' %}"
+                      hx-vals='{"instance": "{{ instance }}", "items": "webmaps", "full_refresh": "true"}'
+                      hx-target="previous #progress-container"
+                      hx-swap="innerHTML"
+                      label="Full Refresh" icon-start="arrow-up-down">
+                      Full Refresh
+                    </calcite-dropdown-item>
+                  </calcite-dropdown-group>
+
+                </calcite-split-button>
               {% endif %}
             {% endif %}
           </div>
@@ -270,12 +292,34 @@
           </p>
           {% if request.path != '/enterpriseviz/' %}
             {% if user.is_superuser %}
-              <calcite-button kind="inverse" scale="s" width="auto" icon-start="refresh"
-                              hx-post="{% url 'enterpriseviz:refresh_portal' %}"
-                              hx-vals='{"instance": "{{ instance }}", "items": "services"}'
-                              hx-target="previous #progress-container"
-                              hx-swap="innerHTML" label="Refresh services">Refresh
-              </calcite-button>
+              <calcite-split-button primary-icon-start="refresh" dropdown-icon-type="chevron" kind="inverse"
+                                    scale="s" primary-text="Refresh" primary-label="Refresh services"
+                                    placement="bottom-end" dropdown-label="More refresh options" width="auto"
+                                    hx-post="{% url 'enterpriseviz:refresh_portal' %}"
+                                    hx-vals='{"instance": "{{ instance }}", "items": "services"}'
+                                    hx-target="previous #progress-container"
+                                    hx-trigger="calciteSplitButtonPrimaryClick"
+                                    hx-swap="innerHTML" class="calcite-dropdown-color">
+                <calcite-dropdown-group selection-mode="none" scale="s">
+                  <calcite-dropdown-item
+                    hx-post="{% url 'enterpriseviz:refresh_portal' %}"
+                    hx-vals='{"instance": "{{ instance }}", "items": "services", "full_refresh": "false"}'
+                    hx-target="previous #progress-container"
+                    hx-swap="innerHTML"
+                    label="Incremental Refresh" icon-start="clock-forward">
+                    Incremental Refresh
+                  </calcite-dropdown-item>
+                  <calcite-dropdown-item
+                    hx-post="{% url 'enterpriseviz:refresh_portal' %}"
+                    hx-vals='{"instance": "{{ instance }}", "items": "services", "full_refresh": "true"}'
+                    hx-target="previous #progress-container"
+                    hx-swap="innerHTML"
+                    label="Full Refresh" icon-start="arrow-up-down">
+                    Full Refresh
+                  </calcite-dropdown-item>
+                </calcite-dropdown-group>
+
+              </calcite-split-button>
             {% endif %}
           {% endif %}
           <div class="clearfix"></div>
@@ -430,12 +474,34 @@
           </p>
           {% if request.path != '/enterpriseviz/' %}
             {% if user.is_superuser %}
-              <calcite-button kind="inverse" scale="s" width="auto" icon-start="refresh"
-                              hx-post="{% url 'enterpriseviz:refresh_portal' %}"
-                              hx-vals='{"instance": "{{ instance }}", "items": "webapps"}'
-                              hx-target="previous #progress-container"
-                              hx-swap="innerHTML" label="Refresh applications">Refresh
-              </calcite-button>
+              <calcite-split-button primary-icon-start="refresh" dropdown-icon-type="chevron" kind="inverse"
+                                    scale="s" primary-text="Refresh" primary-label="Refresh applications"
+                                    placement="bottom-end" dropdown-label="More refresh options" width="auto"
+                                    hx-post="{% url 'enterpriseviz:refresh_portal' %}"
+                                    hx-vals='{"instance": "{{ instance }}", "items": "webapps"}'
+                                    hx-target="previous #progress-container"
+                                    hx-trigger="calciteSplitButtonPrimaryClick"
+                                    hx-swap="innerHTML" class="calcite-dropdown-color">
+                <calcite-dropdown-group selection-mode="none" scale="s">
+                  <calcite-dropdown-item
+                    hx-post="{% url 'enterpriseviz:refresh_portal' %}"
+                    hx-vals='{"instance": "{{ instance }}", "items": "webapps", "full_refresh": "false"}'
+                    hx-target="previous #progress-container"
+                    hx-swap="innerHTML"
+                    label="Incremental Refresh" icon-start="clock-forward">
+                    Incremental Refresh
+                  </calcite-dropdown-item>
+                  <calcite-dropdown-item
+                    hx-post="{% url 'enterpriseviz:refresh_portal' %}"
+                    hx-vals='{"instance": "{{ instance }}", "items": "webapps", "full_refresh": "true"}'
+                    hx-target="previous #progress-container"
+                    hx-swap="innerHTML"
+                    label="Full Refresh" icon-start="arrow-up-down">
+                    Full Refresh
+                  </calcite-dropdown-item>
+                </calcite-dropdown-group>
+
+              </calcite-split-button>
             {% endif %}
           {% endif %}
           <div class="clearfix"></div>
