@@ -198,9 +198,15 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
 
         logger.info(f"Batch processing summary: {success_count} successful batches, {failure_count} failed batches")
 
-        # Delete web maps not updated in this run, implying they have been removed
+        # Check for deleted items if this was an incremental update
+        if instance_item.webmap_updated and not full_refresh:
+            logger.debug(f"Checking for deleted webmaps in portal '{instance_alias}'")
+            check_deleted_items(instance_alias, credential_token, 'webmap', update_time)
+            # If check fails, exception is raised and delete_outdated_records won't run
+
+        # Delete web maps not updated in this run (CASCADE deletes Map_Service automatically)
         logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
-        delete_outdated_records(instance_item, update_time, [Webmap, Map_Service], result)
+        delete_outdated_records(instance_item, update_time, [Webmap], result)
         logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
         instance_item.webmap_updated = timezone.now()
@@ -214,7 +220,7 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
 
     except Exception as e:
         logger.critical(f"Webmaps update failed for portal '{instance_alias}': {e}", exc_info=True)
-        result.add_error(f"Webmaps update failed")
+        result.add_error("Webmaps update failed")
 
         # Revoke child tasks if they exist
         if batch_results and batch_results.children:
@@ -543,9 +549,6 @@ def delete_outdated_records(instance_item, update_time, models, result=None):
         logger.info(f"Deleted {deleted_count} records from {model}.")
         if result is not None:
             result.add_delete(deleted_count)
-        else:
-            logger.info(f"Deleted {deleted_records.count()} records from {model}")
-            logger.info(f"Deleted {deleted_count} records from {model}")
 
 
 @celery_logging_context
@@ -1122,9 +1125,15 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
                     logger.error(f"Unable to process service {service_id} - '{service_title}': {e}", exc_info=True)
                     result.add_error(f"Unable to update {service_title}")  # Log error for the current service
 
-            # Remove outdated Service, Layer, and Layer_Service records
+            # Check for deleted items if this was an incremental update
+            if instance_item.service_updated and not full_refresh:
+                logger.debug(f"Checking for deleted services in portal '{instance_alias}'")
+                check_deleted_items(instance_alias, credential_token, 'service', update_time)
+                # If check fails, exception is raised and delete_outdated_records won't run
+
+            # Remove outdated Service and Layer records (CASCADE deletes Layer_Service automatically)
             logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
-            delete_outdated_records(instance_item, update_time, [Service, Layer, Layer_Service], result)
+            delete_outdated_records(instance_item, update_time, [Service, Layer], result)
             logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
             # Search for view services and associate them with their parent services
@@ -1177,7 +1186,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
             raise Ignore()
 
         try:
-            if overwrite:
+            if full_refresh:
                 service_count = Service.objects.filter(portal_instance=instance_item).count()
                 layer_count = Layer.objects.filter(portal_instance=instance_item).count()
                 Service.objects.filter(portal_instance=instance_item).delete()
@@ -1286,8 +1295,15 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
             else:
                 logger.debug("Service usage reporting is disabled, skipping")
 
+            # Check for deleted items if this was an incremental update
+            if instance_item.service_updated and not full_refresh:
+                logger.debug(f"Checking for deleted services in portal '{instance_alias}'")
+                check_deleted_items(instance_alias, credential_token, 'service', update_time)
+                # If check fails, exception is raised and delete_outdated_records won't run
+
+            # Remove outdated Service and Layer records (CASCADE deletes Layer_Service automatically)
             logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
-            delete_outdated_records(instance_item, update_time, [Service, Layer, Layer_Service], result)
+            delete_outdated_records(instance_item, update_time, [Service, Layer], result)
             logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
             logger.debug("Searching for view services to associate with parent services")
@@ -1795,9 +1811,15 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
 
         logger.info(f"Batch processing summary: {success_count} successful batches, {failure_count} failed batches")
 
+        # Check for deleted items if this was an incremental update
+        if instance_item.webapp_updated and not full_refresh:
+            logger.debug(f"Checking for deleted webapps in portal '{instance_alias}'")
+            check_deleted_items(instance_alias, credential_token, 'webapp', update_time)
+            # If check fails, exception is raised and delete_outdated_records won't run
 
+        # Clean up outdated App records (CASCADE deletes App_Map and App_Service automatically)
         logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
-        delete_outdated_records(instance_item, update_time, [App, App_Map, App_Service], result)
+        delete_outdated_records(instance_item, update_time, [App], result)
         logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
         instance_item.webapp_updated = timezone.now()
