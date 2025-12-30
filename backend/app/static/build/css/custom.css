@@ -1167,3 +1167,8 @@ calcite-chip {
     right: 16px;
     z-index: 100;
 }
+
+.calcite-dropdown-color {
+  --calcite-split-button-dropdown-background-color: var(--calcite-color-inverse);
+  --calcite-dropdown-item-text-color: var(--calcite-color-text-inverse);
+}

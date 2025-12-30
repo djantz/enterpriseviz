@@ -637,7 +637,8 @@ def refresh_portal_view(request):
         - 'instance': Alias of the portal to refresh.
         - 'items': Type of items to refresh (e.g., 'webmaps', 'services').
         - 'url': Optional URL of the portal (alternative to 'instance').
-        - 'delete': Optional boolean ('true'/'false') to delete existing items before refresh.
+        - 'full_refresh': Optional str ('true'/'false') to perform a full refresh instead of incremental
+                          based on items modified since last refresh timestamp.
         - 'username': Optional username for portal authentication.
         - 'password': Optional password for portal authentication.
 
@@ -656,7 +657,7 @@ def refresh_portal_view(request):
     instance_alias = request.POST.get("instance")
     items_to_refresh = request.POST.get("items")
     instance_url = request.POST.get("url")
-    delete_flag = request.POST.get("delete", "false").lower() == "true"
+    full_refresh = request.POST.get("full_refresh", "false").lower() == "true"
 
     # Validate portal exists
     try:
@@ -732,7 +733,7 @@ def refresh_portal_view(request):
                         "form": form,
                         "instance": portal,
                         "items": items_to_refresh,
-                        "delete": delete_flag,
+                        "full_refresh": full_refresh,
                         "error_message": "Authentication failed. Please verify credentials."
                     }
                     response = render(request, "partials/portal_credentials_form.html", context)
@@ -757,7 +758,7 @@ def refresh_portal_view(request):
                         "form": form,
                         "instance": portal,
                         "items": items_to_refresh,
-                        "delete": delete_flag,
+                        "full_refresh": full_refresh,
                         "error_message": "System error: Failed to secure credentials."
                     }
                     return render(request, "portals/portal_credentials.html", context, status=200)
@@ -771,7 +772,7 @@ def refresh_portal_view(request):
                     "form": form,
                     "instance": portal,
                     "items": items_to_refresh,
-                    "delete": delete_flag,
+                    "full_refresh": full_refresh,
                     "error_message": "Please correct the errors below."
                 }
                 return render(request, "portals/portal_credentials.html", context, status=400)
@@ -782,7 +783,7 @@ def refresh_portal_view(request):
                 initial={
                     'instance': portal.alias,
                     'items': items_to_refresh,
-                    'delete': delete_flag
+                    'full_refresh': full_refresh
                 },
                 portal=portal,
                 require_credentials=True
@@ -791,7 +792,7 @@ def refresh_portal_view(request):
                 "form": form,
                 "instance": portal,
                 "items": items_to_refresh,
-                "delete": delete_flag,
+                "full_refresh": full_refresh,
             }
             return render(request, "portals/portal_credentials.html", context)
     else:
@@ -804,7 +805,7 @@ def refresh_portal_view(request):
     django_ctx = get_django_request_context()
     user_id = request.user if request.user.is_authenticated else None
 
-    task_args = [portal.alias, delete_flag, credential_token]
+    task_args = [portal.alias, full_refresh, credential_token]
     task_kwargs = {
         '_request_id': str(django_ctx.get('request_id')),
         '_user': user_id.username,

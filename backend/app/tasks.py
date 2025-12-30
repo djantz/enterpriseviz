@@ -59,7 +59,7 @@ def update_all(self, instance, items):
 
 @shared_task(bind=True, name="Update webmaps", time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
-def update_webmaps(self, instance_alias, overwrite=False, credential_token=None):
+def update_webmaps(self, instance_alias, full_refresh=False, credential_token=None):
     """
     Update web maps for a given portal instance.
 
@@ -70,14 +70,15 @@ def update_webmaps(self, instance_alias, overwrite=False, credential_token=None)
 
     :param instance_alias: Alias of the portal instance to update.
     :type instance_alias: str
-    :param overwrite: Flag indicating whether existing web maps should be overwritten ('true' for overwrite).
-    :type overwrite: bool or str
+    :param full_refresh: Flag indicating whether to perform a full refresh (delete all and re-fetch everything)
+                         instead of incremental update based on items modified since last refresh timestamp.
+    :type full_refresh: bool
     :param credential_token: Token for temporary credentials (optional)
     :type credential_token: str
     :return: JSON-serialized update result containing counts of inserts, updates, deletions, and any error messages.
     :rtype: str
     """
-    logger.debug(f"Starting update_webmaps task for instance_alias={instance_alias}, overwrite={overwrite}")
+    logger.debug(f"Starting update_webmaps task for instance_alias={instance_alias}, full_refresh={full_refresh}")
 
     # Initialize progress recorder and result container for tracking task progress and outcome
     progress_recorder = ProgressRecorder(self)
@@ -92,13 +93,26 @@ def update_webmaps(self, instance_alias, overwrite=False, credential_token=None)
         return {"result": result.to_json()}
 
     try:
+        update_time = timezone.now()
+        logger.debug(f"Update timestamp: {update_time}")
+
+        # Build search query with optional date filter for incremental updates
         if instance_item.portal_type == "agol":
             org_id = instance_item.org_id
             # org_id required for AGOL search
             query = f"orgid:{org_id} AND NOT owner:esri*"
-
         else:
             query = "NOT owner:esri*"
+
+        # Add date filter for incremental updates if last run time exists
+        if instance_item.webmap_updated and not full_refresh:
+            # Format: modified:[timestamp TO timestamp] in milliseconds since epoch
+            last_update_ms = int(instance_item.webmap_updated.timestamp() * 1000)
+            query += f" AND modified:[{last_update_ms} TO {int(update_time.timestamp() * 1000)}]"
+            logger.info(f"Incremental update: searching for webmaps modified since {instance_item.webmap_updated}")
+        else:
+            logger.info("Full update: searching for all webmaps")
+
         total_webmaps = target.content.advanced_search(
             query=query,
             max_items=-1,
@@ -108,10 +122,8 @@ def update_webmaps(self, instance_alias, overwrite=False, credential_token=None)
 
         logger.info(f"Found {total_webmaps} web maps to process in portal '{instance_alias}'")
 
-        update_time = timezone.now()
-        logger.debug(f"Update timestamp: {update_time}")
 
-        if overwrite:
+        if full_refresh:
             deleted_count = Webmap.objects.filter(portal_instance=instance_item).count()
             Webmap.objects.filter(portal_instance=instance_item).delete()
             logger.info(f"Deleted {deleted_count} existing web maps for portal '{instance_alias}'")
@@ -129,7 +141,8 @@ def update_webmaps(self, instance_alias, overwrite=False, credential_token=None)
                     credential_token,
                     batch,
                     batch_size,
-                    update_time
+                    update_time,
+                    query
                 )
             )
 
@@ -185,9 +198,15 @@ def update_webmaps(self, instance_alias, overwrite=False, credential_token=None)
 
         logger.info(f"Batch processing summary: {success_count} successful batches, {failure_count} failed batches")
 
-        # Delete web maps not updated in this run, implying they have been removed
+        # Check for deleted items if this was an incremental update
+        if instance_item.webmap_updated and not full_refresh:
+            logger.debug(f"Checking for deleted webmaps in portal '{instance_alias}'")
+            check_deleted_items(instance_alias, credential_token, 'webmap', update_time)
+            # If check fails, exception is raised and delete_outdated_records won't run
+
+        # Delete web maps not updated in this run (CASCADE deletes Map_Service automatically)
         logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
-        delete_outdated_records(instance_item, update_time, [Webmap, Map_Service], result)
+        delete_outdated_records(instance_item, update_time, [Webmap], result)
         logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
         instance_item.webmap_updated = timezone.now()
@@ -201,7 +220,7 @@ def update_webmaps(self, instance_alias, overwrite=False, credential_token=None)
 
     except Exception as e:
         logger.critical(f"Webmaps update failed for portal '{instance_alias}': {e}", exc_info=True)
-        result.add_error(f"Webmaps update failed")
+        result.add_error("Webmaps update failed")
 
         # Revoke child tasks if they exist
         if batch_results and batch_results.children:
@@ -219,7 +238,7 @@ def update_webmaps(self, instance_alias, overwrite=False, credential_token=None)
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
-def process_batch_maps(self, instance_alias, credential_token, batch, batch_size, update_time):
+def process_batch_maps(self, instance_alias, credential_token, batch, batch_size, update_time, query=None):
     result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
 
@@ -234,29 +253,24 @@ def process_batch_maps(self, instance_alias, credential_token, batch, batch_size
     try:
         logger.debug(f"Retrieving web maps for batch {batch} to {batch + batch_size}")
 
-        if instance_item.portal_type == "agol":
-            org_id = instance_item.org_id
-            logger.debug(f"Using AGOL-specific query with org_id: {org_id}")
-            query = f'orgid:{org_id} AND NOT owner:esri*'
+        # Use provided query or build default one
+        if query is None:
+            if instance_item.portal_type == "agol":
+                org_id = instance_item.org_id
+                logger.debug(f"Using AGOL-specific query with org_id: {org_id}")
+                query = f'orgid:{org_id} AND NOT owner:esri*'
+            else:
+                logger.debug("Using standard Portal for ArcGIS query")
+                query = 'NOT owner:esri*'
 
-            webmap_item_list = target.content.advanced_search(
-                query=query,
-                max_items=batch_size,
-                start=batch,
-                sort_field="title",
-                sort_order="asc",
-                filter='type:"Web Map"'
-            )
-        else:
-            logger.debug("Using standard Portal for ArcGIS query")
-            webmap_item_list = target.content.advanced_search(
-                query='NOT owner:esri*',
-                max_items=batch_size,
-                start=batch,
-                sort_field="title",
-                sort_order="asc",
-                filter='type:"Web Map"'
-            )
+        webmap_item_list = target.content.advanced_search(
+            query=query,
+            max_items=batch_size,
+            start=batch,
+            sort_field="title",
+            sort_order="asc",
+            filter='type:"Web Map"'
+        )
 
         results = webmap_item_list.get("results", [])
         total_webmaps = len(results)
@@ -535,10 +549,180 @@ def delete_outdated_records(instance_item, update_time, models, result=None):
         logger.info(f"Deleted {deleted_count} records from {model}.")
         if result is not None:
             result.add_delete(deleted_count)
-        else:
-            logger.info(f"Deleted {deleted_records.count()} records from {model}")
-            logger.info(f"Deleted {deleted_count} records from {model}")
 
+
+@celery_logging_context
+def check_deleted_items(instance_alias, credential_token, item_type, update_time):
+    """
+    Check if items that weren't modified since last update still exist in the portal.
+    This detects deletions that occurred between updates by fetching all portal items
+    in bulk and comparing against the database.
+
+    :param instance_alias: Alias of the portal instance
+    :type instance_alias: str
+    :param credential_token: Token for temporary credentials (optional)
+    :type credential_token: str
+    :param item_type: Type of item to check ('webmap', 'service', 'webapp')
+    :type item_type: str
+    :param update_time: The timestamp of the current update cycle
+    :type update_time: datetime
+    :return: Dictionary with metrics (checked, still_exist, deleted)
+    :rtype: dict
+    :raises Exception: If the check fails, ensuring delete_outdated_records won't run
+    """
+    logger.info(f"Starting check_deleted_items for {item_type} in portal '{instance_alias}'")
+
+    # Model mapping for bulk updates
+    MODEL_MAP = {
+        'webmap': Webmap,
+        'service': Service,
+        'webapp': App
+    }
+
+    try:
+        instance_item = Portal.objects.get(alias=instance_alias)
+        target = utils.connect(instance_item, credential_token)
+    except Exception as e:
+        logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+        raise Exception(f"Cannot check deleted items - connection failed: {e}") from e
+
+    try:
+        # Determine item type configuration
+        if item_type == 'webmap':
+            last_update = instance_item.webmap_updated
+            items_to_check = Webmap.objects.filter(
+                portal_instance=instance_item,
+                updated_date__lt=update_time
+            )
+            id_field = 'webmap_id'
+            portal_filter = 'type:"Web Map"'
+        elif item_type == 'service':
+            last_update = instance_item.service_updated
+            items_to_check = Service.objects.filter(
+                portal_instance=instance_item,
+                updated_date__lt=update_time
+            )
+            id_field = 'portal_id'
+            portal_filter = 'type:"Feature Service" OR type:"Map Service" OR type:"Feature Layer" OR type:"Map Image Layer"'
+        elif item_type == 'webapp':
+            last_update = instance_item.webapp_updated
+            items_to_check = App.objects.filter(
+                portal_instance=instance_item,
+                updated_date__lt=update_time
+            )
+            id_field = 'app_id'
+            portal_filter = 'type:"Web Mapping Application" OR type:"Dashboard" OR type:"StoryMap" OR type:"Web Experience" OR type:"Form" OR type:"QuickCapture Project" OR type:"Hub Site Application" OR type:"Hub Page"'
+        else:
+            logger.error(f"Unknown item_type: {item_type}")
+            raise ValueError(f"Unknown item_type: {item_type}")
+
+        total_to_check = items_to_check.count()
+        logger.info(f"Checking {total_to_check} {item_type} items that weren't modified since {last_update}")
+
+        if total_to_check == 0:
+            logger.info(f"No {item_type} items to check for deletions")
+            return {'checked': 0, 'still_exist': 0, 'deleted': 0}
+
+        # Build query to fetch ALL items of this type from portal
+        if instance_item.portal_type == "agol":
+            org_id = instance_item.org_id
+            query = f'orgid:{org_id} AND NOT owner:esri*'
+        else:
+            query = "NOT owner:esri*"
+
+        logger.debug(f"Fetching all {item_type} items from portal with query: {query}")
+
+        # Fetch all portal items
+        portal_items_result = target.content.advanced_search(
+            query=query,
+            max_items=-1,
+            return_count=False,
+            filter=portal_filter
+        )
+
+        # Extract portal item IDs into a set for fast lookup
+        portal_item_ids = set()
+        for portal_item in portal_items_result.get("results", []):
+            portal_item_ids.add(portal_item.id)
+
+        logger.info(f"Found {len(portal_item_ids)} {item_type} items currently in portal")
+
+        # Compare database items against portal items
+        updated_count = 0
+        checked_count = 0
+
+        # Process database items in batches
+        batch_size = 500
+        items_batch = []
+
+        for item in items_to_check.iterator(chunk_size=batch_size):
+            try:
+                checked_count += 1
+
+                # Get the portal ID(s) for this item
+                if item_type == 'service':
+                    portal_ids = getattr(item, id_field, {})
+                    if not portal_ids:
+                        continue
+
+                    # Check if any of the service's portal IDs still exist in portal
+                    if isinstance(portal_ids, dict):
+                        # Extract the actual IDs from the dict values
+                        if any(pid in portal_item_ids for pid in portal_ids.values()):
+                            items_batch.append(item.pk)
+                            updated_count += 1
+                        else:
+                            logger.info(f"Service '{item.service_name}' with portal_ids {portal_ids} no longer exists in portal")
+                    else:
+                        # Fallback for set or other iterables
+                        if any(pid in portal_item_ids for pid in portal_ids):
+                            items_batch.append(item.pk)
+                            updated_count += 1
+                        else:
+                            logger.info(f"Service '{item.service_name}' with portal_ids {portal_ids} no longer exists in portal")
+                else:
+                    # For webmaps and webapps, portal_id is a simple string field
+                    portal_id = getattr(item, id_field, None)
+                    if not portal_id:
+                        continue
+
+                    if portal_id in portal_item_ids:
+                        items_batch.append(item.pk)
+                        updated_count += 1
+                    else:
+                        logger.info(f"{item_type.capitalize()} with ID '{portal_id}' no longer exists in portal")
+
+                # Bulk update timestamps when batch is full
+                if len(items_batch) >= batch_size:
+                    model = MODEL_MAP[item_type]
+                    model.objects.filter(pk__in=items_batch).update(updated_date=update_time)
+                    logger.debug(f"Bulk updated {len(items_batch)} {item_type} items, processed {checked_count}/{total_to_check}")
+                    items_batch = []
+
+            except Exception as e:
+                logger.warning(f"Error checking {item_type} item {getattr(item, 'pk', 'unknown')}: {e}")
+                continue
+
+        # Update remaining items in final batch
+        if items_batch:
+            model = MODEL_MAP[item_type]
+            model.objects.filter(pk__in=items_batch).update(updated_date=update_time)
+            logger.debug(f"Bulk updated final {len(items_batch)} {item_type} items")
+
+        deleted_count = total_to_check - updated_count
+        logger.info(f"Completed checking {checked_count} {item_type} items. "
+                   f"Still exist: {updated_count}, Will be removed: {deleted_count}")
+
+        return {
+            'checked': checked_count,
+            'still_exist': updated_count,
+            'deleted': deleted_count
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking deleted items for {item_type}: {e}", exc_info=True)
+        # Re-raise to prevent delete_outdated_records from running
+        raise Exception(f"Failed to check deleted items for {item_type}") from e
 
 def compile_regex_patterns():
     """Compile and return regex patterns for connection string extraction."""
@@ -652,7 +836,7 @@ def get_map_name(service_url, token):
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000, name="Update services")
 @celery_logging_context
-def update_services(self, instance_alias, overwrite=False, credential_token=None):
+def update_services(self, instance_alias, full_refresh=False, credential_token=None):
     """
     Update service and layer records for a given portal instance.
 
@@ -663,14 +847,15 @@ def update_services(self, instance_alias, overwrite=False, credential_token=None
 
     :param instance_alias: The portal instance alias.
     :type instance_alias: str
-    :param overwrite: Flag indicating whether to delete existing service and layer records before updating.
-    :type overwrite: bool
+    :param full_refresh: Flag indicating whether to perform a full refresh (delete all and re-fetch everything)
+                         instead of incremental update based on items modified since last refresh timestamp.
+    :type full_refresh: bool
     :param credential_token: Token for temporary credentials (optional)
     :type credential_token: str
     :return: JSON serialized result of the update process including counts of inserts, updates, deletions, and errors.
     :rtype: str
     """
-    logger.debug(f"Starting update_services task for instance_alias={instance_alias}, overwrite={overwrite}")
+    logger.debug(f"Starting update_services task for instance_alias={instance_alias}, full_refresh={full_refresh}")
 
     result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
@@ -775,7 +960,7 @@ def update_services(self, instance_alias, overwrite=False, credential_token=None
             raise Ignore()
 
         try:
-            if overwrite:
+            if full_refresh:
                 service_count = Service.objects.filter(portal_instance=instance_item).count()
                 layer_count = Layer.objects.filter(portal_instance=instance_item).count()
                 Service.objects.filter(portal_instance=instance_item).delete()
@@ -785,8 +970,19 @@ def update_services(self, instance_alias, overwrite=False, credential_token=None
                 logger.debug("Proceeding with incremental update")
 
             logger.debug("Searching for Map Image Layer and Feature Layer services")
-            services = (target.content.search("NOT owner:esri*", "Map Image Layer", max_items=10000) +
-                        target.content.search("NOT owner:esri*", "Feature Layer", max_items=10000))
+
+            # Build search query with optional date filter for incremental updates
+            search_query = "NOT owner:esri*"
+            if instance_item.service_updated and not full_refresh:
+                # Format: modified:[timestamp TO timestamp] in milliseconds since epoch
+                last_update_ms = int(instance_item.service_updated.timestamp() * 1000)
+                search_query += f" AND modified:[{last_update_ms} TO {int(update_time.timestamp() * 1000)}]"
+                logger.info(f"Incremental update: searching for services modified since {instance_item.service_updated}")
+            else:
+                logger.info("Full update: searching for all services")
+
+            services = (target.content.search(search_query, "Map Image Layer", max_items=10000) +
+                        target.content.search(search_query, "Feature Layer", max_items=10000))
             total_services = len(services)
             logger.info(f"Found {total_services} services to process in portal '{instance_alias}'")
             # total_services = target.content.advanced_search(query=f"orgid:{org_id} AND NOT owner:esri*", max_items=-1, return_count=True,
@@ -929,9 +1125,15 @@ def update_services(self, instance_alias, overwrite=False, credential_token=None
                     logger.error(f"Unable to process service {service_id} - '{service_title}': {e}", exc_info=True)
                     result.add_error(f"Unable to update {service_title}")  # Log error for the current service
 
-            # Remove outdated Service, Layer, and Layer_Service records
+            # Check for deleted items if this was an incremental update
+            if instance_item.service_updated and not full_refresh:
+                logger.debug(f"Checking for deleted services in portal '{instance_alias}'")
+                check_deleted_items(instance_alias, credential_token, 'service', update_time)
+                # If check fails, exception is raised and delete_outdated_records won't run
+
+            # Remove outdated Service and Layer records (CASCADE deletes Layer_Service automatically)
             logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
-            delete_outdated_records(instance_item, update_time, [Service, Layer, Layer_Service], result)
+            delete_outdated_records(instance_item, update_time, [Service, Layer], result)
             logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
             # Search for view services and associate them with their parent services
@@ -984,7 +1186,7 @@ def update_services(self, instance_alias, overwrite=False, credential_token=None
             raise Ignore()
 
         try:
-            if overwrite:
+            if full_refresh:
                 service_count = Service.objects.filter(portal_instance=instance_item).count()
                 layer_count = Layer.objects.filter(portal_instance=instance_item).count()
                 Service.objects.filter(portal_instance=instance_item).delete()
@@ -1093,8 +1295,15 @@ def update_services(self, instance_alias, overwrite=False, credential_token=None
             else:
                 logger.debug("Service usage reporting is disabled, skipping")
 
+            # Check for deleted items if this was an incremental update
+            if instance_item.service_updated and not full_refresh:
+                logger.debug(f"Checking for deleted services in portal '{instance_alias}'")
+                check_deleted_items(instance_alias, credential_token, 'service', update_time)
+                # If check fails, exception is raised and delete_outdated_records won't run
+
+            # Remove outdated Service and Layer records (CASCADE deletes Layer_Service automatically)
             logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
-            delete_outdated_records(instance_item, update_time, [Service, Layer, Layer_Service], result)
+            delete_outdated_records(instance_item, update_time, [Service, Layer], result)
             logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
             logger.debug("Searching for view services to associate with parent services")
@@ -1454,7 +1663,7 @@ def process_single_service(target, instance_item, service, folder, update_time, 
 
 @shared_task(bind=True, name="Update apps", time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
-def update_webapps(self, instance_alias, overwrite=False, credential_token=None):
+def update_webapps(self, instance_alias, full_refresh=False, credential_token=None):
     """
     Update web applications for the given portal instance.
 
@@ -1467,14 +1676,15 @@ def update_webapps(self, instance_alias, overwrite=False, credential_token=None)
 
     :param instance_item: The portal instance containing connection and configuration details.
     :type instance_item: PortalInstance
-    :param overwrite: If True, delete existing application records before updating.
-    :type overwrite: bool
+    :param full_refresh: Flag indicating whether to perform a full refresh (delete all and re-fetch everything)
+                         instead of incremental update based on items modified since last refresh timestamp.
+    :type full_refresh: bool
     :param credential_token: Token for temporary credentials (optional)
     :type credential_token: str
     :return: JSON string summarizing the update results (inserts, updates, deletions, errors).
     :rtype: str
     """
-    logger.debug(f"Starting update_webapps task for instance_alias={instance_alias}, overwrite={overwrite}")
+    logger.debug(f"Starting update_webapps task for instance_alias={instance_alias}, full_refresh={full_refresh}")
 
     result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
@@ -1500,31 +1710,35 @@ def update_webapps(self, instance_alias, overwrite=False, credential_token=None)
             org_id = instance_item.org_id
             logger.debug(f"Using AGOL-specific query with org_id: {org_id}")
             query = f'orgid:{org_id} AND NOT owner:esri*'
-            logger.debug(f"Search query: {query}")
-
-            total_apps = target.content.advanced_search(
-                query=query,
-                max_items=-1,
-                return_count=True,
-                filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"Web AppBuilder Apps" OR type:"Experience Builder" OR type:"Form" OR type:"Story Map"'
-            )
         else:
             logger.debug("Using standard Portal for ArcGIS query")
-            total_apps = target.content.advanced_search(
-                query="NOT owner:esri*",
-                max_items=-1,
-                return_count=True,
-                filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"Web AppBuilder Apps" OR type:"Experience Builder" OR type:"Form" OR type:"Story Map"'
-            )
+            query = "NOT owner:esri*"
+
+        # Add date filter for incremental updates if last run time exists
+        if instance_item.webapp_updated and not full_refresh:
+            # Format: modified:[timestamp TO timestamp] in milliseconds since epoch
+            last_update_ms = int(instance_item.webapp_updated.timestamp() * 1000)
+            query += f" AND modified:[{last_update_ms} TO {int(update_time.timestamp() * 1000)}]"
+            logger.info(f"Incremental update: searching for webapps modified since {instance_item.webapp_updated}")
+        else:
+            logger.info(f"Full update: searching for all webapps")
+
+        logger.debug(f"Search query: {query}")
+
+        total_apps = target.content.advanced_search(
+            query=query,
+            max_items=-1,
+            return_count=True,
+            filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"StoryMap" OR type:"Web Experience" OR type:"Form" OR type:"QuickCapture Project" OR type:"Hub Site Application" OR type:"Hub Page"'
+        )
 
         logger.info(f"Found {total_apps} web applications to process in portal '{instance_alias}'")
 
-        if overwrite:
+        if full_refresh:
             app_count = App.objects.filter(portal_instance=instance_item).count()
             App.objects.filter(portal_instance=instance_item).delete()
             logger.info(f"Deleted {app_count} existing web applications for portal '{instance_alias}'")
-        else:
-            logger.debug("Proceeding with incremental update")
+
 
         # Set up batch processing
         batch_size = 20
@@ -1540,7 +1754,8 @@ def update_webapps(self, instance_alias, overwrite=False, credential_token=None)
                     credential_token,
                     batch,
                     batch_size,
-                    update_time
+                    update_time,
+                    query
                 )
             )
 
@@ -1596,9 +1811,15 @@ def update_webapps(self, instance_alias, overwrite=False, credential_token=None)
 
         logger.info(f"Batch processing summary: {success_count} successful batches, {failure_count} failed batches")
 
+        # Check for deleted items if this was an incremental update
+        if instance_item.webapp_updated and not full_refresh:
+            logger.debug(f"Checking for deleted webapps in portal '{instance_alias}'")
+            check_deleted_items(instance_alias, credential_token, 'webapp', update_time)
+            # If check fails, exception is raised and delete_outdated_records won't run
 
+        # Clean up outdated App records (CASCADE deletes App_Map and App_Service automatically)
         logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
-        delete_outdated_records(instance_item, update_time, [App, App_Map, App_Service], result)
+        delete_outdated_records(instance_item, update_time, [App], result)
         logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
         instance_item.webapp_updated = timezone.now()
@@ -1629,7 +1850,7 @@ def update_webapps(self, instance_alias, overwrite=False, credential_token=None)
 
 @shared_task(bind=True)
 @celery_logging_context
-def process_batch_apps(self, instance_alias, credential_token, batch, batch_size, update_time):
+def process_batch_apps(self, instance_alias, credential_token, batch, batch_size, update_time, query=None):
     result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
     try:
@@ -1645,29 +1866,24 @@ def process_batch_apps(self, instance_alias, credential_token, batch, batch_size
         # Retrieve web applications for this batch
         logger.debug(f"Retrieving web applications for batch {batch} to {batch + batch_size}")
 
-        if instance_item.portal_type == "agol":
-            org_id = instance_item.org_id
-            logger.debug(f"Using AGOL-specific query with org_id: {org_id}")
-            query = f'orgid:{org_id} AND NOT owner:esri*'
+        # Use provided query or build default one
+        if query is None:
+            if instance_item.portal_type == "agol":
+                org_id = instance_item.org_id
+                logger.debug(f"Using AGOL-specific query with org_id: {org_id}")
+                query = f'orgid:{org_id} AND NOT owner:esri*'
+            else:
+                logger.debug("Using standard Portal for ArcGIS query")
+                query = "NOT owner:esri*"
 
-            app_list = target.content.advanced_search(
-                query=query,
-                max_items=batch_size,
-                start=batch,
-                sort_field="title",
-                sort_order="asc",
-                filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"Web AppBuilder Apps" OR type:"Experience Builder" OR type:"Form" OR type:"Story Map"'
-            )
-        else:
-            logger.debug("Using standard Portal for ArcGIS query")
-            app_list = target.content.advanced_search(
-                query="NOT owner:esri*",
-                max_items=batch_size,
-                start=batch,
-                sort_field="title",
-                sort_order="asc",
-                filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"Web AppBuilder Apps" OR type:"Experience Builder" OR type:"Form" OR type:"Story Map"'
-            )
+        app_list = target.content.advanced_search(
+            query=query,
+            max_items=batch_size,
+            start=batch,
+            sort_field="title",
+            sort_order="asc",
+            filter='type:"Web Mapping Application" OR type:"Dashboard" OR type:"StoryMap" OR type:"Web Experience" OR type:"Form" OR type:"QuickCapture Project" OR type:"Hub Site Application" OR type:"Hub Page"'
+        )
 
         results = app_list.get("results", [])
         total_apps = len(results)
@@ -2773,7 +2989,7 @@ def process_single_app(item, target, instance_item, update_time, result):
 
 @shared_task(bind=True, name="Update users", time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
-def update_users(self, instance_alias, overwrite=False, credential_token=None):
+def update_users(self, instance_alias, full_refresh=False, credential_token=None):
     """
     Update user records for the specified portal instance.
 
@@ -2788,8 +3004,9 @@ def update_users(self, instance_alias, overwrite=False, credential_token=None):
 
     :param instance_alias: The portal instance alias.
     :type instance_alias: str
-    :param overwrite: If True, delete existing user records before updating.
-    :type overwrite: bool
+    :param full_refresh: Flag indicating whether to perform a full refresh (delete all and re-fetch everything)
+                         instead of incremental update based on items modified since last refresh timestamp.
+    :type full_refresh: bool
     :param credential_token: Token for temporary credentials (optional)
     :type credential_token: str
     :return: A JSON string summarizing the update results, including counts of inserts, updates,
@@ -2810,12 +3027,10 @@ def update_users(self, instance_alias, overwrite=False, credential_token=None):
         return {"result": result.to_json()}
 
     try:
-        if overwrite:
+        if full_refresh:
             user_count = User.objects.filter(portal_instance=instance_item).count()
             User.objects.filter(portal_instance=instance_item).delete()
             logger.info(f"Deleted {user_count} existing users for portal '{instance_alias}'")
-        else:
-            logger.debug("Proceeding with incremental update")
 
         logger.debug("Retrieving user roles from portal")
         try:
