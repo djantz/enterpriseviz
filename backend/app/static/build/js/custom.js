@@ -636,10 +636,13 @@ htmx.on("htmx:load", async (e) => {
     }
     // Main content updates - reinitialize page-level components
     if (document.getElementById('graph-container')) {
-        let graph = initDependencyGraph('graph-container');
-        if (graph) {
-            graph.connectControls();
-        }
+        initDependencyGraph('graph-container').then(function(graph) {
+            if (graph) {
+                graph.connectControls();
+            }
+        }).catch(function(err) {
+            console.error('Error initializing graph:', err);
+        });
     }
     if (document.getElementById('line-chart')) {
         init_Charts();
