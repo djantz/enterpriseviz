@@ -70,12 +70,71 @@ function initDependencyGraph(containerId, data) {
         selectionBorder: getCalciteColor('--calcite-color-brand')
     };
 
-    var iconSvgs = {
+    // Store icon paths
+    var iconPaths = {
         layer: iconPath + 'layers-24.svg',
         service: iconPath + 'layer-service-24.svg',
         map: iconPath + 'map-24.svg',
         browser: iconPath + 'browser-24.svg'
     };
+
+    // Store colorized SVG data URIs
+    var iconSvgs = {};
+
+    function loadAndColorizeSvg(url, color) {
+        return fetch(url)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('HTTP ' + response.status);
+                }
+                return response.text();
+            })
+            .then(svgText => {
+                let parser = new DOMParser();
+                let svgDoc = parser.parseFromString(svgText, 'image/svg+xml');
+                let svgElement = svgDoc.querySelector('svg');
+
+                if (!svgElement) {
+                    console.warn('Failed to parse SVG:', url);
+                    return url;
+                }
+
+                // Apply fill color to all paths (except those with fill="none")
+                let paths = svgElement.querySelectorAll('path');
+                paths.forEach(function(path) {
+                    if (path.getAttribute('fill') !== 'none') {
+                        path.setAttribute('fill', color);
+                    }
+                });
+
+                // Add XML header
+                let serializer = new XMLSerializer();
+                let svgString = serializer.serializeToString(svgElement);
+                let xmlHeader = '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE svg>';
+                let fullSvg = xmlHeader + svgString;
+
+                // Use utf8 encoding
+                let dataUri = 'data:image/svg+xml;utf8,' + encodeURIComponent(fullSvg);
+                return dataUri;
+            })
+            .catch(err => {
+                console.error('Error loading SVG:', url, err);
+                return url;
+            });
+    }
+
+    // Load all icons with current theme color
+    let iconsLoaded = Promise.all([
+        loadAndColorizeSvg(iconPaths.layer, colors.textPrimary),
+        loadAndColorizeSvg(iconPaths.service, colors.textPrimary),
+        loadAndColorizeSvg(iconPaths.map, colors.textPrimary),
+        loadAndColorizeSvg(iconPaths.browser, colors.textPrimary)
+    ]).then(function(dataUris) {
+        iconSvgs.layer = dataUris[0];
+        iconSvgs.service = dataUris[1];
+        iconSvgs.map = dataUris[2];
+        iconSvgs.browser = dataUris[3];
+    });
 
     // Helper function to get config for a type, defaulting to app/browser
     function getTypeConfig(type) {
@@ -116,8 +175,11 @@ function initDependencyGraph(containerId, data) {
         }
     };
 
-    // Build Cytoscape elements
-    var elements = [];
+    // Wait for icons to load before building graph
+    return iconsLoaded.then(function() {
+        // Build Cytoscape elements
+        var elements = [];
+
     // Add nodes
     data.nodes.forEach(function (node) {
         var config = getTypeConfig(node.type);
@@ -198,8 +260,10 @@ function initDependencyGraph(containerId, data) {
 
                     'background-image': function(ele) { return ele.data('iconUrl'); },
                     'background-fit': 'contain',
-                    'background-offset-x': '-90px',
-                    'background-offset-y': '8px',
+                    // 'background-width': '12px',
+                    // 'background-height': '12px',
+                    'background-offset-x': '-84px',
+                    'background-offset-y': '10px',
                     'background-opacity': 1,
                 }
             },
@@ -513,4 +577,5 @@ function initDependencyGraph(containerId, data) {
             }
         }
     };
+    }); // Close iconsLoaded Promise
 }
