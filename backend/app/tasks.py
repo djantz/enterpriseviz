@@ -90,7 +90,7 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
     try:
         update_time = timezone.now()
@@ -231,9 +231,7 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
                     current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
             logger.info("All child tasks revoked")
 
-        # Update task state and exit
-        self.update_state(state="FAILURE", meta=result.to_json())
-        raise Ignore()
+        return result.to_json()
 
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
@@ -248,7 +246,7 @@ def process_batch_maps(self, instance_alias, credential_token, batch, batch_size
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
     try:
         logger.debug(f"Retrieving web maps for batch {batch} to {batch + batch_size}")
@@ -317,12 +315,12 @@ def process_batch_maps(self, instance_alias, credential_token, batch, batch_size
         logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
 
         result.set_success()
-        return {"result": result.to_json()}
+        return result.to_json()
 
     except Exception as e:
         logger.error(f"Webmaps in batch {batch} to {batch + batch_size}: {e}", exc_info=True)
         result.add_error(f"Error processing webmaps in batch {batch} to {batch + batch_size}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
 
 def extract_webmap_data(item, instance_item, update_time):
@@ -938,7 +936,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
     if instance_item.portal_type == "agol":
         logger.debug(f"Processing AGOL portal type for '{instance_alias}'")
@@ -956,8 +954,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Unable to connect to {instance_alias}")
-            self.update_state(state="FAILURE", meta=result.to_json())
-            raise Ignore()
+            return result.to_json()
 
         try:
             if full_refresh:
@@ -1165,8 +1162,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
         except Exception as e:
             logger.critical(f"Services update failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Services update failed")
-            self.update_state(state="FAILURE", meta=result.to_json())
-            raise Ignore()
+            return result.to_json()
 
     else:
         logger.debug(f"Processing Enterprise portal type for '{instance_alias}'")
@@ -1182,8 +1178,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Unable to connect to {instance_alias}")
-            self.update_state(state="FAILURE", meta=result.to_json())
-            raise Ignore()
+            return result.to_json()
 
         try:
             if full_refresh:
@@ -1329,7 +1324,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
 
         except Exception as e:
             logger.critical(f"Services update failed for portal '{instance_alias}': {e}", exc_info=True)
-            result.add_error(f"Services update failed")
+            result.add_error("Services update failed")
 
             # Revoke child tasks if they exist
             if batch_results and batch_results.children:
@@ -1340,8 +1335,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
                         current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
                 logger.info("All child tasks revoked")
 
-            self.update_state(state="FAILURE", meta=result.to_json())
-            raise Ignore()
+            return result.to_json()
 
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
@@ -1408,7 +1402,7 @@ def process_batch_services(self, instance_alias, credential_token, folder, updat
     except Exception as e:
         logger.error(f"Error processing services in folder {folder}: {e}", exc_info=True)
         result.add_error(f"Error processing services in folder {folder}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
 
 def process_single_service(target, instance_item, service, folder, update_time, regex_patterns, result):
@@ -1696,7 +1690,7 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
     try:
         update_time = timezone.now()
@@ -1843,9 +1837,7 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
                     current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
             logger.info("All child tasks revoked")
 
-        # Update task state and exit
-        self.update_state(state="FAILURE", meta=result.to_json())
-        raise Ignore()
+        return result.to_json()
 
 
 @shared_task(bind=True)
@@ -1861,7 +1853,7 @@ def process_batch_apps(self, instance_alias, credential_token, batch, batch_size
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Unable to connect to {instance_alias}")
-            return {"result": result.to_json()}
+            return result.to_json()
 
         # Retrieve web applications for this batch
         logger.debug(f"Retrieving web applications for batch {batch} to {batch + batch_size}")
@@ -1914,12 +1906,12 @@ def process_batch_apps(self, instance_alias, credential_token, batch, batch_size
         logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
 
         result.set_success()
-        return {"result": result.to_json()}
+        return result.to_json()
 
     except Exception as e:
         logger.error(f"Error processing web apps in batch {batch} to {batch + batch_size}: {e}", exc_info=True)
         result.add_error(f"Error processing web apps in batch {batch} to {batch + batch_size}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
 
 def process_single_app(item, target, instance_item, update_time, result):
@@ -3024,7 +3016,7 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
     try:
         if full_refresh:
@@ -3238,8 +3230,7 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
         current_app.control.revoke(self.request.id, terminate=True, signal="SIGKILL")
         logger.debug("Current task revoked")
 
-        self.update_state(state="FAILURE", meta=result.to_json())
-        raise Ignore()
+        return result.to_json()
 
 
 @shared_task(bind=True)
@@ -3256,7 +3247,7 @@ def process_batch_users(self, instance_alias, credential_token, batch, batch_siz
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Unable to connect to {instance_alias}")
-            return {"result": result.to_json()}
+            return result.to_json()
 
         logger.debug(f"Retrieving users for batch {batch} to {batch + batch_size}")
 
@@ -3346,12 +3337,12 @@ def process_batch_users(self, instance_alias, credential_token, batch, batch_siz
         logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
 
         result.set_success()
-        return {"result": result.to_json()}
+        return result.to_json()
 
     except Exception as e:
         logger.error(f"Error processing users in batch {batch} to {batch + batch_size}: {e}", exc_info=True)
         result.add_error(f"Error processing users in batch {batch} to {batch + batch_size}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
 
 @shared_task(bind=True)
