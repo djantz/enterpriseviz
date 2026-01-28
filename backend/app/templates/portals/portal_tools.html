@@ -46,7 +46,9 @@
                 <calcite-table-cell>{{ item.task_name }}</calcite-table-cell>
                 <calcite-table-cell>
                   <calcite-chip scale="s"
-                                kind="{% if item.status == 'SUCCESS' %}inverse{% elif item.status == 'FAILURE' %}danger{% else %}neutral{% endif %}">
+                                kind="{% if item.status == 'SUCCESS' %}inverse{% else %}neutral{% endif %}"
+                                icon="{% if item.status == 'SUCCESS' %}check-circle{% elif item.status == 'FAILURE'%}exclamation-mark-triangle{% endif %}"
+                                class="{% if item.status == 'SUCCESS' %}{% elif item.status == 'FAILURE' %}error-chip{% else %}{% endif %}">
                     {{ item.status }}
                   </calcite-chip>
                 </calcite-table-cell>
