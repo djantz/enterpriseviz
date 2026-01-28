@@ -738,10 +738,10 @@ def fetch_portal_item_details(target, item_id, instance_item):
     Retrieve details from the portal item.
 
     Returns a tuple in the format:
-      (owner, access, description)
+      (owner, access, description, created, modified)
     If the item or any property is not available, defaults are returned.
     """
-    owner, access, description = None, None, None
+    owner, access, description, created, modified = None, None, None, None, None
     portal_item = target.content.get(item_id)
     if portal_item:
         owner = get_owner(instance_item, portal_item.owner)
@@ -749,7 +749,21 @@ def fetch_portal_item_details(target, item_id, instance_item):
         if hasattr(portal_item, "access"):
             access = get_access(portal_item)
         description = get_description(portal_item)
-    return owner, access, description
+
+        # Get created and modified timestamps from portal item
+        if hasattr(portal_item, "created"):
+            try:
+                created = utils.epoch_to_datetime(portal_item.created)
+            except (ValueError, TypeError, AttributeError) as e:
+                logger.warning(f"Unable to parse created timestamp for item {item_id}: {e}")
+
+        if hasattr(portal_item, "modified"):
+            try:
+                modified = utils.epoch_to_datetime(portal_item.modified)
+            except (ValueError, TypeError, AttributeError) as e:
+                logger.warning(f"Unable to parse modified timestamp for item {item_id}: {e}")
+
+    return owner, access, description, created, modified
 
 
 def process_databases(manifest, regex_patterns, instance_item, s_obj, update_time):
@@ -830,6 +844,55 @@ def get_map_name(service_url, token):
     except Exception as e:
         logger.warning(f"Unable to get publish map name for '{service_url}'", exc_info=True)
     return None
+
+
+def parse_service_manifest_dates(service_manifest):
+    """
+    Parse created date from service manifest.
+
+    For Enterprise Portal services, the manifest contains tags like:
+    - CreaDate: Creation date in YYYYMMDD format
+    - CreaTime: Creation time in hhmmssss format
+
+    :param service_manifest: The service manifest dictionary
+    :type service_manifest: dict
+    :return: Tuple of (created_datetime) or (None) if not found
+    :rtype: tuple
+    """
+    created, modified = None, None
+
+    try:
+        # Check if manifest has the date/time tags
+        crea_date = service_manifest.get("CreaDate")
+        crea_time = service_manifest.get("CreaTime")
+
+        # Parse creation date/time
+        if crea_date and crea_time:
+            try:
+                # CreaDate format: YYYYMMDD
+                # CreaTime format: hhmmssss (with centiseconds)
+                date_str = str(crea_date)
+                time_str = str(crea_time).zfill(8)  # Pad to 8 digits
+
+                # Extract components
+                year = int(date_str[0:4])
+                month = int(date_str[4:6])
+                day = int(date_str[6:8])
+                hour = int(time_str[0:2])
+                minute = int(time_str[2:4])
+                second = int(time_str[4:6])
+                # Ignore centiseconds (last 2 digits)
+
+                created = datetime(year, month, day, hour, minute, second, tzinfo=dt_timezone.utc)
+                logger.debug(f"Parsed creation date from manifest: {created}")
+            except (ValueError, IndexError) as e:
+                logger.warning(f"Unable to parse creation date from manifest (CreaDate={crea_date}, CreaTime={crea_time}): {e}")
+
+
+    except Exception as e:
+        logger.warning(f"Error parsing dates from service manifest: {e}")
+
+    return created
 
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000, name="Update services")
@@ -1437,6 +1500,7 @@ def process_single_service(target, instance_item, service, folder, update_time, 
         portal_ids = {}  # Map portal item types to their IDs
         service_usage_str = None
         access, owner, description = None, None, None
+        service_created, service_modified = None, None
 
         # Construct the service name and corresponding URL based on folder structure
         logger.debug("Constructing service URL")
@@ -1495,8 +1559,16 @@ def process_single_service(target, instance_item, service, folder, update_time, 
                             urls.append(feature_url)
 
                     logger.debug(f"Fetching details for portal item: {item_id}")
-                    owner, access, description = fetch_portal_item_details(target, item_id, instance_item)
+                    owner, access, description, item_created, item_modified = fetch_portal_item_details(target, item_id, instance_item)
                     logger.debug(f"Retrieved details - Owner: {owner}, Access: {access}, Description length: {len(description) if description else 0}")
+
+                    # Use portal item dates if available (prefer these for Portal/AGOL)
+                    if item_created:
+                        service_created = item_created
+                        logger.debug(f"Service created date from portal item: {service_created}")
+                    if item_modified:
+                        service_modified = item_modified
+                        logger.debug(f"Service modified date from portal item: {service_modified}")
             else:
                 logger.debug(f"No portal properties or portal items found for service: {service_name}")
         except Exception as e:
@@ -1510,6 +1582,13 @@ def process_single_service(target, instance_item, service, folder, update_time, 
             service_manifest_json = service.service_manifest()
             service_manifest = json.loads(service_manifest_json)
             logger.debug(f"Successfully retrieved service manifest for: {service_name}")
+
+            # Try to parse created/modified dates from manifest tags (Enterprise Portal)
+            # Only use these if portal item dates weren't already set
+            manifest_created = parse_service_manifest_dates(service_manifest)
+            if manifest_created and not service_created:
+                service_created = manifest_created
+                logger.debug(f"Service created date from manifest: {service_created}")
         except Exception as e:
             logger.error(f"Error retrieving service manifest for {service_name}: {e}", exc_info=True)
             service_manifest = {"error": str(e)}
@@ -1525,6 +1604,8 @@ def process_single_service(target, instance_item, service, folder, update_time, 
             "service_description": description,
             "service_owner": owner,
             "service_access": access,
+            "service_created": service_created,
+            "service_modified": service_modified,
             "updated_date": update_time
         }
         logger.debug(f"Service data prepared for: {service_name}")
