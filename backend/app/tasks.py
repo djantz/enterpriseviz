@@ -3437,15 +3437,13 @@ def process_user(self, instance_alias, username, operation):
         f"Starting process_user for instance_alias={instance_alias}, username={username}, operation={operation}")
 
     update_time = timezone.now()
-    result = utils.UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
         target = utils.connect(instance_item)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
     if operation == 'delete':
         logger.info(f"Processing delete operation for user '{username}' in portal '{instance_alias}'")
@@ -3469,8 +3467,6 @@ def process_user(self, instance_alias, username, operation):
 
         except Exception as e:
             logger.error(f"Unable to delete user '{username}' for portal '{instance_alias}': {e}", exc_info=True)
-            self.update_state(state="FAILURE")
-            raise Ignore()
 
     else:
         logger.info(f"Processing {operation} operation for user '{username}' in portal '{instance_alias}'")
@@ -3538,8 +3534,7 @@ def process_user(self, instance_alias, username, operation):
 
         except Exception as e:
             logger.error(f"Unable to process {operation} operation for user '{username}' in portal '{instance_alias}': {e}", exc_info=True)
-            self.update_state(state="FAILURE")
-            raise Ignore()
+            return None
 
 
 @shared_task(bind=True)
@@ -3550,15 +3545,13 @@ def process_webmap(self, instance_alias, item_id, operation):
         f"Starting process_webmap for instance_alias={instance_alias}, item_id={item_id}, operation={operation}")
 
     update_time = timezone.now()
-    result = utils.UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
         target = utils.connect(instance_item)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
     logger.info(f"Processing web map {item_id} with operation: {operation}")
     try:
@@ -3567,8 +3560,7 @@ def process_webmap(self, instance_alias, item_id, operation):
 
         if wm_item is None:
             logger.error(f"Web map with ID {item_id} not found in portal '{instance_alias}'")
-            self.update_state(state="FAILURE")
-            raise Ignore()
+            return None
 
         logger.debug(f"Successfully retrieved web map: {wm_item.title} (ID: {item_id})")
 
@@ -3600,8 +3592,7 @@ def process_webmap(self, instance_alias, item_id, operation):
 
     except Exception as e:
         logger.error(f"Unable to process web map {item_id} for portal '{instance_alias}': {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
 
 @shared_task(bind=True)
@@ -3614,6 +3605,7 @@ def process_service(self, instance_alias, item, operation):
     logger.info(f"Processing service {item} with operation: {operation}")
 
     update_time = timezone.now()
+    result = utils.UpdateResult()
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
@@ -3621,25 +3613,23 @@ def process_service(self, instance_alias, item, operation):
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
     try:
         logger.debug(f"Creating service object for item: {item}")
-        service = arcgis.gis.server.Service(item, target)
+        service_item = target.content.get(item)
+        service = arcgis.gis.server.Service(service_item.url, target)
 
         if service is None:
             logger.error(f"Unable to create service {item}. Service not found.")
-            self.update_state(state="FAILURE")
-            raise Ignore()
+            return None
 
         logger.debug(f"Successfully created service object for item: {item}")
-        logger.debug(f"Service URL: {service.url.url if hasattr(service, 'url') else 'Unknown'}")
+        logger.debug(f"Service URL: {service.url if hasattr(service, 'url') else 'Unknown'}")
 
     except Exception as e:
         logger.error(f"Error creating service object for item: {item}: {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
     try:
         match = re.search(r"/services(?:/([^/]+))?/([^/]+)/[^/]+(?:/\d+)?$", service.url.url)
@@ -3836,8 +3826,7 @@ def process_service(self, instance_alias, item, operation):
         return
     except Exception as e:
         logger.exception(f"Unable to update service {item} for {instance_alias}: {e}")
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
 
 @shared_task(bind=True)
@@ -3848,15 +3837,13 @@ def process_webapp(self, instance_alias, item_id, operation):
         f"Starting process_webapp for instance_alias={instance_alias}, item_id={item_id}, operation={operation}")
 
     update_time = timezone.now()
-    result = utils.UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
         target = utils.connect(instance_item)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
     logger.info(f"Processing web application {item_id} with operation: {operation}")
     try:
@@ -3865,14 +3852,13 @@ def process_webapp(self, instance_alias, item_id, operation):
 
         if item is None:
             logger.error(f"Web application with ID {item_id} not found in portal '{instance_alias}'")
-            self.update_state(state="FAILURE")
-            raise Ignore()
+            return None
 
         logger.debug(f"Successfully retrieved web application: {item.title} (ID: {item_id})")
         logger.debug(f"Web application type: {item.type}, Owner: {item.owner}")
 
         logger.debug(f"Processing web application details for: {item_id}")
-        process_single_app(item, target, instance_item, update_time, result)
+        process_single_app(item, target, instance_item, update_time)
 
         instance_item.webapp_updated = update_time
         instance_item.save()
@@ -3882,8 +3868,7 @@ def process_webapp(self, instance_alias, item_id, operation):
 
     except Exception as e:
         logger.error(f"Unable to process web application {item_id} for portal '{instance_alias}': {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
 
 def _validate_params(params, required, tool_result):
