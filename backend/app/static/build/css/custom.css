@@ -952,6 +952,10 @@ calcite-dialog#login-modal calcite-block * {
   --calcite-progress-fill-color: var(--calcite-color-status-success);
 }
 
+.progress_bar.progress-warning calcite-progress {
+  --calcite-progress-fill-color: var(--calcite-color-status-warning);
+}
+
 .progress_bar.progress-failure calcite-progress {
   --calcite-progress-fill-color: var(--calcite-color-status-danger);
 }
@@ -1171,4 +1175,14 @@ calcite-chip {
 .calcite-dropdown-color {
   --calcite-split-button-dropdown-background-color: var(--calcite-color-inverse);
   --calcite-dropdown-item-text-color: var(--calcite-color-text-inverse);
+}
+
+.success-chip {
+  --calcite-color-foreground-2: var(--calcite-color-status-success);
+  --calcite-color-text-1: var(--calcite-color-foreground-1);
+}
+
+.error-chip {
+  --calcite-color-foreground-2: var(--calcite-color-status-danger);
+  --calcite-color-text-1: var(--calcite-color-foreground-1);
 }
