@@ -1997,7 +1997,16 @@ def process_batch_apps(self, instance_alias, credential_token, batch, batch_size
         return result.to_json()
 
 
-def process_single_app(item, target, instance_item, update_time, result):
+def process_single_app(item, target, instance_item, update_time, result=None):
+    """
+    Process a single web application and update database.
+
+    :param item: The app item from ArcGIS
+    :param target: Connected GIS instance
+    :param instance_item: Portal instance from database
+    :param update_time: Timestamp for this update
+    :param result: Optional UpdateResult object for tracking errors (created if None)
+    """
     if result is None:
         result = utils.UpdateResult()
 
