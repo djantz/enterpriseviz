@@ -150,6 +150,8 @@ class Service(models.Model):
     service_mxd = models.TextField(verbose_name="Publish Map", blank=True, null=True)
     service_type = models.TextField(verbose_name="Type", blank=False, null=False)
     service_owner = models.ForeignKey(User, verbose_name="Owner", null=True, on_delete=models.CASCADE)
+    service_created = models.DateTimeField(verbose_name="Created", blank=True, null=True)
+    service_modified = models.DateTimeField(verbose_name="Modified", blank=True, null=True)
     service_access = models.TextField(verbose_name="Access", blank=True, null=True)
     service_description = models.TextField(verbose_name="Description", blank=True, null=True)
     service_snippet = models.TextField(verbose_name="Snippet", blank=True, null=True)
