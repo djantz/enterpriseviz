@@ -1596,11 +1596,9 @@ def process_single_service(target, instance_item, service, folder, update_time, 
 
         logger.debug(f"Preparing service data for database update: {service_name}")
         service_data = {
-            "service_url": urls,
             "service_mxd_server": None,
             "service_mxd": map_name,
             "portal_id": portal_ids,
-            "service_type": service_type,
             "service_description": description,
             "service_owner": owner,
             "service_access": access,
@@ -1619,6 +1617,8 @@ def process_single_service(target, instance_item, service, folder, update_time, 
             s_obj, created = Service.objects.update_or_create(
                 portal_instance=instance_item,
                 service_name=name,
+                service_url=urls,
+                service_type=service_type,
                 defaults=service_data
             )
 
@@ -1701,6 +1701,8 @@ def process_single_service(target, instance_item, service, folder, update_time, 
             s_obj, created = Service.objects.update_or_create(
                 portal_instance=instance_item,
                 service_name=name,
+                service_url=urls,
+                service_type=service_type,
                 defaults=service_data
             )
 
