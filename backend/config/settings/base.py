@@ -369,6 +369,7 @@ CONTENT_SECURITY_POLICY = {
         "img-src": [
             SELF,
             "https://raw.githubusercontent.com",
+            "data:",
         ],
 
         "font-src": [
