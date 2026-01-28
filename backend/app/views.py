@@ -45,9 +45,8 @@ from django_tables2.export.views import ExportMixin
 
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
 from .forms import ScheduleForm, SiteSettingsForm, ToolsForm, WebhookSettingsForm, PortalCredentialsForm
-from .models import (
-    PortalCreateForm, UserProfile, LogEntry,
-)
+from .models import Portal, User, Webmap, Service, Layer, App, PortalCreateForm, UserProfile, LogEntry, SiteSettings, \
+    PortalToolSettings
 from .request_context import get_django_request_context
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *
