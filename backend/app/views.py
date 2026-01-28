@@ -1621,13 +1621,22 @@ def webhook_view(request):
     # Parse and validate payload
     try:
         payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON payload.")
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    webhook_registry = payload.get("WebhookRegistry", None)
+    if webhook_registry:
+        return JsonResponse({"message": "Webhook registry received."}, status=200)
+
+    try:
         portal_url = payload.get("info", {}).get("portalURL")
         if not portal_url:
             logger.warning("Missing 'portalURL' in payload.")
             return JsonResponse({"error": "Missing portal URL"}, status=400)
-    except json.JSONDecodeError:
-        logger.warning("Invalid JSON payload.")
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    except KeyError:
+        logger.warning("Missing 'info' in payload.")
+        return JsonResponse({"error": "Missing portal info"}, status=400)
 
     # Get portal instance
     portal_instance = utils.get_portal_instance(portal_url)
