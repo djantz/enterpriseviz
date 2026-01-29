@@ -895,6 +895,47 @@ def parse_service_manifest_dates(service_manifest):
     return created
 
 
+def fetch_usage_report(instance_item, server, service_list):
+    query_list = ",".join(service_list)
+    quick_report = server.usage.quick_report(since="LAST_MONTH",
+                                             queries=query_list,
+                                             metrics="RequestCount")
+
+    dates = [utils.epoch_to_date(ts) for ts in quick_report["report"]["time-slices"]]
+
+    for s in quick_report["report"]["report-data"][0]:
+        name = s["resourceURI"].replace("services/", "").split(".")[0]
+        service_type = s["resourceURI"].split('.')[-1]
+        data = [0 if d is None else d for d in s["data"]]
+
+        usage_data = {
+            "dates": dates,
+            "values": data,
+        }
+
+        baseline = sum(data[0:15])
+        compare = sum(data[15:])
+        try:
+            trend = ((compare - baseline) / baseline) * 100
+        except ZeroDivisionError:
+            trend = 0 if (baseline == 0 and compare == 0) else 999
+
+        try:
+            s_obj = Service.objects.get(portal_instance=instance_item,
+                                        service_name=name,
+                                        service_type=service_type)
+        except Service.DoesNotExist:
+            continue
+        except MultipleObjectsReturned:
+            s_obj = Service.objects.filter(portal_instance=instance_item,
+                                           service_name=name,
+                                           service_type=service_type).first()
+
+        s_obj.service_usage = usage_data
+        s_obj.service_usage_trend = trend
+        s_obj.save()
+
+
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000, name="Update services")
 @celery_logging_context
 def update_services(self, instance_alias, full_refresh=False, credential_token=None):
@@ -921,46 +962,6 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
     result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
     update_time = timezone.now()  # Timestamp for the current update cycle
-
-    def fetch_usage_report(server, service_list):
-        query_list = ",".join(service_list)
-        quick_report = server.usage.quick_report(since="LAST_MONTH",
-                                                 queries=query_list,
-                                                 metrics="RequestCount")
-
-        dates = [utils.epoch_to_date(ts) for ts in quick_report["report"]["time-slices"]]
-
-        for s in quick_report["report"]["report-data"][0]:
-            name = s["resourceURI"].replace("services/", "").split(".")[0]
-            service_type = s["resourceURI"].split('.')[-1]
-            data = [0 if d is None else d for d in s["data"]]
-
-            usage_data = {
-                "dates": dates,
-                "values": data,
-            }
-
-            baseline = sum(data[0:15])
-            compare = sum(data[15:])
-            try:
-                trend = ((compare - baseline) / baseline) * 100
-            except ZeroDivisionError:
-                trend = 0 if (baseline == 0 and compare == 0) else 999
-
-            try:
-                s_obj = Service.objects.get(portal_instance=instance_item,
-                                            service_name=name,
-                                            service_type=service_type)
-            except Service.DoesNotExist:
-                continue
-            except MultipleObjectsReturned:
-                s_obj = Service.objects.filter(portal_instance=instance_item,
-                                               service_name=name,
-                                               service_type=service_type).first()
-
-            s_obj.service_usage = usage_data
-            s_obj.service_usage_trend = trend
-            s_obj.save()
 
     def process_views(view_list):
         for view_item in view_list:
@@ -1348,7 +1349,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
 
             if django_settings.USE_SERVICE_USAGE_REPORT:
                 logger.debug(f"Processing usage reports for {len(service_list)} services")
-                fetch_usage_report(gis_server, service_list)
+                fetch_usage_report(instance_item, gis_server, service_list)
                 logger.info("Usage report processing completed")
             else:
                 logger.debug("Service usage reporting is disabled, skipping")
