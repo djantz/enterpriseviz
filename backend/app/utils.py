@@ -2566,7 +2566,7 @@ def process_webhook_events(events, target, portal_instance):
         logger.info(f"Processing event - Source: {source}, Operation: {operation}, ID: {event_id}")
 
         try:
-            if source == "item":
+            if source == "items":
                 _process_item_event(target, portal_instance, event_id, operation, event)
             elif source == "user":
                 _process_user_event(portal_instance, event_id, operation)
@@ -2660,6 +2660,8 @@ def _webhook_item_crud(target, portal_instance, event_id, operation):
         task_mapping = {
             "Feature Layer": "process_service",
             "Map Image Layer": "process_service",
+            "Map Service": "process_service",
+            "Feature Service": "process_service",
             "Web Map": "process_webmap",
             "Web Mapping Application": "process_webapp",
             "Dashboard": "process_webapp",
@@ -3345,7 +3347,6 @@ def process_msd_layers_for_service(service_manifest, service_name, instance_item
                     logger.debug(f"Cleaned up temporary MSD directory: {temp_dir}")
             except Exception as e:
                 logger.warning(f"Error cleaning up temporary MSD files: {e}")
-
 
 
 def _extract_database_info(connection_string):
