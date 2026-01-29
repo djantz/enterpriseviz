@@ -3641,195 +3641,72 @@ def process_service(self, instance_alias, item, operation):
         return None
 
     try:
-        match = re.search(r"/services(?:/([^/]+))?/([^/]+)/[^/]+(?:/\d+)?$", service.url.url)
+        match = re.search(r"/services(?:/([^/]+))?/([^/]+)/[^/]+(?:/\d+)?$", service.url)
         if match:
             folder_name = match.group(1)
             if folder_name is None:
                 folder_name = ""
             service_name = match.group(2)
         else:
-            return
-        service_admin = target.admin.servers.list()[0].services.get(service_name, folder_name)
-        services_list = []
-        regexp_server = re.compile("(?<=SERVER=)([^;]*)")
-        regexp_version = re.compile("(?<=VERSION=)([^;]*)")
-        regexp_branch = re.compile("(?<=BRANCH=)([^;]*)")
-        regexp_database = re.compile("(?<=DATABASE=)([^;]*)")
-        url = []
-        portal_ids = {}
-        service_layers = {}
-        owner, access, description = None, None, None
-        mxd_map = service.properties['mapName']
-        service_type = service_admin.properties["type"]
-        service.url
-        if folder_name == '':
-            name = "{}".format(service_admin.properties["serviceName"])
-            url.append(target.hosting_servers[0].url + "/{}/{}".format(name, service_type))
-        else:
-            name = "{}/{}".format(folder_name, service_admin.properties["serviceName"])
-            url.append(target.hosting_servers[0].url + "/{}/{}".format(name, service_type))
-        services_list.append(f"services/{name}.{service_type}")
+            logger.warning(f"Unable to extract folder and service name from service URL: {service.url}")
+            return None
 
-        try:
-            portal_items = service_admin._json_dict['portalProperties']['portalItems']
-            for item in portal_items:
-                portal_ids[item['type']] = item['itemID']
-                if item['type'] == "FeatureServer" and not target.hosting_servers[
-                                                               0].url + "/{}/{}".format(name,
-                                                                                        "FeatureServer") in url:
-                    url.append(
-                        target.hosting_servers[0].url + "/{}/{}".format(name, "FeatureServer"))
-                portal_item = target.content.get(item['itemID'])
-                if portal_item:
-                    try:
-                        owner = User.objects.get(portal_instance=instance_item,
-                                                 user_username=portal_item.owner)
-                    except User.DoesNotExist:
-                        owner = None
-                    if portal_item.access == 'shared':  # or used .shared_with https://developers.arcgis.com/python/api-reference/arcgis.gis.toc.html#arcgis.gis.Item.shared_with
-                        access = "Groups: " + ", ".join(
-                            x.title for x in portal_item.shared_with['groups'])
-                    else:
-                        access = portal_item.access.title()
-                    soup = BeautifulSoup(portal_item.description, 'html.parser')
-                    description = soup.get_text()
-                else:
-                    owner = None
-        except Exception as e:
-            logger.error(f"Unable to get portal items for {item}: {e}")
-        sm = json.loads(service_admin.service_manifest())
-        if sm.get('code') == 500 and sm.get(
-            'status') == 'error' and 'FeatureServer' in portal_ids.keys():
-            s_obj, created = Service.objects.update_or_create(portal_instance=instance_item,
-                                                              service_name=name,
-                                                              defaults={
-                                                                  'service_url': ','.join(url),
-                                                                  'service_mxd_server': None,
-                                                                  'service_mxd': None,
-                                                                  'portal_id': portal_ids,
-                                                                  'service_type': service_type,
-                                                                  'service_description': description,
-                                                                  'service_owner': owner,
-                                                                  'service_access': access,
-                                                                  'updated_date': update_time})
-            if created:
-                result.add_insert()
+        service_type = service.url.split(r"/")[-1]
+
+        servers = target.admin.servers.list()
+
+        server_admin = None
+        for server in servers:
+            if server.services.exists(folder=folder_name, name=service_name, service_type=service_type):
+                server_admin = server
+                break
+        if server_admin is None:
+            logger.warning(f"Unable to find server with service {service_name} in folder {folder_name}")
+            return None
+
+        service_folder = server_admin.services.list(folder=folder_name)
+        service_admin = None
+        for s in service_folder:
+            if s.serviceName == service_name:
+                if s.type == service_type:
+                    service_admin = s
+                    break
+                if s.type == "FeatureServer" and service_type == "MapServer":
+                    service_admin = s
+                    break
+
+        if service_admin is None:
+            logger.warning(f"Unable to find matching service for {service.url}")
+        service_list = []
+        regex_patterns = compile_regex_patterns()
+
+        service_result = process_single_service(target, instance_item, service_admin, folder_name, update_time, regex_patterns, result)
+        if service_result is not None:
+            service_list.append(service_result)
+            s_obj = Service.objects.get(portal_instance=instance_item,
+                                        service_name__icontains=service_name,
+                                        service_url__overlap=[service.url])
+
+            if django_settings.USE_SERVICE_USAGE_REPORT:
+                logger.debug(f"Processing usage reports for {len(service_list)} services")
+                fetch_usage_report(instance_item, target.admin.servers.list()[0], service_list)
+                logger.info("Usage report processing completed")
             else:
-                result.add_update()
-            id = portal_ids['FeatureServer']
-            l = target.content.get(id)
-            if l.layers:
-                for layer in l.layers:
-                    obj, created = Layer.objects.update_or_create(portal_instance=instance_item,
-                                                                  layer_server='Hosted',
-                                                                  layer_version=None,
-                                                                  layer_database=None,
-                                                                  layer_name=layer.properties.name,
-                                                                  defaults={
-                                                                      'updated_date': update_time})
-                    # TODO track layer CRUD
-                    obj, created = Layer_Service.objects.update_or_create(
-                        portal_instance=instance_item,
-                        layer_id=obj, service_id=s_obj,
-                        defaults={'updated_date': update_time})
-        else:
-            if 'resources' in sm.keys():
-                res_obj = sm["resources"]
-                for obj in res_obj:
-                    mxd = f"{obj['onPremisePath']}/{mxd_map}"
-                    mxd_server = obj["clientName"]
+                logger.debug("Service usage reporting is disabled, skipping")
+
+            # Clean up orphaned Layer_Service relationships for this service
+            logger.debug(f"Cleaning up orphaned Layer_Service relationships for service: {service_name}")
+            deletes = Layer_Service.objects.filter(
+                portal_instance=instance_item,
+                service_id=s_obj,
+                updated_date__lt=update_time
+            )
+            delete_count = deletes.count()
+            if delete_count > 0:
+                deletes.delete()
+                logger.info(f"Deleted {delete_count} orphaned Layer_Service relationships for service: {service_name}")
             else:
-                mxd = None
-                mxd_server = None
-
-            s_obj, created = Service.objects.update_or_create(portal_instance=instance_item,
-                                                              service_name=name,
-                                                              defaults={'service_url': ','.join(url),
-                                                                        'service_mxd_server': mxd_server,
-                                                                        'service_mxd': mxd,
-                                                                        'portal_id': portal_ids,
-                                                                        'service_type': service_type,
-                                                                        'service_description': description,
-                                                                        'service_owner': owner,
-                                                                        'service_access': access,
-                                                                        'updated_date': update_time})
-            if created:
-                result.add_insert()
-            else:
-                result.add_update()
-
-            if 'databases' in sm.keys():
-                db_obj = sm["databases"]
-                for obj in db_obj:
-                    db_server = ""
-                    db_version = ""
-                    db_database = ""
-                    if "Sde" in obj["onServerWorkspaceFactoryProgID"]:
-                        db_server = str(
-                            regexp_server.search(obj["onServerConnectionString"]).group(0)).upper()
-                        try:
-                            db_version = str(
-                                regexp_version.search(obj["onServerConnectionString"]).group(
-                                    0)).upper()
-                        except:
-                            try:
-                                db_version = str(
-                                    regexp_branch.search(obj["onServerConnectionString"]).group(
-                                        0)).upper()
-                            except:
-                                db_version = ""
-                        db_database = str(
-                            regexp_database.search(obj["onServerConnectionString"]).group(
-                                0)).upper()
-                        db = "{}@{}@{}".format(db_server, db_database, db_version)
-                    elif "FileGDB" in obj["onServerWorkspaceFactoryProgID"]:
-                        db_database = obj["onServerConnectionString"].split("DATABASE=")[1].replace(
-                            '\\\\',
-                            '\\')
-                        db = db_database
-                    datasets = obj["datasets"]
-                    for dataset in datasets:
-                        service_layers[dataset["onServerName"]] = db
-                        if db_database:
-                            obj, created = Layer.objects.update_or_create(portal_instance=instance_item,
-                                                                          layer_server=db_server,
-                                                                          layer_version=db_version,
-                                                                          layer_database=db_database,
-                                                                          layer_name=dataset[
-                                                                              "onServerName"],
-                                                                          defaults={
-                                                                              'updated_date': update_time})
-                            # TODO track layer CRUD
-                            obj, created = Layer_Service.objects.update_or_create(
-                                portal_instance=instance_item,
-                                layer_id=obj, service_id=s_obj,
-                                defaults={'updated_date': update_time})
-
-        # Search all views, then associate with the parent service
-        service_views = service.related_items(rel_type="Service2Service", direction="reverse")
-        for parent in service_views:
-            try:
-                view_obj = Service.objects.get(portal_instance=instance_item,
-                                               service_url__overlap=[service.url])
-            except Service.DoesNotExist:
-                continue
-            except MultipleObjectsReturned:
-                view_obj = Service.objects.filter(portal_instance=instance_item,
-                                                  service_url__overlap=[service.url]).first()
-            try:
-                service_obj = Service.objects.get(portal_instance=instance_item,
-                                                  service_url__overlap=[parent.url])
-            except Service.DoesNotExist:
-                continue
-            except MultipleObjectsReturned:
-                service_obj = Service.objects.filter(portal_instance=instance_item,
-                                                     service_url__overlap=[parent.url]).first()
-            logger.debug(f"{service_obj} related to {view_obj}")
-
-            view_obj.service_view = service_obj
-            service_obj.service_view = view_obj
-            view_obj.save()
-            service_obj.save()
+                logger.debug(f"No orphaned Layer_Service relationships found for service: {service_name}")
         instance_item.service_updated = update_time
         instance_item.save()
         return
