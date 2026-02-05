@@ -2877,35 +2877,70 @@ def _parse_msd_layers_xml(extract_dir):
     """
     Parse layers from p20 XML format MSD.
 
+    This function handles two scnearios:
+    1. If a map/group SML exists with layer references, process those layers
+    2. Also scan for any standalone layer XMLs that might not be referenced
+
+    This is necessary because some MSD structures have layers in multiple folders
+    that may not all be referenced in a single map XML
+
     :param extract_dir: Directory containing extracted MSD files.
     :type extract_dir: Path
     :return: List of MSDLayerInfo objects.
     :rtype: List[MSDLayerInfo]
     """
-    # Find the map XML
-    map_xml = _find_map_xml(extract_dir)
-    if not map_xml:
-        logger.warning(f"Could not find map XML in {extract_dir}")
-        return []
-
-    logger.debug(f"Found map XML: {map_xml}")
-
-    # Parse layer references
-    layer_refs = _parse_layer_references(map_xml)
-    logger.debug(f"Found {len(layer_refs)} layer references")
-
-    # Parse each layer
     layers = []
-    for layer_ref in layer_refs:
-        layer_xml_path = extract_dir / layer_ref
-        if not layer_xml_path.exists():
-            logger.warning(f"Layer XML not found: {layer_ref}")
+    processed_paths = set()
+
+    # Try to find and process map XML if it exists
+    map_xml = _find_map_xml(extract_dir)
+    if map_xml:
+        logger.debug(f"Found map XML: {map_xml}")
+
+        # Parse layer references
+        layer_refs = _parse_layer_references(map_xml, extract_dir)
+        logger.debug(f"Found {len(layer_refs)} layer references from map XML")
+
+        # Parse each referenced layer
+        for layer_ref in layer_refs:
+            layer_xml_path = extract_dir / layer_ref
+            if not layer_xml_path.exists():
+                logger.warning(f"Layer XML not found: {layer_ref}")
+                continue
+            processed_paths.add(str(layer_xml_path))
+            layer_info = _parse_layer_xml(layer_xml_path)
+            if layer_info:
+                layers.append(layer_info)
+    # Also scan for any layer XMLs with ServiceLayerID that weren't referenced
+    # This handles cases where layers are in multiple folders without a comprehensive map XML
+    for xml_file in extract_dir.rglob("*.xml"):
+        # Skip metadata and already processed files
+        if "Metadata" in xml_file.parts or str(xml_file) in processed_paths:
             continue
 
-        layer_info = _parse_layer_xml(layer_xml_path)
-        if layer_info:
-            layers.append(layer_info)
+        # Skip certain system files
+        if xml_file.name in ["DocumentInfo.xml", "GISProject.xml", "Index.xml"]:
+            continue
 
+        try:
+            tree = ET.parse(xml_file)
+            root = tree.getroot()
+
+            # Check if this is a layer XML (has ServiceLayerID but is not a group-only layer)
+            service_layer_id = root.find(".//ServiceLayerID")
+
+            if service_layer_id is not None:
+                # Check if it's a CIMFeatureLayer or similar (not just a group layer)
+                if "CIMFeatureLayer" in root.tag or "CIMRasterLayer" in root.tag or "CIMGroupLayer" in root.tag:
+                    layer_info = _parse_layer_xml(xml_file)
+                    if layer_info and layer_info not in layers:
+                        layers.append(layer_info)
+                        logger.debug(f"Found standalone layer XML: {xml_file.relative_to(extract_dir)}")
+        except Exception as e:
+            logger.debug(f"Skipping {xml_file.name}: {e}")
+            continue
+
+    logger.info(f"Total layers found: {len(layers)}")
     return layers
 
 
@@ -2927,7 +2962,7 @@ def _parse_msd_layers_json(extract_dir):
     logger.debug(f"Found map file: {map_file}")
 
     # Parse layer references from JSON
-    layer_refs = _parse_layer_references_json(map_file)
+    layer_refs = _parse_layer_references_json(map_file, extract_dir)
     logger.debug(f"Found {len(layer_refs)} layer references")
 
     # Parse each layer
@@ -2982,37 +3017,58 @@ def _get_namespace_from_root(root):
     return {}
 
 
-def _parse_layer_references(map_xml_path):
+def _parse_layer_references(map_xml_path, base_dir):
     """
     Parse layer XML file references from map XML.
+
+    Recursively processed group layers to collect all layer references,
+    including those in nested group layers that may reference XMLs in different folders.
 
     :param map_xml_path: Path to map XML file.
     :type map_xml_path: Path
     :return: List of layer file paths.
     :rtype: List[str]
     """
-    tree = ET.parse(map_xml_path)
-    root = tree.getroot()
-
-    ns = _get_namespace_from_root(root)
     layer_refs = []
+    processed_paths = set()
 
-    # Try with namespace
-    if ns and 'typens' in ns:
-        layers_elem = root.find('.//typens:Layers', ns)
-    else:
-        layers_elem = None
+    def process_xml_for_layers(xml_path):
+        """Recursively process XML for layer references."""
+        if str(xml_path) in processed_paths:
+            return
+        processed_paths.add(str(xml_path))
 
-    if layers_elem is None:
-        layers_elem = root.find('.//Layers')
+        try:
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
+            ns = _get_namespace_from_root(root)
 
-    if layers_elem is not None:
-        for string_elem in layers_elem:
-            layer_path = string_elem.text
-            if layer_path and layer_path.startswith('CIMPATH='):
-                layer_path = layer_path.replace('CIMPATH=', '')
-                layer_refs.append(layer_path)
+            # Try with namespace
+            if ns and 'typens' in ns:
+                layers_elem = root.find('.//typens:Layers', ns)
+            else:
+                layers_elem = None
 
+            if layers_elem is None:
+                layers_elem = root.find('.//Layers')
+
+            if layers_elem is not None:
+                for string_elem in layers_elem:
+                    layer_path = string_elem.text
+                    if layer_path and layer_path.startswith('CIMPATH='):
+                        layer_path = layer_path.replace('CIMPATH=', '')
+                        layer_refs.append(layer_path)
+
+                        # If this is a group layer, recusively process it
+                        # Group layers can contain more layer references
+                        child_xml_path = base_dir / layer_path
+                        if child_xml_path.exists():
+                            process_xml_for_layers(child_xml_path)
+        except Exception as e:
+            logger.warning(f"Error processing XML {xml_path} for layer references: {e}")
+
+    # Start processing from this map XML
+    process_xml_for_layers(map_xml_path)
     return layer_refs
 
 
@@ -3110,6 +3166,21 @@ def _find_map_json(directory):
     :rtype: Optional[Path]
     """
     # Search for files that might contain layer references
+    for json_file in directory.rglob("*.json"):
+        # Skip metadata and certain system files
+        if "Metadata" in json_file.parts or json_file.name in ["GISProject.json", "Index.json"]:
+            continue
+
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                content = f.read(2000)
+                # Look for map-like JSON with layers array
+                if '"type":"CIMMap"' in content and '"layers":[' in content:
+                    return json_file
+        except Exception:
+            continue
+
+    # Also search for .xml files that contain JSON
     for json_xml_file in directory.rglob("*.xml"):
         try:
             with open(json_xml_file, 'r', encoding='utf-8') as f:
@@ -3122,32 +3193,49 @@ def _find_map_json(directory):
     return None
 
 
-def _parse_layer_references_json(map_file_path):
+def _parse_layer_references_json(map_file_path, base_dir):
     """
     Parse layer file references from p30 JSON format map file.
+
+    Recursively processes group layers to collect all layer references,
+    including those in nested group layers that may reference JSONs in different folders.
 
     :param map_file_path: Path to map file.
     :type map_file_path: Path
     :return: List of layer file paths.
     :rtype: List[str]
     """
-    try:
-        with open(map_file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+    layer_refs = []
+    processed_paths = set()
 
-        layers = data.get("layers", [])
-        layer_refs = []
+    def process_json_for_layers(json_path):
+        """Recursively process JSON for layer references."""
+        if str(json_path) in processed_paths:
+            return
+        processed_paths.add(str(json_path))
 
-        for layer in layers:
-            if isinstance(layer, str) and layer.startswith('CIMPATH='):
-                layer_path = layer.replace('CIMPATH=', '')
-                layer_refs.append(layer_path)
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
 
-        return layer_refs
+            layers = data.get("layers", [])
 
-    except Exception as e:
-        logger.error(f"Error parsing layer references from JSON {map_file_path}: {e}")
-        return []
+            for layer in layers:
+                if isinstance(layer, str) and layer.startswith('CIMPATH='):
+                    layer_path = layer.replace('CIMPATH=', '')
+                    layer_refs.append(layer_path)
+
+                    # If this is a group layer, recursively process it
+                    # Group layers can contain more layer references
+                    child_json_path = base_dir / layer_path
+                    if child_json_path.exists():
+                        process_json_for_layers(child_json_path)
+        except Exception as e:
+           logger.warning(f"Error processing JSON {json_path} for layer references: {e}")
+
+    # Start processing from the map file
+    process_json_for_layers(map_file_path)
+    return layer_refs
 
 
 def _parse_layer_json(layer_file_path):
@@ -3377,7 +3465,7 @@ def _extract_database_info(connection_string):
         db_server = server_match.group(1).upper() if server_match else None
 
         version_match = re.search(r'VERSION=([^;]+)', connection_string, re.IGNORECASE) or \
-                       re.search(r'BRANCH=([^;]+)', connection_string, re.IGNORECASE)
+                        re.search(r'BRANCH=([^;]+)', connection_string, re.IGNORECASE)
         db_version = version_match.group(1).upper() if version_match else None
 
         db_match = re.search(r'DATABASE=([^;]+)', connection_string, re.IGNORECASE)
