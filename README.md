@@ -236,6 +236,12 @@ Currently, EnterpriseViz has the following known limitation:
 
 ## Changelog
 
+### February 2026 - Layer Parsing, Webhook, and UI Improvements
+* **MSD Layer Parsing Refactor** - Improved handling for standalone layers, layers split across folders, and nested group processing in ArcGIS Server .msd files.
+* **Webhook Workflow Enhancements** - Simplified event processing, improved error handling.
+* **Service Tracking Updates** - Added `service_created` and `service_modified` fields.
+* **UI/UX Improvements** - Added warning state styling for progress bars and chips, updated chart icon rendering for modes.
+
 ### December 2025 - Dependency Tracking & Layer Management
 * **MSD Parser Implementation** - Extract detailed layer information from .msd files for precise layer index tracking (MapServer/0 vs MapServer/5)
 * * **Service Manifest Fallback** - Automatic fallback to service manifest parsing for disconnected environments
