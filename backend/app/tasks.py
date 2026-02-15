@@ -180,7 +180,7 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
         failure_count = 0
 
         for batch in batch_results.get(disable_sync_subtasks=False):
-            batch_result = utils.UpdateResult(**batch["result"])
+            batch_result = utils.UpdateResult(**batch)
 
             if batch_result.success is False:
                 failure_count += 1
@@ -837,7 +837,7 @@ def get_map_name(service_url, token):
         params = {
             "f": "json"
         }
-        response = requests.get(service_url, headers=headers, params=params)
+        response = requests.get(service_url, headers=headers, params=params, timeout=10)
         if response.status_code == 200:
             data = response.json()
             return data.get("mapName", None)
@@ -859,7 +859,7 @@ def parse_service_manifest_dates(service_manifest):
     :return: Tuple of (created_datetime) or (None) if not found
     :rtype: tuple
     """
-    created, modified = None, None
+    created = None
 
     try:
         # Check if manifest has the date/time tags
@@ -1007,7 +1007,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
         try:
             # Get organization ID
             logger.debug("Retrieving organization ID from portal")
-            response = requests.get(f"{target.url}/sharing/rest/portals/self?culture=en&f=pjson")
+            response = requests.get(f"{target.url}/sharing/rest/portals/self?culture=en&f=pjson", timeout=10)
             if response.status_code == 200:
                 data = response.json()
                 org_id = data.get("id")
@@ -1466,7 +1466,7 @@ def process_batch_services(self, instance_alias, credential_token, folder, updat
     except Exception as e:
         logger.error(f"Error processing services in folder {folder}: {e}", exc_info=True)
         result.add_error(f"Error processing services in folder {folder}")
-        return result.to_json()
+        return {"result": result.to_json()}
 
 
 def process_single_service(target, instance_item, service, folder, update_time, regex_patterns, result):
@@ -1871,7 +1871,7 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
         failure_count = 0
 
         for batch in batch_results.get(disable_sync_subtasks=False):
-            batch_result = utils.UpdateResult(**batch["result"])
+            batch_result = utils.UpdateResult(**batch)
 
             if batch_result.success is False:
                 failure_count += 1
@@ -3190,7 +3190,7 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
         failure_count = 0
 
         for batch in batch_results.get(disable_sync_subtasks=False):
-            batch_result = utils.UpdateResult(**batch["result"])
+            batch_result = utils.UpdateResult(**batch)
 
             if batch_result.success is False:
                 failure_count += 1
@@ -3678,6 +3678,7 @@ def process_service(self, instance_alias, item, operation):
 
         if service_admin is None:
             logger.warning(f"Unable to find matching service for {service.url}")
+            return None
         service_list = []
         regex_patterns = compile_regex_patterns()
 

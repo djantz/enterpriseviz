@@ -471,7 +471,8 @@ def _fetch_and_save_org_id(portal_model_instance, target_gis_connection):
         else:
             response = requests.get(f"{target_gis_connection.url}/sharing/rest/portals/self?culture=en&f=pjson",
                                     headers={
-                                        'Authorization': f'Bearer {target_gis_connection._con.token}'} if target_gis_connection._con.token else None)
+                                        'Authorization': f'Bearer {target_gis_connection._con.token}'} if target_gis_connection._con.token else None,
+                                    timeout=10)
             if response.status_code == 200:
                 data = response.json()
                 portal_model_instance.org_id = data.get("id")
@@ -2877,7 +2878,7 @@ def _parse_msd_layers_xml(extract_dir):
     """
     Parse layers from p20 XML format MSD.
 
-    This function handles two scnearios:
+    This function handles two scenarios:
     1. If a map/group SML exists with layer references, process those layers
     2. Also scan for any standalone layer XMLs that might not be referenced
 
@@ -3059,7 +3060,7 @@ def _parse_layer_references(map_xml_path, base_dir):
                         layer_path = layer_path.replace('CIMPATH=', '')
                         layer_refs.append(layer_path)
 
-                        # If this is a group layer, recusively process it
+                        # If this is a group layer, recursively process it
                         # Group layers can contain more layer references
                         child_xml_path = base_dir / layer_path
                         if child_xml_path.exists():
@@ -3177,7 +3178,8 @@ def _find_map_json(directory):
                 # Look for map-like JSON with layers array
                 if '"type":"CIMMap"' in content and '"layers":[' in content:
                     return json_file
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Error reading {json_file} for map detection: {e}")
             continue
 
     # Also search for .xml files that contain JSON

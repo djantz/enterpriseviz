@@ -646,7 +646,7 @@ def refresh_portal_view(request):
     :return: Rendered HTML response, typically a progress bar partial or a credential form.
     :rtype: django.http.HttpResponse
     """
-    logger.debug(f"Method={request.method}, user={request.user.username}, POST data: {request.POST}")
+    logger.debug(f"Method={request.method}, user={request.user.username}, POST data keys={list(request.POST.keys())}")
 
     if request.method != "POST":
         logger.warning("Method not allowed for refresh_portal_view.")
@@ -1629,14 +1629,10 @@ def webhook_view(request):
     if webhook_registry:
         return JsonResponse({"message": "Webhook registry received."}, status=200)
 
-    try:
-        portal_url = payload.get("info", {}).get("portalURL")
-        if not portal_url:
-            logger.warning("Missing 'portalURL' in payload.")
-            return JsonResponse({"error": "Missing portal URL"}, status=400)
-    except KeyError:
-        logger.warning("Missing 'info' in payload.")
-        return JsonResponse({"error": "Missing portal info"}, status=400)
+    portal_url = payload.get("info", {}).get("portalURL")
+    if not portal_url:
+        logger.warning("Missing 'portalURL' in payload.")
+        return JsonResponse({"error": "Missing portal URL"}, status=400)
 
     # Get portal instance
     portal_instance = utils.get_portal_instance(portal_url)
