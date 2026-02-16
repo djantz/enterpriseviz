@@ -65,8 +65,26 @@
                 <calcite-table-cell>{{ item.task_name }}</calcite-table-cell>
                 <calcite-table-cell>
                   <calcite-chip scale="s"
-                                kind="{% if item.status == 'SUCCESS' %}inverse{% elif item.status == 'FAILURE' %}danger{% else %}neutral{% endif %}">
+                    {% if "success" in item.result_as_dict.keys %}
+                      kind="{% if item.result_as_dict.success == True %}inverse{% else %}neutral{% endif %}"
+                      icon="{% if item.result_as_dict.success == True %}check-circle{% elif item.result_as_dict.success == False %}exclamation-mark-triangle{% endif %}"
+                      class="{% if item.result_as_dict.success == True %}{% elif item.result_as_dict.success == False %}error-chip{% else %}{% endif %}"
+                    {% else %}
+                      kind="{% if item.status == 'SUCCESS' %}inverse{% else %}neutral{% endif %}"
+                      icon="{% if item.status == 'SUCCESS' %}check-circle{% elif item.status == 'FAILURE' %}exclamation-mark-triangle{% endif %}"
+                      class="{% if item.status == 'SUCCESS' %}{% elif item.status == 'FAILURE' %}error-chip{% else %}{% endif %}"
+                    {% endif %}>
+                  {% if "success" in item.result_as_dict.keys %}
+                    {% if item.result_as_dict.success == True %}
+                      SUCCESS
+                    {% elif item.result_as_dict.success == False %}
+                      FAILURE
+                    {% else %}
+                      {{ item.status }}
+                    {% endif %}
+                  {% else %}
                     {{ item.status }}
+                  {% endif %}
                   </calcite-chip>
                 </calcite-table-cell>
                 <calcite-table-cell>

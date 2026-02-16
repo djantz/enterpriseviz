@@ -45,9 +45,8 @@ from django_tables2.export.views import ExportMixin
 
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
 from .forms import ScheduleForm, SiteSettingsForm, ToolsForm, WebhookSettingsForm, PortalCredentialsForm
-from .models import (
-    PortalCreateForm, UserProfile, LogEntry,
-)
+from .models import Portal, User, Webmap, Service, Layer, App, PortalCreateForm, UserProfile, LogEntry, SiteSettings, \
+    PortalToolSettings
 from .request_context import get_django_request_context
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *
@@ -647,7 +646,7 @@ def refresh_portal_view(request):
     :return: Rendered HTML response, typically a progress bar partial or a credential form.
     :rtype: django.http.HttpResponse
     """
-    logger.debug(f"Method={request.method}, user={request.user.username}, POST data: {request.POST}")
+    logger.debug(f"Method={request.method}, user={request.user.username}, POST data keys={list(request.POST.keys())}")
 
     if request.method != "POST":
         logger.warning("Method not allowed for refresh_portal_view.")
@@ -878,19 +877,31 @@ def progress_view(request, instance, task_id):
                              "value": progress_percentage}
 
         logger.debug(f"Task '{task_id}' state '{task_state}', progress {progress_percentage}%.")
-        response = render(request, "partials/progress_bar.html", context=response_data)
 
         htmx_trigger = {}
-        task_result = result.info
         if task_state == "SUCCESS":
+            task_result = result.info
             has_errors = False
 
             logger.info(
                 f"Task '{task_id}' ({task_name}) for {instance} completed successfully.")
             success_details = "Completed."
             if isinstance(task_result, dict):
+                # Check if task has errors
+                if task_result.get('success') is False:
+                    has_errors = True
+                    response_data["state"] = "WARNING"
+                    response_data["progress"]["state"] = "WARNING"
+                    error_messages = task_result.get('error_messages', [])
+                    if error_messages:
+                        success_details = f"Errors: {', '.join(error_messages)}"
+                    else:
+                        success_details = "Task completed with errors"
+
+                    logger.warning(f"Task '{task_id}' completed with errors: {success_details}")
+
                 # Handle data refresh task results
-                if 'num_updates' in task_result or 'num_inserts' in task_result:
+                elif 'num_updates' in task_result or 'num_inserts' in task_result:
                     success_details = (f"{task_result.get('num_updates', 0)} updates, "
                                        f"{task_result.get('num_inserts', 0)} inserts, "
                                        f"{task_result.get('num_deletes', 0)} deletes, "
@@ -933,13 +944,12 @@ def progress_view(request, instance, task_id):
                     "showSuccessAlert": f"{task_name} for {instance} completed. <br> <b>{success_details}</b>",
                     "updateComplete": "true"}
         elif task_state == "FAILURE":
-            logger.warning(
-                f"Task '{task_id}' ({task_name}) for {instance} failed. Info: {task_result}")
-            error_message = str(task_result) if not isinstance(task_result, dict) else task_result.get('error',
-                                                                                                       str(task_result))
+            logger.warning(f"Task '{task_id}' ({task_name}) for {instance} failed with FAILURE state")
             htmx_trigger = {
-                "showDangerAlert": f"{task_name} for {instance} failed. See logs or results table for details. Error: {error_message[:100]}...",
+                "showDangerAlert": f"{task_name} for {instance} failed. Please check logs or results table for details.",
                 "updateComplete": "true"}
+
+        response = render(request, "partials/progress_bar.html", context=response_data)
 
         if htmx_trigger:
             response["HX-Trigger"] = json.dumps(htmx_trigger)
@@ -1611,13 +1621,18 @@ def webhook_view(request):
     # Parse and validate payload
     try:
         payload = json.loads(request.body)
-        portal_url = payload.get("info", {}).get("portalURL")
-        if not portal_url:
-            logger.warning("Missing 'portalURL' in payload.")
-            return JsonResponse({"error": "Missing portal URL"}, status=400)
     except json.JSONDecodeError:
         logger.warning("Invalid JSON payload.")
         return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    webhook_registry = payload.get("WebhookRegistry", None)
+    if webhook_registry:
+        return JsonResponse({"message": "Webhook registry received."}, status=200)
+
+    portal_url = payload.get("info", {}).get("portalURL")
+    if not portal_url:
+        logger.warning("Missing 'portalURL' in payload.")
+        return JsonResponse({"error": "Missing portal URL"}, status=400)
 
     # Get portal instance
     portal_instance = utils.get_portal_instance(portal_url)

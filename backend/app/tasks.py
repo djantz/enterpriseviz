@@ -19,7 +19,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 import arcgis.gis.server
 import requests
@@ -90,7 +90,7 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
     try:
         update_time = timezone.now()
@@ -180,7 +180,7 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
         failure_count = 0
 
         for batch in batch_results.get(disable_sync_subtasks=False):
-            batch_result = utils.UpdateResult(**batch["result"])
+            batch_result = utils.UpdateResult(**batch)
 
             if batch_result.success is False:
                 failure_count += 1
@@ -231,9 +231,7 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
                     current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
             logger.info("All child tasks revoked")
 
-        # Update task state and exit
-        self.update_state(state="FAILURE", meta=result.to_json())
-        raise Ignore()
+        return result.to_json()
 
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
@@ -248,7 +246,7 @@ def process_batch_maps(self, instance_alias, credential_token, batch, batch_size
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
     try:
         logger.debug(f"Retrieving web maps for batch {batch} to {batch + batch_size}")
@@ -317,12 +315,12 @@ def process_batch_maps(self, instance_alias, credential_token, batch, batch_size
         logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
 
         result.set_success()
-        return {"result": result.to_json()}
+        return result.to_json()
 
     except Exception as e:
         logger.error(f"Webmaps in batch {batch} to {batch + batch_size}: {e}", exc_info=True)
         result.add_error(f"Error processing webmaps in batch {batch} to {batch + batch_size}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
 
 def extract_webmap_data(item, instance_item, update_time):
@@ -740,10 +738,10 @@ def fetch_portal_item_details(target, item_id, instance_item):
     Retrieve details from the portal item.
 
     Returns a tuple in the format:
-      (owner, access, description)
+      (owner, access, description, created, modified)
     If the item or any property is not available, defaults are returned.
     """
-    owner, access, description = None, None, None
+    owner, access, description, created, modified = None, None, None, None, None
     portal_item = target.content.get(item_id)
     if portal_item:
         owner = get_owner(instance_item, portal_item.owner)
@@ -751,7 +749,21 @@ def fetch_portal_item_details(target, item_id, instance_item):
         if hasattr(portal_item, "access"):
             access = get_access(portal_item)
         description = get_description(portal_item)
-    return owner, access, description
+
+        # Get created and modified timestamps from portal item
+        if hasattr(portal_item, "created"):
+            try:
+                created = utils.epoch_to_datetime(portal_item.created)
+            except (ValueError, TypeError, AttributeError) as e:
+                logger.warning(f"Unable to parse created timestamp for item {item_id}: {e}")
+
+        if hasattr(portal_item, "modified"):
+            try:
+                modified = utils.epoch_to_datetime(portal_item.modified)
+            except (ValueError, TypeError, AttributeError) as e:
+                logger.warning(f"Unable to parse modified timestamp for item {item_id}: {e}")
+
+    return owner, access, description, created, modified
 
 
 def process_databases(manifest, regex_patterns, instance_item, s_obj, update_time):
@@ -825,13 +837,103 @@ def get_map_name(service_url, token):
         params = {
             "f": "json"
         }
-        response = requests.get(service_url, headers=headers, params=params)
+        response = requests.get(service_url, headers=headers, params=params, timeout=10)
         if response.status_code == 200:
             data = response.json()
             return data.get("mapName", None)
     except Exception as e:
         logger.warning(f"Unable to get publish map name for '{service_url}'", exc_info=True)
     return None
+
+
+def parse_service_manifest_dates(service_manifest):
+    """
+    Parse created date from service manifest.
+
+    For Enterprise Portal services, the manifest contains tags like:
+    - CreaDate: Creation date in YYYYMMDD format
+    - CreaTime: Creation time in hhmmssss format
+
+    :param service_manifest: The service manifest dictionary
+    :type service_manifest: dict
+    :return: Tuple of (created_datetime) or (None) if not found
+    :rtype: tuple
+    """
+    created = None
+
+    try:
+        # Check if manifest has the date/time tags
+        crea_date = service_manifest.get("CreaDate")
+        crea_time = service_manifest.get("CreaTime")
+
+        # Parse creation date/time
+        if crea_date and crea_time:
+            try:
+                # CreaDate format: YYYYMMDD
+                # CreaTime format: hhmmssss (with centiseconds)
+                date_str = str(crea_date)
+                time_str = str(crea_time).zfill(8)  # Pad to 8 digits
+
+                # Extract components
+                year = int(date_str[0:4])
+                month = int(date_str[4:6])
+                day = int(date_str[6:8])
+                hour = int(time_str[0:2])
+                minute = int(time_str[2:4])
+                second = int(time_str[4:6])
+                # Ignore centiseconds (last 2 digits)
+
+                created = datetime(year, month, day, hour, minute, second, tzinfo=dt_timezone.utc)
+                logger.debug(f"Parsed creation date from manifest: {created}")
+            except (ValueError, IndexError) as e:
+                logger.warning(f"Unable to parse creation date from manifest (CreaDate={crea_date}, CreaTime={crea_time}): {e}")
+
+
+    except Exception as e:
+        logger.warning(f"Error parsing dates from service manifest: {e}")
+
+    return created
+
+
+def fetch_usage_report(instance_item, server, service_list):
+    query_list = ",".join(service_list)
+    quick_report = server.usage.quick_report(since="LAST_MONTH",
+                                             queries=query_list,
+                                             metrics="RequestCount")
+
+    dates = [utils.epoch_to_date(ts) for ts in quick_report["report"]["time-slices"]]
+
+    for s in quick_report["report"]["report-data"][0]:
+        name = s["resourceURI"].replace("services/", "").split(".")[0]
+        service_type = s["resourceURI"].split('.')[-1]
+        data = [0 if d is None else d for d in s["data"]]
+
+        usage_data = {
+            "dates": dates,
+            "values": data,
+        }
+
+        baseline = sum(data[0:15])
+        compare = sum(data[15:])
+        try:
+            trend = ((compare - baseline) / baseline) * 100
+        except ZeroDivisionError:
+            trend = 0 if (baseline == 0 and compare == 0) else 999
+
+        try:
+            s_obj = Service.objects.get(portal_instance=instance_item,
+                                        service_name=name,
+                                        service_type=service_type)
+        except Service.DoesNotExist:
+            continue
+        except MultipleObjectsReturned:
+            s_obj = Service.objects.filter(portal_instance=instance_item,
+                                           service_name=name,
+                                           service_type=service_type).first()
+
+        s_obj.service_usage = usage_data
+        s_obj.service_usage_trend = trend
+        s_obj.save()
 
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000, name="Update services")
@@ -860,46 +962,6 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
     result = utils.UpdateResult()
     progress_recorder = ProgressRecorder(self)
     update_time = timezone.now()  # Timestamp for the current update cycle
-
-    def fetch_usage_report(server, service_list):
-        query_list = ",".join(service_list)
-        quick_report = server.usage.quick_report(since="LAST_MONTH",
-                                                 queries=query_list,
-                                                 metrics="RequestCount")
-
-        dates = [utils.epoch_to_date(ts) for ts in quick_report["report"]["time-slices"]]
-
-        for s in quick_report["report"]["report-data"][0]:
-            name = s["resourceURI"].replace("services/", "").split(".")[0]
-            service_type = s["resourceURI"].split('.')[-1]
-            data = [0 if d is None else d for d in s["data"]]
-
-            usage_data = {
-                "dates": dates,
-                "values": data,
-            }
-
-            baseline = sum(data[0:15])
-            compare = sum(data[15:])
-            try:
-                trend = ((compare - baseline) / baseline) * 100
-            except ZeroDivisionError:
-                trend = 0 if (baseline == 0 and compare == 0) else 999
-
-            try:
-                s_obj = Service.objects.get(portal_instance=instance_item,
-                                            service_name=name,
-                                            service_type=service_type)
-            except Service.DoesNotExist:
-                continue
-            except MultipleObjectsReturned:
-                s_obj = Service.objects.filter(portal_instance=instance_item,
-                                               service_name=name,
-                                               service_type=service_type).first()
-
-            s_obj.service_usage = usage_data
-            s_obj.service_usage_trend = trend
-            s_obj.save()
 
     def process_views(view_list):
         for view_item in view_list:
@@ -938,14 +1000,14 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
     if instance_item.portal_type == "agol":
         logger.debug(f"Processing AGOL portal type for '{instance_alias}'")
         try:
             # Get organization ID
             logger.debug("Retrieving organization ID from portal")
-            response = requests.get(f"{target.url}/sharing/rest/portals/self?culture=en&f=pjson")
+            response = requests.get(f"{target.url}/sharing/rest/portals/self?culture=en&f=pjson", timeout=10)
             if response.status_code == 200:
                 data = response.json()
                 org_id = data.get("id")
@@ -956,8 +1018,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Unable to connect to {instance_alias}")
-            self.update_state(state="FAILURE", meta=result.to_json())
-            raise Ignore()
+            return result.to_json()
 
         try:
             if full_refresh:
@@ -1165,8 +1226,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
         except Exception as e:
             logger.critical(f"Services update failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Services update failed")
-            self.update_state(state="FAILURE", meta=result.to_json())
-            raise Ignore()
+            return result.to_json()
 
     else:
         logger.debug(f"Processing Enterprise portal type for '{instance_alias}'")
@@ -1182,8 +1242,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Unable to connect to {instance_alias}")
-            self.update_state(state="FAILURE", meta=result.to_json())
-            raise Ignore()
+            return result.to_json()
 
         try:
             if full_refresh:
@@ -1290,7 +1349,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
 
             if django_settings.USE_SERVICE_USAGE_REPORT:
                 logger.debug(f"Processing usage reports for {len(service_list)} services")
-                fetch_usage_report(gis_server, service_list)
+                fetch_usage_report(instance_item, gis_server, service_list)
                 logger.info("Usage report processing completed")
             else:
                 logger.debug("Service usage reporting is disabled, skipping")
@@ -1329,7 +1388,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
 
         except Exception as e:
             logger.critical(f"Services update failed for portal '{instance_alias}': {e}", exc_info=True)
-            result.add_error(f"Services update failed")
+            result.add_error("Services update failed")
 
             # Revoke child tasks if they exist
             if batch_results and batch_results.children:
@@ -1340,8 +1399,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
                         current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
                 logger.info("All child tasks revoked")
 
-            self.update_state(state="FAILURE", meta=result.to_json())
-            raise Ignore()
+            return result.to_json()
 
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
@@ -1443,6 +1501,7 @@ def process_single_service(target, instance_item, service, folder, update_time, 
         portal_ids = {}  # Map portal item types to their IDs
         service_usage_str = None
         access, owner, description = None, None, None
+        service_created, service_modified = None, None
 
         # Construct the service name and corresponding URL based on folder structure
         logger.debug("Constructing service URL")
@@ -1501,8 +1560,16 @@ def process_single_service(target, instance_item, service, folder, update_time, 
                             urls.append(feature_url)
 
                     logger.debug(f"Fetching details for portal item: {item_id}")
-                    owner, access, description = fetch_portal_item_details(target, item_id, instance_item)
+                    owner, access, description, item_created, item_modified = fetch_portal_item_details(target, item_id, instance_item)
                     logger.debug(f"Retrieved details - Owner: {owner}, Access: {access}, Description length: {len(description) if description else 0}")
+
+                    # Use portal item dates if available (prefer these for Portal/AGOL)
+                    if item_created:
+                        service_created = item_created
+                        logger.debug(f"Service created date from portal item: {service_created}")
+                    if item_modified:
+                        service_modified = item_modified
+                        logger.debug(f"Service modified date from portal item: {service_modified}")
             else:
                 logger.debug(f"No portal properties or portal items found for service: {service_name}")
         except Exception as e:
@@ -1516,6 +1583,13 @@ def process_single_service(target, instance_item, service, folder, update_time, 
             service_manifest_json = service.service_manifest()
             service_manifest = json.loads(service_manifest_json)
             logger.debug(f"Successfully retrieved service manifest for: {service_name}")
+
+            # Try to parse created/modified dates from manifest tags (Enterprise Portal)
+            # Only use these if portal item dates weren't already set
+            manifest_created = parse_service_manifest_dates(service_manifest)
+            if manifest_created and not service_created:
+                service_created = manifest_created
+                logger.debug(f"Service created date from manifest: {service_created}")
         except Exception as e:
             logger.error(f"Error retrieving service manifest for {service_name}: {e}", exc_info=True)
             service_manifest = {"error": str(e)}
@@ -1523,14 +1597,14 @@ def process_single_service(target, instance_item, service, folder, update_time, 
 
         logger.debug(f"Preparing service data for database update: {service_name}")
         service_data = {
-            "service_url": urls,
             "service_mxd_server": None,
             "service_mxd": map_name,
             "portal_id": portal_ids,
-            "service_type": service_type,
             "service_description": description,
             "service_owner": owner,
             "service_access": access,
+            "service_created": service_created,
+            "service_modified": service_modified,
             "updated_date": update_time
         }
         logger.debug(f"Service data prepared for: {service_name}")
@@ -1544,6 +1618,8 @@ def process_single_service(target, instance_item, service, folder, update_time, 
             s_obj, created = Service.objects.update_or_create(
                 portal_instance=instance_item,
                 service_name=name,
+                service_url=urls,
+                service_type=service_type,
                 defaults=service_data
             )
 
@@ -1626,6 +1702,8 @@ def process_single_service(target, instance_item, service, folder, update_time, 
             s_obj, created = Service.objects.update_or_create(
                 portal_instance=instance_item,
                 service_name=name,
+                service_url=urls,
+                service_type=service_type,
                 defaults=service_data
             )
 
@@ -1696,7 +1774,7 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
     try:
         update_time = timezone.now()
@@ -1793,7 +1871,7 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
         failure_count = 0
 
         for batch in batch_results.get(disable_sync_subtasks=False):
-            batch_result = utils.UpdateResult(**batch["result"])
+            batch_result = utils.UpdateResult(**batch)
 
             if batch_result.success is False:
                 failure_count += 1
@@ -1843,9 +1921,7 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
                     current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
             logger.info("All child tasks revoked")
 
-        # Update task state and exit
-        self.update_state(state="FAILURE", meta=result.to_json())
-        raise Ignore()
+        return result.to_json()
 
 
 @shared_task(bind=True)
@@ -1861,7 +1937,7 @@ def process_batch_apps(self, instance_alias, credential_token, batch, batch_size
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Unable to connect to {instance_alias}")
-            return {"result": result.to_json()}
+            return result.to_json()
 
         # Retrieve web applications for this batch
         logger.debug(f"Retrieving web applications for batch {batch} to {batch + batch_size}")
@@ -1914,15 +1990,24 @@ def process_batch_apps(self, instance_alias, credential_token, batch, batch_size
         logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
 
         result.set_success()
-        return {"result": result.to_json()}
+        return result.to_json()
 
     except Exception as e:
         logger.error(f"Error processing web apps in batch {batch} to {batch + batch_size}: {e}", exc_info=True)
         result.add_error(f"Error processing web apps in batch {batch} to {batch + batch_size}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
 
-def process_single_app(item, target, instance_item, update_time, result):
+def process_single_app(item, target, instance_item, update_time, result=None):
+    """
+    Process a single web application and update database.
+
+    :param item: The app item from ArcGIS
+    :param target: Connected GIS instance
+    :param instance_item: Portal instance from database
+    :param update_time: Timestamp for this update
+    :param result: Optional UpdateResult object for tracking errors (created if None)
+    """
     if result is None:
         result = utils.UpdateResult()
 
@@ -3024,7 +3109,7 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to connect to {instance_alias}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
     try:
         if full_refresh:
@@ -3105,7 +3190,7 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
         failure_count = 0
 
         for batch in batch_results.get(disable_sync_subtasks=False):
-            batch_result = utils.UpdateResult(**batch["result"])
+            batch_result = utils.UpdateResult(**batch)
 
             if batch_result.success is False:
                 failure_count += 1
@@ -3238,8 +3323,7 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
         current_app.control.revoke(self.request.id, terminate=True, signal="SIGKILL")
         logger.debug("Current task revoked")
 
-        self.update_state(state="FAILURE", meta=result.to_json())
-        raise Ignore()
+        return result.to_json()
 
 
 @shared_task(bind=True)
@@ -3256,7 +3340,7 @@ def process_batch_users(self, instance_alias, credential_token, batch, batch_siz
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Unable to connect to {instance_alias}")
-            return {"result": result.to_json()}
+            return result.to_json()
 
         logger.debug(f"Retrieving users for batch {batch} to {batch + batch_size}")
 
@@ -3346,12 +3430,12 @@ def process_batch_users(self, instance_alias, credential_token, batch, batch_siz
         logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
 
         result.set_success()
-        return {"result": result.to_json()}
+        return result.to_json()
 
     except Exception as e:
         logger.error(f"Error processing users in batch {batch} to {batch + batch_size}: {e}", exc_info=True)
         result.add_error(f"Error processing users in batch {batch} to {batch + batch_size}")
-        return {"result": result.to_json()}
+        return result.to_json()
 
 
 @shared_task(bind=True)
@@ -3363,15 +3447,13 @@ def process_user(self, instance_alias, username, operation):
         f"Starting process_user for instance_alias={instance_alias}, username={username}, operation={operation}")
 
     update_time = timezone.now()
-    result = utils.UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
         target = utils.connect(instance_item)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
     if operation == 'delete':
         logger.info(f"Processing delete operation for user '{username}' in portal '{instance_alias}'")
@@ -3395,8 +3477,6 @@ def process_user(self, instance_alias, username, operation):
 
         except Exception as e:
             logger.error(f"Unable to delete user '{username}' for portal '{instance_alias}': {e}", exc_info=True)
-            self.update_state(state="FAILURE")
-            raise Ignore()
 
     else:
         logger.info(f"Processing {operation} operation for user '{username}' in portal '{instance_alias}'")
@@ -3464,8 +3544,7 @@ def process_user(self, instance_alias, username, operation):
 
         except Exception as e:
             logger.error(f"Unable to process {operation} operation for user '{username}' in portal '{instance_alias}': {e}", exc_info=True)
-            self.update_state(state="FAILURE")
-            raise Ignore()
+            return None
 
 
 @shared_task(bind=True)
@@ -3476,15 +3555,13 @@ def process_webmap(self, instance_alias, item_id, operation):
         f"Starting process_webmap for instance_alias={instance_alias}, item_id={item_id}, operation={operation}")
 
     update_time = timezone.now()
-    result = utils.UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
         target = utils.connect(instance_item)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
     logger.info(f"Processing web map {item_id} with operation: {operation}")
     try:
@@ -3493,8 +3570,7 @@ def process_webmap(self, instance_alias, item_id, operation):
 
         if wm_item is None:
             logger.error(f"Web map with ID {item_id} not found in portal '{instance_alias}'")
-            self.update_state(state="FAILURE")
-            raise Ignore()
+            return None
 
         logger.debug(f"Successfully retrieved web map: {wm_item.title} (ID: {item_id})")
 
@@ -3526,8 +3602,7 @@ def process_webmap(self, instance_alias, item_id, operation):
 
     except Exception as e:
         logger.error(f"Unable to process web map {item_id} for portal '{instance_alias}': {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
 
 @shared_task(bind=True)
@@ -3540,6 +3615,7 @@ def process_service(self, instance_alias, item, operation):
     logger.info(f"Processing service {item} with operation: {operation}")
 
     update_time = timezone.now()
+    result = utils.UpdateResult()
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
@@ -3547,223 +3623,98 @@ def process_service(self, instance_alias, item, operation):
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
     try:
         logger.debug(f"Creating service object for item: {item}")
-        service = arcgis.gis.server.Service(item, target)
+        service_item = target.content.get(item)
+        service = arcgis.gis.server.Service(service_item.url, target)
 
         if service is None:
             logger.error(f"Unable to create service {item}. Service not found.")
-            self.update_state(state="FAILURE")
-            raise Ignore()
+            return None
 
         logger.debug(f"Successfully created service object for item: {item}")
-        logger.debug(f"Service URL: {service.url.url if hasattr(service, 'url') else 'Unknown'}")
+        logger.debug(f"Service URL: {service.url if hasattr(service, 'url') else 'Unknown'}")
 
     except Exception as e:
         logger.error(f"Error creating service object for item: {item}: {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
     try:
-        match = re.search(r"/services(?:/([^/]+))?/([^/]+)/[^/]+(?:/\d+)?$", service.url.url)
+        match = re.search(r"/services(?:/([^/]+))?/([^/]+)/[^/]+(?:/\d+)?$", service.url)
         if match:
             folder_name = match.group(1)
             if folder_name is None:
                 folder_name = ""
             service_name = match.group(2)
         else:
-            return
-        service_admin = target.admin.servers.list()[0].services.get(service_name, folder_name)
-        services_list = []
-        regexp_server = re.compile("(?<=SERVER=)([^;]*)")
-        regexp_version = re.compile("(?<=VERSION=)([^;]*)")
-        regexp_branch = re.compile("(?<=BRANCH=)([^;]*)")
-        regexp_database = re.compile("(?<=DATABASE=)([^;]*)")
-        url = []
-        portal_ids = {}
-        service_layers = {}
-        owner, access, description = None, None, None
-        mxd_map = service.properties['mapName']
-        service_type = service_admin.properties["type"]
-        service.url
-        if folder_name == '':
-            name = "{}".format(service_admin.properties["serviceName"])
-            url.append(target.hosting_servers[0].url + "/{}/{}".format(name, service_type))
-        else:
-            name = "{}/{}".format(folder_name, service_admin.properties["serviceName"])
-            url.append(target.hosting_servers[0].url + "/{}/{}".format(name, service_type))
-        services_list.append(f"services/{name}.{service_type}")
+            logger.warning(f"Unable to extract folder and service name from service URL: {service.url}")
+            return None
 
-        try:
-            portal_items = service_admin._json_dict['portalProperties']['portalItems']
-            for item in portal_items:
-                portal_ids[item['type']] = item['itemID']
-                if item['type'] == "FeatureServer" and not target.hosting_servers[
-                                                               0].url + "/{}/{}".format(name,
-                                                                                        "FeatureServer") in url:
-                    url.append(
-                        target.hosting_servers[0].url + "/{}/{}".format(name, "FeatureServer"))
-                portal_item = target.content.get(item['itemID'])
-                if portal_item:
-                    try:
-                        owner = User.objects.get(portal_instance=instance_item,
-                                                 user_username=portal_item.owner)
-                    except User.DoesNotExist:
-                        owner = None
-                    if portal_item.access == 'shared':  # or used .shared_with https://developers.arcgis.com/python/api-reference/arcgis.gis.toc.html#arcgis.gis.Item.shared_with
-                        access = "Groups: " + ", ".join(
-                            x.title for x in portal_item.shared_with['groups'])
-                    else:
-                        access = portal_item.access.title()
-                    soup = BeautifulSoup(portal_item.description, 'html.parser')
-                    description = soup.get_text()
-                else:
-                    owner = None
-        except Exception as e:
-            logger.error(f"Unable to get portal items for {item}: {e}")
-        sm = json.loads(service_admin.service_manifest())
-        if sm.get('code') == 500 and sm.get(
-            'status') == 'error' and 'FeatureServer' in portal_ids.keys():
-            s_obj, created = Service.objects.update_or_create(portal_instance=instance_item,
-                                                              service_name=name,
-                                                              defaults={
-                                                                  'service_url': ','.join(url),
-                                                                  'service_mxd_server': None,
-                                                                  'service_mxd': None,
-                                                                  'portal_id': portal_ids,
-                                                                  'service_type': service_type,
-                                                                  'service_description': description,
-                                                                  'service_owner': owner,
-                                                                  'service_access': access,
-                                                                  'updated_date': update_time})
-            if created:
-                result.add_insert()
+        service_type = service.url.split(r"/")[-1]
+
+        servers = target.admin.servers.list()
+
+        server_admin = None
+        for server in servers:
+            if server.services.exists(folder=folder_name, name=service_name, service_type=service_type):
+                server_admin = server
+                break
+        if server_admin is None:
+            logger.warning(f"Unable to find server with service {service_name} in folder {folder_name}")
+            return None
+
+        service_folder = server_admin.services.list(folder=folder_name)
+        service_admin = None
+        for s in service_folder:
+            if s.serviceName == service_name:
+                if s.type == service_type:
+                    service_admin = s
+                    break
+                if s.type == "FeatureServer" and service_type == "MapServer":
+                    service_admin = s
+                    break
+
+        if service_admin is None:
+            logger.warning(f"Unable to find matching service for {service.url}")
+            return None
+        service_list = []
+        regex_patterns = compile_regex_patterns()
+
+        service_result = process_single_service(target, instance_item, service_admin, folder_name, update_time, regex_patterns, result)
+        if service_result is not None:
+            service_list.append(service_result)
+            s_obj = Service.objects.get(portal_instance=instance_item,
+                                        service_name__icontains=service_name,
+                                        service_url__overlap=[service.url])
+
+            if django_settings.USE_SERVICE_USAGE_REPORT:
+                logger.debug(f"Processing usage reports for {len(service_list)} services")
+                fetch_usage_report(instance_item, target.admin.servers.list()[0], service_list)
+                logger.info("Usage report processing completed")
             else:
-                result.add_update()
-            id = portal_ids['FeatureServer']
-            l = target.content.get(id)
-            if l.layers:
-                for layer in l.layers:
-                    obj, created = Layer.objects.update_or_create(portal_instance=instance_item,
-                                                                  layer_server='Hosted',
-                                                                  layer_version=None,
-                                                                  layer_database=None,
-                                                                  layer_name=layer.properties.name,
-                                                                  defaults={
-                                                                      'updated_date': update_time})
-                    # TODO track layer CRUD
-                    obj, created = Layer_Service.objects.update_or_create(
-                        portal_instance=instance_item,
-                        layer_id=obj, service_id=s_obj,
-                        defaults={'updated_date': update_time})
-        else:
-            if 'resources' in sm.keys():
-                res_obj = sm["resources"]
-                for obj in res_obj:
-                    mxd = f"{obj['onPremisePath']}/{mxd_map}"
-                    mxd_server = obj["clientName"]
+                logger.debug("Service usage reporting is disabled, skipping")
+
+            # Clean up orphaned Layer_Service relationships for this service
+            logger.debug(f"Cleaning up orphaned Layer_Service relationships for service: {service_name}")
+            deletes = Layer_Service.objects.filter(
+                portal_instance=instance_item,
+                service_id=s_obj,
+                updated_date__lt=update_time
+            )
+            delete_count = deletes.count()
+            if delete_count > 0:
+                deletes.delete()
+                logger.info(f"Deleted {delete_count} orphaned Layer_Service relationships for service: {service_name}")
             else:
-                mxd = None
-                mxd_server = None
-
-            s_obj, created = Service.objects.update_or_create(portal_instance=instance_item,
-                                                              service_name=name,
-                                                              defaults={'service_url': ','.join(url),
-                                                                        'service_mxd_server': mxd_server,
-                                                                        'service_mxd': mxd,
-                                                                        'portal_id': portal_ids,
-                                                                        'service_type': service_type,
-                                                                        'service_description': description,
-                                                                        'service_owner': owner,
-                                                                        'service_access': access,
-                                                                        'updated_date': update_time})
-            if created:
-                result.add_insert()
-            else:
-                result.add_update()
-
-            if 'databases' in sm.keys():
-                db_obj = sm["databases"]
-                for obj in db_obj:
-                    db_server = ""
-                    db_version = ""
-                    db_database = ""
-                    if "Sde" in obj["onServerWorkspaceFactoryProgID"]:
-                        db_server = str(
-                            regexp_server.search(obj["onServerConnectionString"]).group(0)).upper()
-                        try:
-                            db_version = str(
-                                regexp_version.search(obj["onServerConnectionString"]).group(
-                                    0)).upper()
-                        except:
-                            try:
-                                db_version = str(
-                                    regexp_branch.search(obj["onServerConnectionString"]).group(
-                                        0)).upper()
-                            except:
-                                db_version = ""
-                        db_database = str(
-                            regexp_database.search(obj["onServerConnectionString"]).group(
-                                0)).upper()
-                        db = "{}@{}@{}".format(db_server, db_database, db_version)
-                    elif "FileGDB" in obj["onServerWorkspaceFactoryProgID"]:
-                        db_database = obj["onServerConnectionString"].split("DATABASE=")[1].replace(
-                            '\\\\',
-                            '\\')
-                        db = db_database
-                    datasets = obj["datasets"]
-                    for dataset in datasets:
-                        service_layers[dataset["onServerName"]] = db
-                        if db_database:
-                            obj, created = Layer.objects.update_or_create(portal_instance=instance_item,
-                                                                          layer_server=db_server,
-                                                                          layer_version=db_version,
-                                                                          layer_database=db_database,
-                                                                          layer_name=dataset[
-                                                                              "onServerName"],
-                                                                          defaults={
-                                                                              'updated_date': update_time})
-                            # TODO track layer CRUD
-                            obj, created = Layer_Service.objects.update_or_create(
-                                portal_instance=instance_item,
-                                layer_id=obj, service_id=s_obj,
-                                defaults={'updated_date': update_time})
-
-        # Search all views, then associate with the parent service
-        service_views = service.related_items(rel_type="Service2Service", direction="reverse")
-        for parent in service_views:
-            try:
-                view_obj = Service.objects.get(portal_instance=instance_item,
-                                               service_url__overlap=[service.url])
-            except Service.DoesNotExist:
-                continue
-            except MultipleObjectsReturned:
-                view_obj = Service.objects.filter(portal_instance=instance_item,
-                                                  service_url__overlap=[service.url]).first()
-            try:
-                service_obj = Service.objects.get(portal_instance=instance_item,
-                                                  service_url__overlap=[parent.url])
-            except Service.DoesNotExist:
-                continue
-            except MultipleObjectsReturned:
-                service_obj = Service.objects.filter(portal_instance=instance_item,
-                                                     service_url__overlap=[parent.url]).first()
-            logger.debug(f"{service_obj} related to {view_obj}")
-
-            view_obj.service_view = service_obj
-            service_obj.service_view = view_obj
-            view_obj.save()
-            service_obj.save()
+                logger.debug(f"No orphaned Layer_Service relationships found for service: {service_name}")
         instance_item.service_updated = update_time
         instance_item.save()
         return
     except Exception as e:
         logger.exception(f"Unable to update service {item} for {instance_alias}: {e}")
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
 
 @shared_task(bind=True)
@@ -3774,15 +3725,13 @@ def process_webapp(self, instance_alias, item_id, operation):
         f"Starting process_webapp for instance_alias={instance_alias}, item_id={item_id}, operation={operation}")
 
     update_time = timezone.now()
-    result = utils.UpdateResult()
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
         target = utils.connect(instance_item)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
     logger.info(f"Processing web application {item_id} with operation: {operation}")
     try:
@@ -3791,14 +3740,13 @@ def process_webapp(self, instance_alias, item_id, operation):
 
         if item is None:
             logger.error(f"Web application with ID {item_id} not found in portal '{instance_alias}'")
-            self.update_state(state="FAILURE")
-            raise Ignore()
+            return None
 
         logger.debug(f"Successfully retrieved web application: {item.title} (ID: {item_id})")
         logger.debug(f"Web application type: {item.type}, Owner: {item.owner}")
 
         logger.debug(f"Processing web application details for: {item_id}")
-        process_single_app(item, target, instance_item, update_time, result)
+        process_single_app(item, target, instance_item, update_time)
 
         instance_item.webapp_updated = update_time
         instance_item.save()
@@ -3808,8 +3756,7 @@ def process_webapp(self, instance_alias, item_id, operation):
 
     except Exception as e:
         logger.error(f"Unable to process web application {item_id} for portal '{instance_alias}': {e}", exc_info=True)
-        self.update_state(state="FAILURE")
-        raise Ignore()
+        return None
 
 
 def _validate_params(params, required, tool_result):
