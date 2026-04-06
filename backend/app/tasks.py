@@ -377,13 +377,50 @@ def process_layers(item):
         if layer.get("layerType") == "GroupLayer":
             for sublayer in layer.get("layers", []):
                 process_op_layer(sublayer)
-        else:
+
+        elif layer.get("layerType") == "ArcGISMapServiceLayer":
             # Web map's internal layer ID (used by apps for references)
             webmap_layer_id = layer.get("id", None)
-
             # Service item ID (the published service this layer comes from)
             service_item_id = layer.get("itemId", None)
+            layer_name = layer.get("title", None)
+            layer_type = layer.get("layerType", None)
+            layer_url = layer.get("url", None)
 
+            if layer_url:
+                sublayers = layer.get("layers", [])
+
+                if sublayers:
+                    # Individual layers were explicitly configured (some may have been removed).
+                    # Use the layer IDs defined in the layers array
+                    for sublayer in sublayers:
+                        sublayer_id = sublayer.get("id")
+                        sublayer_webmap_id = sublayer.get("id")
+
+                        services.append((layer_url, sublayer_id, webmap_layer_id))
+
+                        sublayer_name = sublayer.get("name", f"{layer_name} - Layer {sublayer_id}")
+                        layers[sublayer_name] = {
+                            "url": f"{layer_url}/{sublayer_id}",
+                            "type": layer_type,
+                            "service_item_id": service_item_id,
+                            "webmap_layer_id": webmap_layer_id,
+                        }
+                else:
+                    # Whole MapServer added with no individual layer customization.
+                    # Defer to link_services_to_webmap to resolve all known layer IDs from the DB.
+                    services.append((layer_url, None, webmap_layer_id))
+
+                    layers[layer_name] = {
+                        "url": layer_url,
+                        "type": layer_type,
+                        "service_item_id": service_item_id,
+                        "webmap_layer_id": webmap_layer_id,
+                    }
+        else:
+            # Standard single-layer types (FeatureLayer, VectorTileLayer, etc.)
+            webmap_layer_id = layer.get("id", None)
+            service_item_id = layer.get("itemId", None)
             layer_name = layer.get("title", None)
             layer_type = layer.get("layerType", None)
             layer_url = layer.get("url", None)
@@ -405,7 +442,7 @@ def process_layers(item):
                 "url": layer_url,
                 "type": layer_type,
                 "service_item_id": service_item_id,
-                "webmap_layer_id": webmap_layer_id  # NEW
+                "webmap_layer_id": webmap_layer_id,
             }
 
     for op_layer in wm_content.get("operationalLayers", []):
