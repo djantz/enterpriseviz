@@ -3417,10 +3417,10 @@ def process_msd_layers_for_service(service_manifest, service_name, instance_item
                     portal_instance=instance_item,
                     layer_id=layer_obj,
                     service_id=service_obj,
+                    service_layer_id=layer_info.service_layer_id,
+                    service_layer_name=layer_info.layer_name,
                     defaults={
-                        "updated_date": update_time,
-                        "service_layer_id": layer_info.service_layer_id,
-                        "service_layer_name": layer_info.layer_name
+                        "updated_date": update_time
                     }
                 )
 
