@@ -502,6 +502,7 @@ def link_services_to_webmap(instance_item, webmap_obj, services):
     :rtype: None
     """
     update_time = timezone.now()
+
     for service_data in services:
         service_url, service_layer_id, webmap_layer_id = service_data
 
@@ -513,6 +514,37 @@ def link_services_to_webmap(instance_item, webmap_obj, services):
         except MultipleObjectsReturned:
             s_obj = Service.objects.filter(service_url__overlap=[service_url]).first()
 
+        if service_layer_id is None:
+            # Whole MapServer added
+            # Change to all known layer IDs for this service via Layer_Service.
+            known_layer_ids = list(
+                Layer_Service.objects.filter(
+                    portal_instance=instance_item,
+                    service_id=s_obj,
+                    service_layer_id__isnull=False
+                ).values_list("service_layer_id", flat=True)
+            )
+
+            if known_layer_ids:
+                for layer_id in known_layer_ids:
+                    Map_Service.objects.update_or_create(
+                        portal_instance=instance_item,
+                        webmap_id=webmap_obj,
+                        service_id=s_obj,
+                        service_layer_id=layer_id,
+                        defaults={
+                            "updated_date": update_time,
+                            "webmap_layer_id": webmap_layer_id,
+                        }
+                    )
+                continue  # skip single-record fallback
+
+            # Service exists but has no tracked layers — create one record with no layer ID
+            logger.debug(
+                f"Service '{s_obj}' has no tracked layer IDs in Layer_Service; "
+                f"creating Map_Service with service_layer_id=None."
+            )
+
         Map_Service.objects.update_or_create(
             portal_instance=instance_item,
             webmap_id=webmap_obj,
@@ -520,7 +552,7 @@ def link_services_to_webmap(instance_item, webmap_obj, services):
             service_layer_id=service_layer_id,
             defaults={
                 "updated_date": update_time,
-                "webmap_layer_id": webmap_layer_id
+                "webmap_layer_id": webmap_layer_id,
             }
         )
 
