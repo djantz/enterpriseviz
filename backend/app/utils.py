@@ -3166,6 +3166,20 @@ def _find_map_json(directory):
     :return: Path to map file or None if not found.
     :rtype: Optional[Path]
     """
+    # Check index to get primary map file
+    possible_locations = [
+        directory / "Index.json"
+    ]
+    try:
+        for location in possible_locations:
+            if location.exists():
+                with open(location, 'r') as f:
+                    data = json.load(f)
+                for node in data.get("Nodes", []):
+                    if node.get("NodeType", None) == "map":
+                        return node.get("FileName")
+    except:
+        pass
     # Search for files that might contain layer references
     for json_file in directory.rglob("*.json"):
         # Skip metadata and certain system files
@@ -3187,7 +3201,7 @@ def _find_map_json(directory):
         try:
             with open(json_xml_file, 'r', encoding='utf-8') as f:
                 content = f.read(1000)
-                if content.strip().startswith('{') and '"layers":[' in content:
+                if '"type":"CIMMap"' in content and '"layers":[' in content:
                     return json_xml_file
         except Exception:
             continue
