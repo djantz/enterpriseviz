@@ -377,13 +377,50 @@ def process_layers(item):
         if layer.get("layerType") == "GroupLayer":
             for sublayer in layer.get("layers", []):
                 process_op_layer(sublayer)
-        else:
+
+        elif layer.get("layerType") == "ArcGISMapServiceLayer":
             # Web map's internal layer ID (used by apps for references)
             webmap_layer_id = layer.get("id", None)
-
             # Service item ID (the published service this layer comes from)
             service_item_id = layer.get("itemId", None)
+            layer_name = layer.get("title", None)
+            layer_type = layer.get("layerType", None)
+            layer_url = layer.get("url", None)
 
+            if layer_url:
+                sublayers = layer.get("layers", [])
+
+                if sublayers:
+                    # Individual layers were explicitly configured (some may have been removed).
+                    # Use the layer IDs defined in the layers array
+                    for sublayer in sublayers:
+                        sublayer_id = sublayer.get("id")
+                        sublayer_webmap_id = sublayer.get("id")
+
+                        services.append((layer_url, sublayer_id, webmap_layer_id))
+
+                        sublayer_name = sublayer.get("name", f"{layer_name} - Layer {sublayer_id}")
+                        layers[sublayer_name] = {
+                            "url": f"{layer_url}/{sublayer_id}",
+                            "type": layer_type,
+                            "service_item_id": service_item_id,
+                            "webmap_layer_id": webmap_layer_id,
+                        }
+                else:
+                    # Whole MapServer added with no individual layer customization.
+                    # Defer to link_services_to_webmap to resolve all known layer IDs from the DB.
+                    services.append((layer_url, None, webmap_layer_id))
+
+                    layers[layer_name] = {
+                        "url": layer_url,
+                        "type": layer_type,
+                        "service_item_id": service_item_id,
+                        "webmap_layer_id": webmap_layer_id,
+                    }
+        else:
+            # Standard single-layer types (FeatureLayer, VectorTileLayer, etc.)
+            webmap_layer_id = layer.get("id", None)
+            service_item_id = layer.get("itemId", None)
             layer_name = layer.get("title", None)
             layer_type = layer.get("layerType", None)
             layer_url = layer.get("url", None)
@@ -405,7 +442,7 @@ def process_layers(item):
                 "url": layer_url,
                 "type": layer_type,
                 "service_item_id": service_item_id,
-                "webmap_layer_id": webmap_layer_id  # NEW
+                "webmap_layer_id": webmap_layer_id,
             }
 
     for op_layer in wm_content.get("operationalLayers", []):
@@ -465,6 +502,7 @@ def link_services_to_webmap(instance_item, webmap_obj, services):
     :rtype: None
     """
     update_time = timezone.now()
+
     for service_data in services:
         service_url, service_layer_id, webmap_layer_id = service_data
 
@@ -476,6 +514,37 @@ def link_services_to_webmap(instance_item, webmap_obj, services):
         except MultipleObjectsReturned:
             s_obj = Service.objects.filter(service_url__overlap=[service_url]).first()
 
+        if service_layer_id is None:
+            # Whole MapServer added
+            # Change to all known layer IDs for this service via Layer_Service.
+            known_layer_ids = list(
+                Layer_Service.objects.filter(
+                    portal_instance=instance_item,
+                    service_id=s_obj,
+                    service_layer_id__isnull=False
+                ).values_list("service_layer_id", flat=True)
+            )
+
+            if known_layer_ids:
+                for layer_id in known_layer_ids:
+                    Map_Service.objects.update_or_create(
+                        portal_instance=instance_item,
+                        webmap_id=webmap_obj,
+                        service_id=s_obj,
+                        service_layer_id=layer_id,
+                        defaults={
+                            "updated_date": update_time,
+                            "webmap_layer_id": webmap_layer_id,
+                        }
+                    )
+                continue  # skip single-record fallback
+
+            # Service exists but has no tracked layers — create one record with no layer ID
+            logger.debug(
+                f"Service '{s_obj}' has no tracked layer IDs in Layer_Service; "
+                f"creating Map_Service with service_layer_id=None."
+            )
+
         Map_Service.objects.update_or_create(
             portal_instance=instance_item,
             webmap_id=webmap_obj,
@@ -483,7 +552,7 @@ def link_services_to_webmap(instance_item, webmap_obj, services):
             service_layer_id=service_layer_id,
             defaults={
                 "updated_date": update_time,
-                "webmap_layer_id": webmap_layer_id
+                "webmap_layer_id": webmap_layer_id,
             }
         )
 

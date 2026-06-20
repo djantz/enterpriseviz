@@ -236,6 +236,11 @@ Currently, EnterpriseViz has the following known limitation:
 
 ## Changelog
 
+### April 2026 - Map Layer Linking & Parsing Improvements
+* **Layer-Service Linking Update** - Layer-service links now use `service_layer_id`, enabling correct association of feature classes to multiple service layers (including those with definition queries).
+* **Map Image Service Layer Handling** - Enhanced parsing and linking for map image services: all layers are now linked to the map when available, and logic distinguishes between full-service and partial-layer inclusion.
+* **MSD Parsing Enhancements** - Improved logic to identify the primary MSD file containing all layer information.
+
 ### February 2026 - Layer Parsing, Webhook, and UI Improvements
 * **MSD Layer Parsing Refactor** - Improved handling for standalone layers, layers split across folders, and nested group processing in ArcGIS Server .msd files.
 * **Webhook Workflow Enhancements** - Simplified event processing, improved error handling.
