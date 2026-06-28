@@ -439,6 +439,80 @@ def connect(portal_model_instance, credential_token=None):
     return target_gis
 
 
+def get_federated_server_map(target):
+    """
+    Build a map of federated server info keyed by normalized admin URL, public URL,
+    and server id.
+
+    Each entry has "public_url" (normalized to the .../rest/services base used in
+    Service.service_url), "admin_url", "is_hosted", and "role".
+
+    :param target: Authenticated arcgis.gis.GIS connection.
+    :type target: arcgis.gis.GIS
+    :return: Map keyed by server id, admin URL, and public URL to server info dicts.
+    :rtype: dict
+    """
+    server_map = {}
+    try:
+        data = target.admin.federation.servers
+        for entry in data.get("servers", []):
+            raw_url = entry.get("url")
+            if not raw_url:
+                continue
+            public_url = raw_url.rstrip("/") + "/rest/services"
+            admin_url = entry.get("adminUrl")
+            info = {
+                "public_url": public_url,
+                "admin_url": admin_url,
+                "is_hosted": entry.get("isHosted", False),
+                "role": entry.get("serverRole"),
+            }
+            server_id = entry.get("id")
+            if server_id:
+                server_map[server_id] = info
+            if admin_url:
+                server_map[admin_url.rstrip("/")] = info
+            server_map[raw_url.rstrip("/")] = info
+    except Exception as e:
+        logger.warning(f"Error retrieving federated servers map for {target.url}: {e}")
+
+    return server_map
+
+
+def resolve_server_public_url(server, server_map):
+    """
+    Resolve the public REST services base URL for an admin Server object.
+
+    Matches the server's own URL against the federated server map (built from
+    both admin and public URLs). If no match is found, derives the URL from the
+    server's own URL.
+
+    :param server: An admin Server object from target.admin.servers.list().
+    :type server: arcgis.gis.server.Server
+    :param server_map: Map produced by get_federated_server_map().
+    :type server_map: dict
+    :return: Public REST services base URL for the server.
+    :rtype: str or None
+    """
+    server_url = getattr(server, "url", None)
+    if server_url:
+        normalized = server_url.rstrip("/")
+        if normalized in server_map:
+            return server_map[normalized]["public_url"]
+
+    if not server_url:
+        logger.warning("Unable to resolve public URL: server has no url attribute")
+        return None
+
+    derived = server_url.rstrip("/")
+    if derived.lower().endswith("/admin"):
+        derived = derived[:-len("/admin")]
+    derived = derived.rstrip("/") + "/rest/services"
+    logger.warning(f"Unable to resolve public URL for server {server_url} via federation map, "
+                   f"deriving from its own URL: {derived}")
+    return derived
+
+
 def _update_portal_token_info(portal_model_instance, target_gis_connection):
     """Helper to update token info on the Portal model instance."""
     try:
