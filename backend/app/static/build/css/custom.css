@@ -255,7 +255,7 @@ h2 {
   margin-bottom: 10px;
   padding: 10px 17px;
   display: inline-block;
-  background-color: var(--calcite-color-foreground-1);
+  background-color: var(--calcite-color-surface-2);
   border-block-end: var(--calcite-panel-header-border-block-end, 1px solid var(--calcite-color-border-3));
   -webkit-column-break-inside: avoid;
   -moz-column-break-inside: avoid;
@@ -342,13 +342,13 @@ div.dataTables_wrapper div.dataTables_info {
 
 .datatable {
   color: var(--calcite-color-text-2);
-  background-color: var(--calcite-color-foreground-1);
+  background-color: var(--calcite-color-surface-2);
   border-collapse: collapse !important;
 }
 
 .table {
   color: var(--calcite-color-text-2);
-  background-color: var(--calcite-color-foreground-1);
+  background-color: var(--calcite-color-surface-2);
   border-collapse: collapse !important;
   border-width: 1px;
   border-color: solid var(--calcite-color-border-3);
@@ -362,14 +362,14 @@ table.dataTable {
 
 .dataTables_paginate a {
   padding: 6px 9px !important;
-  background: var(--calcite-color-foreground-2) !important;
-  border-color: var(--calcite-color-foreground-2) !important
+  background: var(--calcite-color-surface-3) !important;
+  border-color: var(--calcite-color-surface-3) !important
 }
 
 .pagination a, .pagination span, .pagination div {
   padding: 6px 9px !important;
-  background: var(--calcite-color-foreground-2) !important;
-  border-color: var(--calcite-color-foreground-2) !important
+  background: var(--calcite-color-surface-3) !important;
+  border-color: var(--calcite-color-surface-3) !important
 }
 
 .table_filter {
@@ -410,7 +410,7 @@ table.dataTable thead th {
   position: relative;
   word-break: keep-all;
   background-image: none !important;
-  background-color: var(--calcite-color-foreground-1);
+  background-color: var(--calcite-color-surface-2);
 }
 
 .table-container thead th {
@@ -419,7 +419,7 @@ table.dataTable thead th {
   position: relative;
   word-break: keep-all;
   background-image: none !important;
-  background-color: var(--calcite-color-foreground-1);
+  background-color: var(--calcite-color-surface-2);
 }
 
 .table thead th {
@@ -428,7 +428,7 @@ table.dataTable thead th {
   position: relative;
   word-break: keep-all;
   background-image: none !important;
-  background-color: var(--calcite-color-foreground-1);
+  background-color: var(--calcite-color-surface-2);
   padding-right: 20px;
 }
 
@@ -672,7 +672,7 @@ header {
 }
 
 .table th {
-  background-color: var(--calcite-color-foreground-2);
+  background-color: var(--calcite-color-surface-3);
 }
 
 table.dataTable > thead > tr > th.dt-orderable-asc.dt-orderable-desc.dt-ordering-asc span.dt-column-order:after, table.dataTable > thead > tr > th.dt-orderable-asc.dt-orderable-desc.dt-ordering-desc span.dt-column-order:after {
@@ -692,12 +692,14 @@ table.dataTable > thead > tr > th.dt-orderable-asc.dt-orderable-desc.dt-ordering
   background-color: var(--calcite-color-inverse);
 }
 
-calcite-modal#add-modal {
-  --calcite-modal-width: 60rem;
+calcite-dialog#add-modal,
+calcite-dialog#schedule-modal,
+calcite-dialog#update-modal {
+  --calcite-dialog-size-x: 60rem;
 }
 
 .dropdown-menu {
-  background-color: var(--calcite-color-foreground-1);
+  background-color: var(--calcite-color-surface-2);
   color: var(--calcite-color-text-1);
 }
 
@@ -706,7 +708,7 @@ calcite-modal#add-modal {
 }
 
 .node circle {
-  fill: var(--calcite-color-foreground-1);
+  fill: var(--calcite-color-surface-2);
   stroke: var(--calcite-color-border-1);
   stroke-width: 1px;
 }
@@ -776,10 +778,6 @@ ul, pre {
   display: none;
 }
 
-calcite-modal {
-  --calcite-modal-width: 60rem;
-}
-
 .calcite-input {
   padding-bottom: .5rem;
 }
@@ -796,8 +794,8 @@ calcite-table {
   margin-left: 6px;
 }
 
-calcite-modal#login-modal {
-  --calcite-modal-width: 400px;
+calcite-dialog#login-modal {
+  --calcite-dialog-size-x: 400px;
 }
 
 .jqstooltip {
@@ -894,7 +892,7 @@ calcite-button[kind="inverse"] {
 }
 
 calcite-dialog {
-  --calcite-dialog-background-color: var(--calcite-color-background);
+  --calcite-dialog-background-color: var(--calcite-color-surface-1);
 }
 
 calcite-dialog {
@@ -1178,11 +1176,11 @@ calcite-chip {
 }
 
 .success-chip {
-  --calcite-color-foreground-2: var(--calcite-color-status-success);
-  --calcite-color-text-1: var(--calcite-color-foreground-1);
+  --calcite-color-surface-3: var(--calcite-color-status-success);
+  --calcite-color-text-1: var(--calcite-color-surface-2);
 }
 
 .error-chip {
-  --calcite-color-foreground-2: var(--calcite-color-status-danger);
-  --calcite-color-text-1: var(--calcite-color-foreground-1);
+  --calcite-color-surface-3: var(--calcite-color-status-danger);
+  --calcite-color-text-1: var(--calcite-color-surface-2);
 }

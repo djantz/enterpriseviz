@@ -59,7 +59,7 @@ function initDependencyGraph(containerId, data) {
         borderColor: getCalciteColor('--calcite-color-border-1'),
         textPrimary: getCalciteColor('--calcite-color-text-1'),
         textSecondary: getCalciteColor('--calcite-color-text-3'),
-        bgForeground: getCalciteColor('--calcite-color-background'),
+        bgForeground: getCalciteColor('--calcite-color-surface-1'),
 
         // Status colors
         linkNormal: getCalciteColor('--calcite-color-text-3'),
