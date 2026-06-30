@@ -1547,7 +1547,8 @@ def process_batch_services(self, instance_alias, credential_token, server_id, pu
         logger.info(f"Completed processing {total_services_processed} services in folder '{folder}'")
         logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
 
-        result.set_success()
+        if result.num_errors == 0:
+            result.set_success()
         return {"result": result.to_json(), "service_usage": service_usage_list, "server_id": server_id}
 
     except Exception as e:
@@ -3735,8 +3736,8 @@ def process_service(self, instance_alias, item, operation):
         match = re.search(r"/services(?:/([^/]+))?/([^/]+)/[^/]+(?:/\d+)?$", service.url)
         if match:
             folder_name = match.group(1)
-            if folder_name is None:
-                folder_name = ""
+            if not folder_name:
+                folder_name = "/"
             service_name = match.group(2)
         else:
             logger.warning(f"Unable to extract folder and service name from service URL: {service.url}")
