@@ -35,15 +35,13 @@
         <form id="login_form" method="post" autocomplete="off" aria-label="Login form">
           {% csrf_token %}
           <calcite-input type="text" icon="user" id="{{ form.username.name }}" name="{{ form.username.name }}"
-                         placeholder="{{ form.username.label }}" autocomplete="username"
-                         label-text="Username" required
+                         placeholder="{{ form.username.label }}" autocomplete="username" required
                          status="{% if form.username.errors %}invalid{% else %}idle{% endif %}"
                          validation-message="{{ form.username.errors|join:' ' }}"
                          validation-icon="{% if form.username.errors %}exclamation-mark-triangle{% endif %}"></calcite-input>
 
           <calcite-input type="password" icon="lock" id="{{ form.password.name }}" name="{{ form.password.name }}"
-                         placeholder="{{ form.password.label }}" autocomplete="current-password"
-                         label-text="Password" required
+                         placeholder="{{ form.password.label }}" autocomplete="current-password" required
                          status="{% if form.password.errors %}invalid{% else %}idle{% endif %}"
                          validation-message="{{ form.password.errors|join:' ' }}"
                          validation-icon="{% if form.password.errors %}exclamation-mark-triangle{% endif %}"></calcite-input>

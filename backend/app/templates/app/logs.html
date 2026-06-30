@@ -17,6 +17,7 @@
         <div class="log_filter" id="logs-filter">
           <form id="log-form" class="form-inline flex-container flex-gap-05" aria-label="Log filtering and search">
             {% if filter %}
+              {# Calcite 5.1: the dropdown `trigger` slot is deprecated (removal in v7); migrate these buttons to the `referenceElement` property when convenient. #}
               <calcite-dropdown id="column-visibility-dropdown" close-on-select-disabled width="s">
                 <calcite-button slot="trigger" appearance="outline" icon-end="chevron-down" scale="s"
                                 kind="inverse" label="Column visibility">
