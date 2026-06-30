@@ -1,19 +1,18 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
 <div id="settings-container" role="region" aria-label="Application settings">
-  <calcite-action id="email-action" text="Email" icon="envelope" text-enabled
+  <calcite-list>
+    <calcite-list-item id="email-action" label="Email" icon-start="envelope"
                   hx-get="{% url 'enterpriseviz:email_settings' %}"
-                  hx-target="#email_settings_modal"
-                  label="Configure email settings"></calcite-action>
-  <calcite-action id="webhook-action" text="Webhook" icon="key" text-enabled
+                  hx-target="#email_settings_modal"></calcite-list-item>
+  <calcite-list-item id="webhook-action" label="Webhook" icon-start="key"
                   hx-get="{% url 'enterpriseviz:webhook_settings' %}"
-                  hx-target="#webhook_settings_modal"
-                  label="Configure webhook settings"></calcite-action>
-  <calcite-action id="log-viewer-action" text="Logs" icon="access-string-results" text-enabled
+                  hx-target="#webhook_settings_modal"></calcite-list-item>
+  <calcite-list-item id="log-viewer-action" label="Logs" icon-start="access-string-results"
                   hx-get="{% url 'enterpriseviz:log' %}"
                   hx-target="#mainbodycontent"
-                  hx-push-url="true"
-                  label="View application logs">
-  </calcite-action>
+                  hx-push-url="true"></calcite-list-item>
+  </calcite-list>
+
 
   <calcite-tooltip reference-element="email-action" placement="left" overlay-positioning="fixed"
                    close-on-click>
