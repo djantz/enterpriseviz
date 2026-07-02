@@ -236,6 +236,13 @@ Currently, EnterpriseViz has the following known limitation:
 
 ## Changelog
 
+### July 2026 - Calcite Design System 5.1 Upgrade
+* **Calcite Components Upgraded to 5.1** - Updated CDN from 3.3.3 to 5.1, picking up two major versions of design system improvements and bug fixes.
+* **Design Token Migration** - Migrated deprecated `--calcite-color-foreground-*` and `--calcite-color-background` tokens to the new `--calcite-color-surface-*` naming convention for v5 compatibility.
+* **Component API Updates** - Updated `calcite-block` icon slot (`slot="icon"` → `slot="content-start"`) and `calcite-combobox-item` label attribute (`text-label` → `heading`) to conform to v5 breaking changes.
+* **Modal → Dialog Migration** - Replaced removed `calcite-modal` component with `calcite-dialog`; restored intended dialog widths (`60rem` for Add/Schedule, `400px` for Login) using the v5 `--calcite-dialog-size-x` token.
+* **Settings & Portal Panel Refactor** - Migrated settings and portal panels to use `calcite-list` and `calcite-list-item` for improved structure and accessibility.
+
 ### June 2026 - Multi-Server Federated Portal Support
 * **Per-Server Folder Processing** - Batch tasks are now scoped to a specific (server, folder) pair instead of re-querying all servers for each folder, eliminating duplicate work and incorrect cross-server service associations.
 * **Per-Server Usage Reporting** - Usage reports are now fetched from each server individually rather than from the last server in the loop.

@@ -634,13 +634,18 @@
 {% endblock content %}
 
 <div id="portals-container" hx-swap-oob="true">
+<calcite-list>
   {% for item in portal %}
-    <calcite-action text="{{ item.0 }}" {% if item.1 == 'portal' %}icon="portal"
-                    {% else %}icon="arcgis-online"{% endif %} text-enabled
-                    {% if instance == item.0 %}active {% endif %}
-                    hx-get="{% url 'enterpriseviz:viz' instance=item.0 %}" hx-target="#mainbodycontent"
+    <calcite-list-item id="portal-{{ item.0|slugify }}" text="{{ item.0 }}"
+                    {% if item.1 == 'portal' %}icon-start="portal"
+                    {% else %}icon-start="arcgis-online"{% endif %}
+                    {% if instance == item.0 %}selected{% endif %}
+                    hx-get="{% url 'enterpriseviz:viz' instance=item.0 %}"
+                    hx-target="#mainbodycontent"
                     hx-push-url="{% url 'enterpriseviz:viz' instance=item.0 %}"
-                    hx-swap="innerHTML show:top" data-loading-target="#loading"></calcite-action>
+                    hx-swap="innerHTML show:top"
+                    label="{{ item.0 }}"
+                    {% if instance == item.0 %}aria-current="page"{% endif %}></calcite-list-item>
   {% endfor %}
-
+</calcite-list>
 </div>
