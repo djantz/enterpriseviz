@@ -473,6 +473,7 @@ def get_federated_server_map(target):
             if admin_url:
                 server_map[admin_url.rstrip("/")] = info
             server_map[raw_url.rstrip("/")] = info
+            server_map[public_url.rstrip("/")] = info
     except Exception as e:
         logger.warning(f"Error retrieving federated servers map for {target.url}: {e}")
 
@@ -507,6 +508,8 @@ def resolve_server_public_url(server, server_map):
     derived = server_url.rstrip("/")
     if derived.lower().endswith("/admin"):
         derived = derived[:-len("/admin")]
+    elif derived.lower().endswith("/rest/services"):
+        derived = derived[:-len("/rest/services")]
     derived = derived.rstrip("/") + "/rest/services"
     logger.warning(f"Unable to resolve public URL for server {server_url} via federation map, "
                    f"deriving from its own URL: {derived}")

@@ -1332,9 +1332,6 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
             for server_index, gis_server in enumerate(gis_servers):
                 logger.debug(f"Processing GIS server {server_index+1}/{server_count}")
 
-                if gis_server.serverRole not in ("HOSTING_SERVER", "FEDERATED_SERVER"):
-                    logger.debug(f"Skipping GIS server {gis_server.name} ({gis_server.serverRole})")
-                    continue
                 # Get folders for this server
                 logger.debug(f"Retrieving service folders for server {server_index+1}")
                 if not hasattr(gis_server, "services") or gis_server.services is None:
