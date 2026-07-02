@@ -1302,11 +1302,12 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
         batch_results = None
 
         try:
-            import re
             logger.debug("Retrieving GIS servers list")
             gis_servers = target.admin.servers.list()
             server_count = len(gis_servers)
             logger.info(f"Found {server_count} GIS servers in portal '{instance_alias}'")
+            server_map = utils.get_federated_server_map(target)
+            server_by_id = {}
 
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
@@ -1351,6 +1352,10 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
                 total_folders += folder_count
                 logger.info(f"Found {folder_count} service folders to process in server {server_index+1}")
 
+                server_id = getattr(gis_server, "id", None) or getattr(gis_server, "url", None)
+                public_url = utils.resolve_server_public_url(gis_server, server_map)
+                server_by_id[server_id] = gis_server
+
                 # Create batch tasks for each folder
                 logger.debug(f"Creating batch tasks for {folder_count} folders")
                 for folder_index, folder in enumerate(folders):
@@ -1358,6 +1363,8 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
                     batch_tasks.append(
                         process_batch_services.s(instance_alias,
                                                  credential_token,
+                                                 server_id,
+                                                 public_url,
                                                  folder,
                                                  update_time
                                                  )
@@ -1392,6 +1399,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
 
                 success_count = 0
                 failure_count = 0
+                usage_by_server = {}
 
                 for batch in batch_results.get(disable_sync_subtasks=False):
                     batch_result = utils.UpdateResult(**batch["result"])
@@ -1410,15 +1418,20 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
                     result.num_errors += batch_result.num_errors
                     result.error_messages.extend(batch_result.error_messages)
                     service_list.extend(batch["service_usage"])
+                    usage_by_server.setdefault(batch.get("server_id"), []).extend(batch["service_usage"])
 
                 logger.info(f"Batch processing summary: {success_count} successful batches, {failure_count} failed batches")
 
             else:
                 logger.warning("No batch tasks created, no folders to process")
+                usage_by_server = {}
 
             if django_settings.USE_SERVICE_USAGE_REPORT:
                 logger.debug(f"Processing usage reports for {len(service_list)} services")
-                fetch_usage_report(instance_item, gis_server, service_list)
+                for sid, svc_list in usage_by_server.items():
+                    server_obj = server_by_id.get(sid)
+                    if server_obj and svc_list:
+                        fetch_usage_report(instance_item, server_obj, svc_list)
                 logger.info("Usage report processing completed")
             else:
                 logger.debug("Service usage reporting is disabled, skipping")
@@ -1473,7 +1486,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
 
 @shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
-def process_batch_services(self, instance_alias, credential_token, folder, update_time):
+def process_batch_services(self, instance_alias, credential_token, server_id, public_url, folder, update_time):
     result = utils.UpdateResult()
     service_usage_list = []
 
@@ -1483,62 +1496,65 @@ def process_batch_services(self, instance_alias, credential_token, folder, updat
         try:
             instance_item = Portal.objects.get(alias=instance_alias)
             target = utils.connect(instance_item, credential_token)
-            logger.debug("Retrieving GIS servers list")
+            logger.debug(f"Resolving GIS server {server_id}")
             gis_servers = target.admin.servers.list()
-            server_count = len(gis_servers)
-            logger.debug(f"Found {server_count} GIS servers")
+            server = next((s for s in gis_servers
+                          if (getattr(s, "id", None) or getattr(s, "url", None)) == server_id), None)
 
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Unable to connect to {instance_alias}")
-            return {"result": result.to_json(), "service_usage": service_usage_list}
+            return {"result": result.to_json(), "service_usage": service_usage_list, "server_id": server_id}
+
+        if server is None:
+            logger.warning(f"Unable to resolve server {server_id} for folder '{folder}'")
+            result.add_error(f"Unable to resolve server {server_id} for folder '{folder}'")
+            return {"result": result.to_json(), "service_usage": service_usage_list, "server_id": server_id}
 
         total_services_processed = 0
-        logger.info(f"Processing services in folder '{folder}' across {server_count} servers")
+        logger.info(f"Processing services in folder '{folder}' on server {server_id}")
 
-        for server_index, server in enumerate(gis_servers):
-            logger.debug(f"Processing server {server_index+1}/{server_count}")
+        try:
+            logger.debug(f"Retrieving services in folder '{folder}' for server {server_id}")
+            services = server.services.list(folder=folder)
+            service_count = len(services)
+            logger.info(f"Found {service_count} services in folder '{folder}' for server {server_id}")
 
-            try:
-                logger.debug(f"Retrieving services in folder '{folder}' for server {server_index+1}")
-                services = server.services.list(folder=folder)
-                service_count = len(services)
-                logger.info(f"Found {service_count} services in folder '{folder}' for server {server_index+1}")
+            for service_index, service in enumerate(services):
+                service_name = getattr(service.properties, 'serviceName', 'unknown')
+                logger.debug(f"Processing service {service_index+1}/{service_count}: {service_name}")
 
-                for service_index, service in enumerate(services):
-                    service_name = getattr(service.properties, 'serviceName', 'unknown')
-                    logger.debug(f"Processing service {service_index+1}/{service_count}: {service_name}")
+                try:
+                    service_result = process_single_service(target, instance_item, service, public_url, folder, update_time, regex_patterns, result)
 
-                    try:
-                        service_result = process_single_service(target, instance_item, service, folder, update_time, regex_patterns, result)
+                    if service_result is not None:
+                        logger.debug(f"Adding service '{service_name}' to usage list")
+                        service_usage_list.append(service_result)
 
-                        if service_result is not None:
-                            logger.debug(f"Adding service '{service_name}' to usage list")
-                            service_usage_list.append(service_result)
+                    total_services_processed += 1
 
-                        total_services_processed += 1
+                except Exception as e:
+                    logger.error(f"Error processing service '{service_name}' in folder '{folder}': {e}", exc_info=True)
+                    result.add_error(f"Error processing service '{service_name}' in folder '{folder}'")
 
-                    except Exception as e:
-                        logger.error(f"Error processing service '{service_name}' in folder '{folder}': {e}", exc_info=True)
-                        result.add_error(f"Error processing service '{service_name}' in folder '{folder}'")
-
-            except Exception as e:
-                logger.error(f"Error retrieving services for server {server_index+1} in folder '{folder}': {e}", exc_info=True)
-                result.add_error(f"Error retrieving services for server {server_index+1} in folder '{folder}'")
+        except Exception as e:
+            logger.error(f"Error retrieving services for server {server_id} in folder '{folder}': {e}", exc_info=True)
+            result.add_error(f"Error retrieving services for server {server_id} in folder '{folder}'")
 
         logger.info(f"Completed processing {total_services_processed} services in folder '{folder}'")
         logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
 
-        result.set_success()
-        return {"result": result.to_json(), "service_usage": service_usage_list}
+        if result.num_errors == 0:
+            result.set_success()
+        return {"result": result.to_json(), "service_usage": service_usage_list, "server_id": server_id}
 
     except Exception as e:
         logger.error(f"Error processing services in folder {folder}: {e}", exc_info=True)
         result.add_error(f"Error processing services in folder {folder}")
-        return {"result": result.to_json()}
+        return {"result": result.to_json(), "service_usage": service_usage_list, "server_id": server_id}
 
 
-def process_single_service(target, instance_item, service, folder, update_time, regex_patterns, result):
+def process_single_service(target, instance_item, service, base_url, folder, update_time, regex_patterns, result):
     """
     Process a single service from a portal instance.
 
@@ -1551,6 +1567,8 @@ def process_single_service(target, instance_item, service, folder, update_time, 
     :type instance_item: Portal
     :param service: Service object to process
     :type service: Service
+    :param base_url: Public REST services base URL of the server hosting this service
+    :type base_url: str
     :param folder: Folder containing the service
     :type folder: str
     :param update_time: Timestamp for this update operation
@@ -1572,9 +1590,10 @@ def process_single_service(target, instance_item, service, folder, update_time, 
         access, owner, description = None, None, None
         service_created, service_modified = None, None
 
-        # Construct the service name and corresponding URL based on folder structure
-        logger.debug("Constructing service URL")
-        base_url = target.hosting_servers[0].url
+        if not base_url:
+            logger.warning(f"No base_url provided for service {service_name}, skipping")
+            result.add_error(f"Unable to determine base URL for {service_name}")
+            return service_usage_str
         logger.debug(f"Base URL: {base_url}")
 
         # Validate service has required attributes
@@ -3714,8 +3733,8 @@ def process_service(self, instance_alias, item, operation):
         match = re.search(r"/services(?:/([^/]+))?/([^/]+)/[^/]+(?:/\d+)?$", service.url)
         if match:
             folder_name = match.group(1)
-            if folder_name is None:
-                folder_name = ""
+            if not folder_name:
+                folder_name = "/"
             service_name = match.group(2)
         else:
             logger.warning(f"Unable to extract folder and service name from service URL: {service.url}")
@@ -3751,7 +3770,10 @@ def process_service(self, instance_alias, item, operation):
         service_list = []
         regex_patterns = compile_regex_patterns()
 
-        service_result = process_single_service(target, instance_item, service_admin, folder_name, update_time, regex_patterns, result)
+        server_map = utils.get_federated_server_map(target)
+        base_url = utils.resolve_server_public_url(server_admin, server_map)
+
+        service_result = process_single_service(target, instance_item, service_admin, base_url, folder_name, update_time, regex_patterns, result)
         if service_result is not None:
             service_list.append(service_result)
             s_obj = Service.objects.get(portal_instance=instance_item,
@@ -3760,7 +3782,7 @@ def process_service(self, instance_alias, item, operation):
 
             if django_settings.USE_SERVICE_USAGE_REPORT:
                 logger.debug(f"Processing usage reports for {len(service_list)} services")
-                fetch_usage_report(instance_item, target.admin.servers.list()[0], service_list)
+                fetch_usage_report(instance_item, server_admin, service_list)
                 logger.info("Usage report processing completed")
             else:
                 logger.debug("Service usage reporting is disabled, skipping")

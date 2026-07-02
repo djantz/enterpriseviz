@@ -236,6 +236,11 @@ Currently, EnterpriseViz has the following known limitation:
 
 ## Changelog
 
+### June 2026 - Multi-Server Federated Portal Support
+* **Per-Server Folder Processing** - Batch tasks are now scoped to a specific (server, folder) pair instead of re-querying all servers for each folder, eliminating duplicate work and incorrect cross-server service associations.
+* **Per-Server Usage Reporting** - Usage reports are now fetched from each server individually rather than from the last server in the loop.
+* * **Correct Service URLs for Federated Servers** - Service URLs are now built from each server's own public URL rather than always using the first hosting server's URL. Fixes broken webmap/app linkage for services hosted on non-hosting federated servers.
+
 ### April 2026 - Map Layer Linking & Parsing Improvements
 * **Layer-Service Linking Update** - Layer-service links now use `service_layer_id`, enabling correct association of feature classes to multiple service layers (including those with definition queries).
 * **Map Image Service Layer Handling** - Enhanced parsing and linking for map image services: all layers are now linked to the map when available, and logic distinguishes between full-service and partial-layer inclusion.
