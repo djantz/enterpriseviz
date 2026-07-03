@@ -639,7 +639,7 @@
     <calcite-list-item id="portal-{{ item.0|slugify }}"
                     {% if item.1 == 'portal' %}icon-start="portal"
                     {% else %}icon-start="arcgis-online"{% endif %}
-                    {% if instance.alias == item.0 %}description="SELECTED" class="selected-list"{% endif %}
+                    {% if instance.alias == item.0 %}class="selected-list"{% endif %}
                     hx-get="{% url 'enterpriseviz:viz' instance=item.0 %}"
                     hx-target="#mainbodycontent"
                     hx-push-url="{% url 'enterpriseviz:viz' instance=item.0 %}"
