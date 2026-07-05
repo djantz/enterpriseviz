@@ -49,22 +49,22 @@
 
 <div id="portals-container" role="navigation" aria-label="Portal selection">
 <calcite-list>
-  {% for item in portal %}
-    <calcite-list-item id="portal-{{ item.0|slugify }}" text="{{ item.0 }}"
+    {% for item in portal %}
+    <calcite-list-item id="portal-{{ item.0|slugify }}"
                     {% if item.1 == 'portal' %}icon-start="portal"
                     {% else %}icon-start="arcgis-online"{% endif %}
-                    {% if instance == item.0 %}selected{% endif %}
+                    {% if instance.alias == item.0 %}class="selected-list"{% endif %}
                     hx-get="{% url 'enterpriseviz:viz' instance=item.0 %}"
                     hx-target="#mainbodycontent"
                     hx-push-url="{% url 'enterpriseviz:viz' instance=item.0 %}"
                     hx-swap="innerHTML show:top"
                     label="{{ item.0 }}"
-                    {% if instance == item.0 %}aria-current="page"{% endif %}></calcite-list-item>
-
+                    {% if instance.alias == item.0 %}aria-current="page"{% endif %}>
+    </calcite-list-item>
     <calcite-tooltip reference-element="portal-{{ item.0|slugify }}" placement="right"
                      overlay-positioning="fixed" close-on-click>
       <span>View content for {{ item.0 }}{% if item.2 %} - {{ item.2 }}{% endif %}</span>
     </calcite-tooltip>
   {% endfor %}
-</calcite-list>
+  </calcite-list>
 </div>
