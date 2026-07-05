@@ -2,7 +2,7 @@
 <div id="manage-container" role="region" aria-label="Portal management">
   {% for item in portal %}
     <calcite-block heading="{{ item.0 }}" description="{{ item.2 }}">
-      <calcite-icon scale="s" preload="true" slot="icon"
+      <calcite-icon scale="s" preload="true" slot="content-start"
                     {% if item.1 == 'portal' %}icon="portal"
                     {% else %}icon="arcgis-online"{% endif %}
                     aria-hidden="true"></calcite-icon>

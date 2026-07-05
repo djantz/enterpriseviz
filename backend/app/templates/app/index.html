@@ -634,13 +634,23 @@
 {% endblock content %}
 
 <div id="portals-container" hx-swap-oob="true">
-  {% for item in portal %}
-    <calcite-action text="{{ item.0 }}" {% if item.1 == 'portal' %}icon="portal"
-                    {% else %}icon="arcgis-online"{% endif %} text-enabled
-                    {% if instance == item.0 %}active {% endif %}
-                    hx-get="{% url 'enterpriseviz:viz' instance=item.0 %}" hx-target="#mainbodycontent"
+<calcite-list>
+    {% for item in portal %}
+    <calcite-list-item id="portal-{{ item.0|slugify }}"
+                    {% if item.1 == 'portal' %}icon-start="portal"
+                    {% else %}icon-start="arcgis-online"{% endif %}
+                    {% if instance.alias == item.0 %}class="selected-list"{% endif %}
+                    hx-get="{% url 'enterpriseviz:viz' instance=item.0 %}"
+                    hx-target="#mainbodycontent"
                     hx-push-url="{% url 'enterpriseviz:viz' instance=item.0 %}"
-                    hx-swap="innerHTML show:top" data-loading-target="#loading"></calcite-action>
+                    hx-swap="innerHTML show:top"
+                    label="{{ item.0 }}"
+                    {% if instance.alias == item.0 %}aria-current="page"{% endif %}>
+    </calcite-list-item>
+    <calcite-tooltip reference-element="portal-{{ item.0|slugify }}" placement="right"
+                     overlay-positioning="fixed" close-on-click>
+      <span>View content for {{ item.0 }}{% if item.2 %} - {{ item.2 }}{% endif %}</span>
+    </calcite-tooltip>
   {% endfor %}
-
+  </calcite-list>
 </div>
