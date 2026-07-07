@@ -1,0 +1,135 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<form id="replace-portal-form" class="calcite-form" autocomplete="off"
+      hx-post="{% url 'enterpriseviz:replace_dry_run' instance=instance_alias service_pk=item.pk %}"
+      hx-target="#replace-dryrun-container"
+      hx-swap="innerHTML"
+      aria-label="Replace this service in consuming maps and apps">
+  {% csrf_token %}
+  <input type="hidden" name="mode" id="replace-mode" value="simple" aria-hidden="true">
+  <input type="hidden" name="layer_mappings" id="replace-layer-mappings" aria-hidden="true">
+  <input type="hidden" name="selected_maps" id="replace-selected-maps" aria-hidden="true">
+  <input type="hidden" name="selected_apps" id="replace-selected-apps" aria-hidden="true">
+
+  <calcite-stepper id="replace-stepper" layout="horizontal" scale="s" numbered>
+    <calcite-stepper-item heading="Replacement target" description="Choose the new service" selected>
+      <calcite-label>Replacement service
+        <calcite-select id="replace-target-select" name="target_service"
+                        label="Replacement service">
+          <calcite-option value="" selected>Choose a service...</calcite-option>
+          {% for candidate in candidates %}
+            <calcite-option value="{{ candidate.pk }}">{{ candidate.service_name }} ({{ candidate.service_type }})</calcite-option>
+          {% endfor %}
+        </calcite-select>
+      </calcite-label>
+
+      <calcite-label layout="inline">
+        <calcite-switch id="replace-advanced-toggle"></calcite-switch>
+        Advanced: map individual layers to different services
+      </calcite-label>
+
+      <div id="replace-advanced-table" data-instance="{{ instance_alias }}" hidden>
+        {% if source_layers %}
+          <calcite-input-message icon="information" kind="info">
+            Map each layer of {{ item.service_name }} to its replacement. Layers left on
+            "Same layer ID" keep their index on the chosen service.
+          </calcite-input-message>
+          {% for layer in source_layers %}
+            <div class="replace-mapping-row" data-old-layer-id="{{ layer.id }}">
+              <calcite-label>Layer {{ layer.id }}{% if layer.name %} &mdash; {{ layer.name }}{% endif %}
+                <calcite-select class="replace-row-service"
+                                label="Replacement service for layer {{ layer.id }}">
+                  <calcite-option value="" selected>No change</calcite-option>
+                  {% for candidate in candidates %}
+                    <calcite-option value="{{ candidate.pk }}">{{ candidate.service_name }}</calcite-option>
+                  {% endfor %}
+                </calcite-select>
+                <calcite-select class="replace-row-layer"
+                                label="Replacement layer for layer {{ layer.id }}">
+                  <calcite-option value="" selected>Same layer ID</calcite-option>
+                </calcite-select>
+              </calcite-label>
+            </div>
+          {% endfor %}
+        {% else %}
+          <calcite-notice open kind="info" icon scale="s">
+            <div slot="message">No sublayers are known for this service; use simple mode.</div>
+          </calcite-notice>
+        {% endif %}
+      </div>
+    </calcite-stepper-item>
+
+    <calcite-stepper-item heading="Select items" description="Choose maps and apps to update">
+      <div role="group" aria-labelledby="replace-maps-label">
+        <calcite-label id="replace-maps-label">Affected Maps</calcite-label>
+        <calcite-table id="replace-maps-table" scale="s" caption="Affected Maps" striped
+                       {% if maps %}selection-mode="multiple"{% endif %}
+                       page-size="10" bordered
+                       aria-label="Select maps to update">
+          <calcite-table-row slot="table-header">
+            <calcite-table-header heading="Title"></calcite-table-header>
+            <calcite-table-header heading="Owner"></calcite-table-header>
+          </calcite-table-row>
+          {% if maps %}
+            {% for map in maps %}
+              <calcite-table-row data-id="{{ map.webmap_id }}" selected>
+                <calcite-table-cell>{{ map.webmap_title }}</calcite-table-cell>
+                <calcite-table-cell>{{ map.webmap_owner }}</calcite-table-cell>
+              </calcite-table-row>
+            {% endfor %}
+          {% else %}
+            <calcite-table-row>
+              <calcite-table-cell col-span="2">
+                <calcite-notice open kind="info" icon scale="s">
+                  <div slot="message">No maps use this service.</div>
+                </calcite-notice>
+              </calcite-table-cell>
+            </calcite-table-row>
+          {% endif %}
+        </calcite-table>
+      </div>
+
+      <div role="group" aria-labelledby="replace-apps-label" class="margin-top-1">
+        <calcite-label id="replace-apps-label">Affected Apps</calcite-label>
+        <calcite-table id="replace-apps-table" scale="s" caption="Affected Apps" striped
+                       {% if apps %}selection-mode="multiple"{% endif %}
+                       page-size="10" bordered
+                       aria-label="Select apps to update">
+          <calcite-table-row slot="table-header">
+            <calcite-table-header heading="Title"></calcite-table-header>
+            <calcite-table-header heading="Type"></calcite-table-header>
+            <calcite-table-header heading="Owner"></calcite-table-header>
+          </calcite-table-row>
+          {% if apps %}
+            {% for app in apps %}
+              <calcite-table-row data-id="{{ app.app_id }}" selected>
+                <calcite-table-cell>{{ app.app_title }}</calcite-table-cell>
+                <calcite-table-cell>{{ app.app_type }}</calcite-table-cell>
+                <calcite-table-cell>{{ app.app_owner }}</calcite-table-cell>
+              </calcite-table-row>
+            {% endfor %}
+          {% else %}
+            <calcite-table-row>
+              <calcite-table-cell col-span="3">
+                <calcite-notice open kind="info" icon scale="s">
+                  <div slot="message">No apps use this service directly. Apps that use it
+                    through a map are covered by updating the map.</div>
+                </calcite-notice>
+              </calcite-table-cell>
+            </calcite-table-row>
+          {% endif %}
+        </calcite-table>
+      </div>
+    </calcite-stepper-item>
+
+    <calcite-stepper-item heading="Preview &amp; execute" description="Dry run before applying">
+      <div id="replace-dryrun-container">
+        <calcite-notice open kind="info" icon scale="s">
+          <div slot="message">
+            Run the dry run to preview exactly what would change in each selected item.
+            Nothing is modified until you execute from the preview.
+          </div>
+        </calcite-notice>
+      </div>
+    </calcite-stepper-item>
+  </calcite-stepper>
+</form>

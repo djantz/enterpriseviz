@@ -1,0 +1,51 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<calcite-dialog id="replace-modal" modal heading="Replace Service - {{ item.service_name }}" scale="m" open>
+  <calcite-notice slot="content-top" open kind="warning" icon width="full">
+    <div slot="title">This tool edits portal items</div>
+    <div slot="message">
+      Selected maps and apps are updated to reference the replacement service.
+      A dry run always happens first, and every change is backed up so it can be reverted.
+    </div>
+  </calcite-notice>
+
+  <calcite-tabs bordered class="x_panel--top">
+    <calcite-tab-nav slot="title-group">
+      <calcite-tab-title selected>Replace</calcite-tab-title>
+      <calcite-tab-title>History</calcite-tab-title>
+    </calcite-tab-nav>
+
+    <calcite-tab selected>
+      <div id="replace-form-container" role="tabpanel" aria-label="Service replacement">
+        {% include "partials/portal_replace_form.html" %}
+      </div>
+    </calcite-tab>
+
+    <calcite-tab>
+      <div role="tabpanel" aria-label="Replacement job history">
+        <calcite-button scale="s" kind="inverse" icon-start="launch"
+                        data-action="close-modal"
+                        hx-get="{% url 'enterpriseviz:replace_report' instance=instance_alias %}"
+                        hx-target="#mainbodycontent"
+                        hx-push-url="{% url 'enterpriseviz:replace_report' instance=instance_alias %}"
+                        hx-swap="show:window:top"
+                        label="Open the full replacement report">
+          Open full report
+        </calcite-button>
+        <div id="replace-history-container">
+          {% include "partials/replace_history.html" %}
+        </div>
+      </div>
+    </calcite-tab>
+  </calcite-tabs>
+
+  <calcite-button id="replace-portal-cancel" data-action="close-modal"
+                  slot="footer-end" appearance="outline" kind="neutral"
+                  icon-start="circle-disallowed" label="Close without changes">
+    Cancel
+  </calcite-button>
+
+  <calcite-button id="replace-portal-next" slot="footer-end"
+                  icon-start="chevron-right" label="Next step">
+    Next
+  </calcite-button>
+</calcite-dialog>
