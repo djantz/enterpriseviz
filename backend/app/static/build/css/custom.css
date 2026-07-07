@@ -51,6 +51,10 @@ html, body {
   margin-top: 0.75rem;
 }
 
+.margin-top-1 {
+  margin-top: 1rem;
+}
+
 .margin-left-1 {
   margin-left: 1rem;
 }
@@ -694,7 +698,8 @@ table.dataTable > thead > tr > th.dt-orderable-asc.dt-orderable-desc.dt-ordering
 
 calcite-dialog#add-modal,
 calcite-dialog#schedule-modal,
-calcite-dialog#update-modal {
+calcite-dialog#update-modal,
+calcite-dialog#replace-modal {
   --calcite-dialog-size-x: 60rem;
 }
 
