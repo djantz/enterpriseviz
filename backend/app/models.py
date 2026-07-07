@@ -712,3 +712,125 @@ class WebhookNotificationLog(models.Model):
 
     def __str__(self):
         return f"{self.notification_type} - {self.owner} - {self.item_title} ({self.sent_at})"
+
+
+class ReplacementJob(models.Model):
+    """
+    Tracks a service replacement operation: repointing consuming webmaps and
+    apps from a source service to one or more replacement services.
+    """
+    STATUS_CHOICES = [
+        ("dry_run", "Dry Run"),
+        ("pending", "Pending"),
+        ("running", "Running"),
+        ("completed", "Completed"),
+        ("completed_errors", "Completed with errors"),
+        ("failed", "Failed"),
+        ("reverting", "Reverting"),
+        ("reverted", "Reverted"),
+    ]
+
+    portal_instance = models.ForeignKey(
+        Portal,
+        on_delete=models.CASCADE,
+        related_name="replacement_jobs"
+    )
+    source_service = models.ForeignKey(
+        "Service",
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="replacement_jobs"
+    )
+    source_service_name = models.TextField(
+        help_text="Denormalized service name; survives Service deletion."
+    )
+    replacement_config = models.JSONField(
+        default=dict,
+        help_text="Raw UI input: {'mode': 'simple', 'target_service_id': n} or "
+                  "{'mode': 'advanced', 'layer_mappings': [...]}."
+    )
+    replacement_pairs = models.JSONField(
+        default=list,
+        help_text="Ordered [[old, new], ...] string pairs computed at dry-run."
+    )
+    selected_map_ids = models.JSONField(default=list)
+    selected_app_ids = models.JSONField(default=list)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="dry_run")
+    dry_run_summary = models.JSONField(
+        default=dict,
+        help_text="{'items': [...], 'warnings': [...], 'totals': {...}}"
+    )
+    initiated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        on_delete=models.SET_NULL
+    )
+    celery_task_id = models.CharField(max_length=100, blank=True)
+    revert_task_id = models.CharField(max_length=100, blank=True)
+    error_message = models.TextField(blank=True)
+    created = models.DateTimeField(auto_now_add=True)
+    executed_at = models.DateTimeField(null=True, blank=True)
+    reverted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Replacement Job"
+        verbose_name_plural = "Replacement Jobs"
+        ordering = ["-created"]
+        indexes = [
+            models.Index(fields=["portal_instance", "status"]),
+        ]
+
+    def __str__(self):
+        return f"Replace {self.source_service_name} ({self.get_status_display()}, {self.created:%Y-%m-%d %H:%M})"
+
+
+class ReplacementItemBackup(models.Model):
+    """
+    Snapshot of a portal item's pre-change state taken by a ReplacementJob so
+    the change can be reverted. Only content that will change is stored, but
+    the url property is always snapshotted because revert restores it.
+    """
+    STATUS_CHOICES = [
+        ("analyzed", "Analyzed"),
+        ("applied", "Applied"),
+        ("failed", "Failed"),
+        ("skipped", "Skipped"),
+        ("stale", "Stale"),
+        ("reverted", "Reverted"),
+        ("revert_failed", "Revert Failed"),
+    ]
+
+    job = models.ForeignKey(
+        ReplacementJob,
+        on_delete=models.CASCADE,
+        related_name="item_backups"
+    )
+    item_id = models.CharField(max_length=50)
+    item_type = models.CharField(max_length=100, blank=True)
+    item_title = models.TextField(blank=True)
+    item_owner = models.CharField(max_length=100, blank=True)
+    url_property = models.TextField(null=True, blank=True)
+    data_text = models.TextField(null=True, blank=True)
+    resources = models.JSONField(
+        default=dict,
+        help_text="{resource_name: pre-change text} for changing resources only."
+    )
+    item_modified_at = models.BigIntegerField(
+        null=True,
+        help_text="item.modified epoch ms at backup time."
+    )
+    counts = models.JSONField(
+        default=dict,
+        help_text="{'url': n, 'data': n, 'resources': n} replacements applied."
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="analyzed")
+    error = models.TextField(blank=True)
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Replacement Item Backup"
+        verbose_name_plural = "Replacement Item Backups"
+        unique_together = ("job", "item_id")
+
+    def __str__(self):
+        return f"{self.item_title or self.item_id} ({self.get_status_display()})"
