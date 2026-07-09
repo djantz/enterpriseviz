@@ -324,8 +324,7 @@ function initDependencyGraph(containerId, data) {
         },
         minZoom: 0.3,
         maxZoom: 3,
-        wheelSensitivity: 0,
-        userZoomingEnabled: true,
+        userZoomingEnabled: false,
         userPanningEnabled: true,
         boxSelectionEnabled: false
     });
@@ -435,17 +434,9 @@ function initDependencyGraph(containerId, data) {
                 return;
             }
 
-            scrollable.addEventListener('wheel', function (e) {
-                var rect = container.getBoundingClientRect();
-                var overCytoscape = e.clientX >= rect.left && e.clientX <= rect.right &&
-                    e.clientY >= rect.top && e.clientY <= rect.bottom;
-
-                if (overCytoscape) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    return false;
-                }
-            }, {passive: false, capture: true});
+            // Wheel scrolling over the graph passes through to the page/dialog.
+            // Zooming is available via the graph action bar buttons instead of
+            // the wheel, so the graph never blocks scrolling.
 
             scrollable.addEventListener('scroll', function () {
                 cy.resize();

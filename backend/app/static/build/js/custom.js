@@ -73,25 +73,29 @@ function initDataTable(selector, filterSelector, columnContains, usageTarget) {
                 extend: "copyHtml5",
                 text: "Copy",
                 tag: 'calcite-button',
-                attr: {scale: "s", kind: "inverse", "icon-start": "copy-to-clipboard"}
+                attr: {scale: "s", kind: "inverse", "icon-start": "copy-to-clipboard"},
+                exportOptions: {columns: ':not(.no-export)'}
             },
             {
                 extend: "csvHtml5",
                 text: "CSV",
                 tag: 'calcite-button',
-                attr: {scale: "s", kind: "inverse", "icon-start": "file-csv"}
+                attr: {scale: "s", kind: "inverse", "icon-start": "file-csv"},
+                exportOptions: {columns: ':not(.no-export)'}
             },
             {
                 extend: "excelHtml5",
                 text: "Excel",
                 tag: 'calcite-button',
-                attr: {scale: "s", kind: "inverse", "icon-start": "file-excel"}
+                attr: {scale: "s", kind: "inverse", "icon-start": "file-excel"},
+                exportOptions: {columns: ':not(.no-export)'}
             },
             {
                 extend: "pdfHtml5",
                 text: "PDF",
                 tag: 'calcite-button',
-                attr: {scale: "s", kind: "inverse", "icon-start": "file-pdf"}
+                attr: {scale: "s", kind: "inverse", "icon-start": "file-pdf"},
+                exportOptions: {columns: ':not(.no-export)'}
             }
         ],
         language: {
@@ -634,8 +638,16 @@ htmx.on("htmx:load", async (e) => {
             await init_DataTables(table);
         }
     }
-    // Main content updates - reinitialize page-level components
-    if (document.getElementById('graph-container')) {
+    // Only (re)initialize page-level components when they are part of the
+    // content that was just swapped in - not on every unrelated fragment swap
+    // (e.g. the progress bar polling every few seconds), which would otherwise
+    // rebuild the dependency graph and re-fetch its icons on each poll.
+    const inSwappedContent = (selector) => {
+        if (target.matches && target.matches(selector)) return target;
+        return target.querySelector ? target.querySelector(selector) : null;
+    };
+
+    if (inSwappedContent('#graph-container')) {
         initDependencyGraph('graph-container').then(function(graph) {
             if (graph) {
                 graph.connectControls();
