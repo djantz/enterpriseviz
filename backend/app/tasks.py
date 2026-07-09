@@ -3950,11 +3950,11 @@ def _verify_privileges(user):
     return all(priv in user.privileges for priv in required)
 
 
-def _connect_portal_task(portal_alias, tool_result):
+def _connect_portal_task(portal_alias, tool_result, credential_token=None):
     """Establish portal connection with error tracking."""
     try:
         portal_instance = Portal.objects.get(alias=portal_alias)
-        target = utils.connect(portal_instance)
+        target = utils.connect(portal_instance, credential_token)
         if not target:
             tool_result.add_error(f"Failed to connect to portal '{portal_alias}'")
             logger.error(f"Failed to connect to portal '{portal_alias}'")
@@ -4701,3 +4701,380 @@ def _record_webhook_notification(item, portal_instance):
         )
     except Exception as e:
         logger.error(f"Failed to log notification for {item.id}: {e}")
+
+
+@shared_task(bind=True, name="Replace Service Tool", time_limit=6000, soft_time_limit=3000)
+def process_replacement_task(self, job_id, mode, credential_token=None):
+    """
+    Analyzes or executes a service replacement job.
+
+    In "dry_run" mode every selected consumer is analyzed and the pending
+    per-item replacement counts are stored on the job for preview; the job
+    only transitions "analyzing" -> "dry_run" on success and is marked
+    "failed" otherwise. In "execute" mode each affected item is re-analyzed
+    fresh (items modified since the dry run get a note on their backup row),
+    backed up to a ReplacementItemBackup row, and updated; a per-item resync
+    task is then dispatched so the local database reflects the change.
+
+    :param job_id: ReplacementJob primary key
+    :type job_id: int
+    :param mode: "dry_run" or "execute"
+    :type mode: str
+    :param credential_token: Optional temporary credential token
+    :type credential_token: str
+    :return: ToolResult JSON
+    :rtype: dict
+    """
+    from .models import ReplacementJob
+
+    start_time = time.time()
+    progress_recorder = ProgressRecorder(self)
+    job = ReplacementJob.objects.get(pk=job_id)
+    portal_alias = job.portal_instance.alias
+    tool_result = utils.ToolResult(portal_alias=portal_alias, tool_name="replace_service")
+    portal_instance = None
+    is_execute = mode == "execute"
+
+    try:
+        # Opportunistic retention cleanup; never blocks the run
+        try:
+            utils.purge_expired_replacement_backups()
+        except Exception as e:
+            logger.warning(f"Replacement backup purge failed: {e}")
+
+        if is_execute:
+            job.status = "running"
+            job.celery_task_id = self.request.id
+            job.save(update_fields=["status", "celery_task_id"])
+
+        progress_recorder.set_progress(0, 100, "Connecting to portal...")
+        portal_instance, target = _connect_portal_task(portal_alias, tool_result, credential_token)
+        if not target:
+            progress_recorder.set_progress(100, 100, "Connection failed")
+            job.status = "failed"
+            job.error_message = "; ".join(tool_result.error_messages)
+            job.save(update_fields=["status", "error_message"])
+            return tool_result.to_json()
+
+        replacements = [tuple(pair) for pair in job.replacement_pairs]
+        selected_ids = list(job.selected_map_ids) + list(job.selected_app_ids)
+        total = len(selected_ids)
+        logger.info(f"[{portal_alias}] Replace Service Tool ({mode}) job {job.id}: "
+                    f"{len(replacements)} pairs, {total} items")
+
+        # Whole-service URLs and item IDs deliberately left unreplaced in a
+        # partial replacement; the dry run counts remaining references to them
+        unreplaced_references = (job.dry_run_summary.get("unreplaced_references", [])
+                                 if not is_execute else [])
+
+        summary_items = []
+        warnings = list(job.dry_run_summary.get("warnings", [])) if not is_execute else []
+        dry_run_items = {i["item_id"]: i for i in job.dry_run_summary.get("items", [])}
+        applied_ids = []
+
+        for index, item_id in enumerate(selected_ids):
+            progress = int(10 + (index / max(total, 1)) * 80)
+            try:
+                item = target.content.get(item_id)
+            except Exception:
+                item = None
+
+            if item is None:
+                message = f"Item {item_id} not found in portal"
+                logger.warning(f"[{portal_alias}] {message}")
+                tool_result.add_extra_metric("skipped_items",
+                                             tool_result.extra_metrics.get("skipped_items", 0) + 1)
+                if is_execute:
+                    job.item_backups.update_or_create(
+                        item_id=item_id, defaults={"status": "skipped", "error": message})
+                else:
+                    summary_items.append({"item_id": item_id, "title": item_id, "type": "",
+                                          "owner": "", "url_count": 0, "data_count": 0,
+                                          "resource_count": 0, "note": "not found"})
+                continue
+
+            progress_recorder.set_progress(progress, 100, f"Analyzing {item.title}")
+
+            try:
+                changes = utils.analyze_item(item, replacements)
+                tool_result.processed += 1
+
+                if changes is None:
+                    if not is_execute:
+                        summary_items.append({"item_id": item.id, "title": item.title,
+                                              "type": item.type, "owner": item.owner,
+                                              "url_count": 0, "data_count": 0,
+                                              "resource_count": 0, "note": "no references found"})
+                    continue
+
+                warnings.extend(changes.get("warnings", []))
+
+                if not is_execute:
+                    unreplaced_count = 0
+                    if unreplaced_references and changes["newDataText"]:
+                        unreplaced_count = utils.count_occurrences(changes["newDataText"],
+                                                                   unreplaced_references)
+                    summary_items.append({
+                        "item_id": item.id, "title": item.title, "type": item.type,
+                        "owner": item.owner, "url_count": changes["urlCount"],
+                        "data_count": changes["dataCount"],
+                        "resource_count": changes["resourceCount"],
+                        "resource_names": [r[0] for r in changes["resources"]],
+                        "modified": getattr(item, "modified", None),
+                        "note": (f"{unreplaced_count} whole-service reference(s) remain"
+                                 if unreplaced_count else ""),
+                    })
+                    continue
+
+                # Execute: flag items changed since the dry-run snapshot;
+                # they are still applied (from this fresh analysis) but the
+                # backup row keeps a visible note
+                snapshot = dry_run_items.get(item.id)
+                is_stale = bool(snapshot and snapshot.get("modified")
+                                and snapshot["modified"] != getattr(item, "modified", None))
+                if is_stale:
+                    tool_result.add_extra_metric("stale_items",
+                                                 tool_result.extra_metrics.get("stale_items", 0) + 1)
+
+                backup = utils.backup_item(job, item, changes)
+                if backup is None:
+                    tool_result.add_error(f"Backup failed for {item.title} ({item.id}); item skipped")
+                    continue
+
+                status = utils.apply_changes(item, changes)
+                if status == "UPDATED":
+                    backup.status = "applied"
+                    if is_stale:
+                        backup.error = ("Item was modified in the portal after the dry run; "
+                                        "re-analyzed and updated from its current content.")
+                    # Snapshot the post-update modified time so a later revert
+                    # can detect (and flag) edits made after the replacement
+                    try:
+                        refreshed = target.content.get(item.id)
+                        backup.applied_modified_at = getattr(refreshed, "modified", None)
+                    except Exception:
+                        logger.warning(f"[{portal_alias}] Unable to read post-update modified "
+                                       f"time for {item.id}")
+                    tool_result.actions_taken += 1
+                    applied_ids.append(item.id)
+                else:
+                    backup.status = "failed"
+                    backup.error = status
+                    tool_result.add_error(f"Update failed for {item.title} ({item.id}): {status}")
+                backup.save(update_fields=["status", "error", "applied_modified_at"])
+
+            except Exception as e:
+                tool_result.add_error(f"Error processing {item_id}: {e}")
+                logger.error(f"[{portal_alias}] Error processing item {item_id}: {e}", exc_info=True)
+
+        if is_execute:
+            progress_recorder.set_progress(92, 100, "Queueing database resync...")
+            for item_id in applied_ids:
+                if item_id in job.selected_map_ids:
+                    process_webmap.delay(portal_alias, item_id, "update")
+                else:
+                    process_webapp.delay(portal_alias, item_id, "update")
+
+            job.status = "completed" if tool_result.errors == 0 else "completed_errors"
+            job.executed_at = timezone.now()
+            job.error_message = "; ".join(tool_result.error_messages[:10])
+            job.save(update_fields=["status", "executed_at", "error_message"])
+        else:
+            summary = {
+                "items": summary_items,
+                "warnings": warnings,
+                "unreplaced_references": unreplaced_references,
+                "totals": {
+                    "items_affected": sum(1 for i in summary_items
+                                          if i["url_count"] or i["data_count"] or i["resource_count"]),
+                    "url": sum(i["url_count"] for i in summary_items),
+                    "data": sum(i["data_count"] for i in summary_items),
+                    "resources": sum(i["resource_count"] for i in summary_items),
+                },
+            }
+            # Conditional transition so a job no longer 'analyzing' (e.g.
+            # auto-failed as abandoned) is never resurrected to executable
+            updated = ReplacementJob.objects.filter(pk=job.pk, status="analyzing").update(
+                dry_run_summary=summary, status="dry_run")
+            if not updated:
+                logger.warning(f"[{portal_alias}] Job {job.id} left the 'analyzing' state "
+                               f"during the dry run; its results were discarded")
+
+        tool_result.set_success(tool_result.errors == 0)
+        tool_result.add_extra_metric("mode", mode)
+        tool_result.add_extra_metric("job_id", job.id)
+        progress_recorder.set_progress(100, 100,
+                                       f"Completed: {tool_result.actions_taken} item(s) updated"
+                                       if is_execute else "Dry run complete")
+        logger.info(f"[{portal_alias}] Replace Service Tool ({mode}) job {job.id} completed")
+
+    except Exception as e:
+        err = f"Replace Service Tool failed: {e}"
+        logger.error(f"[{portal_alias}] {err}", exc_info=True)
+        tool_result.add_error(err)
+        job.status = "failed"
+        job.error_message = str(e)
+        job.save(update_fields=["status", "error_message"])
+        progress_recorder.set_progress(100, 100, f"Failed: {err}")
+        self.update_state(state="FAILURE", meta={"error": err})
+
+    finally:
+        tool_result.execution_time = time.time() - start_time
+        if is_execute:
+            _send_admin_notification(tool_result, portal_instance)
+
+    return tool_result.to_json()
+
+
+@shared_task(bind=True, name="Revert Replacement Tool", time_limit=6000, soft_time_limit=3000)
+def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None, prior_status=None,
+                            force=False):
+    """
+    Restores items modified by an executed replacement job from their
+    ReplacementItemBackup rows, then dispatches per-item resync tasks.
+
+    When backup_ids is given only those items are reverted (partial revert);
+    the job is only marked reverted once no applied items remain. Items that
+    were modified in the portal after the replacement are skipped (and noted)
+    unless force is set - the per-item revert view collects that confirmation
+    from the user before queueing with force.
+
+    :param job_id: ReplacementJob primary key
+    :type job_id: int
+    :param credential_token: Optional temporary credential token
+    :type credential_token: str
+    :param backup_ids: Optional ReplacementItemBackup pks to revert; None
+                       reverts every applied item of the job
+    :type backup_ids: list
+    :param prior_status: Job status before the view queued this revert;
+                         restored when the revert dies before changing anything
+    :type prior_status: str
+    :param force: Revert items even when they have post-replacement edits
+    :type force: bool
+    :return: ToolResult JSON
+    :rtype: dict
+    """
+    from .models import ReplacementJob, ReplacementItemBackup
+
+    start_time = time.time()
+    progress_recorder = ProgressRecorder(self)
+    job = ReplacementJob.objects.get(pk=job_id)
+    portal_alias = job.portal_instance.alias
+    tool_result = utils.ToolResult(portal_alias=portal_alias, tool_name="revert_replacement")
+    portal_instance = None
+    is_partial = bool(backup_ids)
+
+    try:
+        if not is_partial:
+            job.status = "reverting"
+        job.revert_task_id = self.request.id
+        job.save(update_fields=["status", "revert_task_id"])
+
+        progress_recorder.set_progress(0, 100, "Connecting to portal...")
+        portal_instance, target = _connect_portal_task(portal_alias, tool_result, credential_token)
+        if not target:
+            progress_recorder.set_progress(100, 100, "Connection failed")
+            if not is_partial:
+                # Nothing changed - restore the pre-revert status so the job
+                # stays revertable and keeps its true history
+                job.status = prior_status or "completed_errors"
+            job.error_message = "; ".join(tool_result.error_messages)
+            job.save(update_fields=["status", "error_message"])
+            return tool_result.to_json()
+
+        backup_qs = job.item_backups.filter(status__in=ReplacementItemBackup.REVERTABLE_STATUSES)
+        if is_partial:
+            backup_qs = backup_qs.filter(pk__in=backup_ids)
+        backups = list(backup_qs)
+        total = len(backups)
+        logger.info(f"[{portal_alias}] Revert Replacement job {job.id}: {total} item(s)"
+                    f"{' (partial)' if is_partial else ''}")
+
+        reverted_ids = []
+        skipped_newer = 0
+        for index, backup in enumerate(backups):
+            progress = int(10 + (index / max(total, 1)) * 80)
+            progress_recorder.set_progress(progress, 100, f"Reverting {backup.item_title}")
+            try:
+                status = utils.revert_item(target, backup, force=force)
+                tool_result.processed += 1
+                if status in ("REVERTED", "REVERTED_STALE"):
+                    backup.status = "reverted"
+                    backup.error = ("" if status == "REVERTED" else
+                                    "Item had been modified after the replacement; those "
+                                    "later edits were overwritten by the confirmed revert.")
+                    tool_result.actions_taken += 1
+                    reverted_ids.append(backup.item_id)
+                elif status == "SKIPPED_NEWER_EDITS":
+                    # Status stays "applied" so the item remains revertable;
+                    # the per-item revert flow asks the user to confirm
+                    skipped_newer += 1
+                    backup.error = ("Not reverted: the item was modified in the portal after "
+                                    "the replacement. Revert it individually to confirm "
+                                    "overwriting those edits, or download its backup and "
+                                    "restore manually.")
+                else:
+                    backup.status = "revert_failed"
+                    backup.error = status
+                    tool_result.add_error(f"{backup.item_title} ({backup.item_id}): {status}")
+                backup.save(update_fields=["status", "error"])
+            except Exception as e:
+                tool_result.add_error(f"Error reverting {backup.item_id}: {e}")
+                logger.error(f"[{portal_alias}] Error reverting {backup.item_id}: {e}", exc_info=True)
+
+        progress_recorder.set_progress(92, 100, "Queueing database resync...")
+        for item_id in reverted_ids:
+            if item_id in job.selected_map_ids:
+                process_webmap.delay(portal_alias, item_id, "update")
+            else:
+                process_webapp.delay(portal_alias, item_id, "update")
+
+        # The job only becomes "reverted" once no applied items remain; items
+        # skipped for newer edits (or failures) keep it in a revertable state
+        if not job.item_backups.filter(status="applied").exists():
+            job.status = "reverted" if tool_result.errors == 0 else "completed_errors"
+            job.reverted_at = timezone.now()
+        elif not is_partial:
+            job.status = "completed_errors"
+        notes = []
+        if skipped_newer:
+            notes.append(f"{skipped_newer} item(s) were not reverted because they were "
+                         f"modified after the replacement; revert them individually from "
+                         f"the replacement report or restore from backup")
+        notes.extend(tool_result.error_messages[:10])
+        job.error_message = "; ".join(notes)
+        job.save(update_fields=["status", "reverted_at", "error_message"])
+
+        # A fully reverted job is terminal - drop the temporary credentials
+        # instead of letting them ride out their TTL
+        if job.status == "reverted" and credential_token:
+            utils.CredentialManager.delete_credentials(credential_token)
+
+        tool_result.set_success(tool_result.errors == 0)
+        tool_result.add_extra_metric("job_id", job.id)
+        if is_partial:
+            tool_result.add_extra_metric("partial_revert", len(backups))
+        if skipped_newer:
+            tool_result.add_extra_metric("skipped_newer_edits", skipped_newer)
+        progress_recorder.set_progress(
+            100, 100,
+            f"Completed: {tool_result.actions_taken} item(s) reverted"
+            + (f", {skipped_newer} skipped (modified after replacement)" if skipped_newer else ""))
+        logger.info(f"[{portal_alias}] Revert Replacement job {job.id} completed")
+
+    except Exception as e:
+        err = f"Revert Replacement Tool failed: {e}"
+        logger.error(f"[{portal_alias}] {err}", exc_info=True)
+        tool_result.add_error(err)
+        if not is_partial:
+            job.status = "completed_errors"
+        job.error_message = str(e)
+        job.save(update_fields=["status", "error_message"])
+        progress_recorder.set_progress(100, 100, f"Failed: {err}")
+        self.update_state(state="FAILURE", meta={"error": err})
+
+    finally:
+        tool_result.execution_time = time.time() - start_time
+        _send_admin_notification(tool_result, portal_instance)
+
+    return tool_result.to_json()
