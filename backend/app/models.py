@@ -720,6 +720,7 @@ class ReplacementJob(models.Model):
     apps from a source service to one or more replacement services.
     """
     STATUS_CHOICES = [
+        ("analyzing", "Analyzing"),
         ("dry_run", "Dry Run"),
         ("pending", "Pending"),
         ("running", "Running"),
@@ -729,6 +730,14 @@ class ReplacementJob(models.Model):
         ("reverting", "Reverting"),
         ("reverted", "Reverted"),
     ]
+
+    # Statuses during which no other replacement job may start for the portal
+    ACTIVE_STATUSES = ("analyzing", "pending", "running", "reverting")
+
+    # Statuses from which a job (with surviving applied backups) can be
+    # reverted; "failed" is included because an execute that dies mid-run
+    # leaves already-updated items behind
+    REVERTABLE_STATUSES = ("completed", "completed_errors", "failed")
 
     portal_instance = models.ForeignKey(
         Portal,
@@ -795,10 +804,12 @@ class ReplacementItemBackup(models.Model):
         ("applied", "Applied"),
         ("failed", "Failed"),
         ("skipped", "Skipped"),
-        ("stale", "Stale"),
         ("reverted", "Reverted"),
         ("revert_failed", "Revert Failed"),
     ]
+
+    # Backup statuses eligible for (re-)revert
+    REVERTABLE_STATUSES = ("applied", "revert_failed")
 
     job = models.ForeignKey(
         ReplacementJob,
@@ -818,6 +829,11 @@ class ReplacementItemBackup(models.Model):
     item_modified_at = models.BigIntegerField(
         null=True,
         help_text="item.modified epoch ms at backup time."
+    )
+    applied_modified_at = models.BigIntegerField(
+        null=True,
+        help_text="item.modified epoch ms right after this job updated the item; "
+                  "lets revert detect (and flag) edits made after the replacement."
     )
     counts = models.JSONField(
         default=dict,
