@@ -1,0 +1,5 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<calcite-option value="" selected>Same layer ID</calcite-option>
+{% for layer in layers %}
+  <calcite-option value="{{ layer.id }}">Layer {{ layer.id }}{% if layer.name %} &mdash; {{ layer.name }}{% endif %}</calcite-option>
+{% endfor %}

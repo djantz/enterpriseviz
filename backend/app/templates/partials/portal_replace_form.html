@@ -30,8 +30,10 @@
       <div id="replace-advanced-table" data-instance="{{ instance_alias }}" hidden>
         {% if source_layers %}
           <calcite-input-message icon="information" kind="info">
-            Map each layer of {{ item.service_name }} to its replacement. Layers left on
-            "Same layer ID" keep their index on the chosen service.
+            Map each layer of {{ item.service_name }} to its replacement. A layer left on
+            "No change" keeps pointing at {{ item.service_name }} - whole-service references
+            are then also left in place (the dry run reports how many remain). Within a
+            mapped service, "Same layer ID" keeps the layer's index.
           </calcite-input-message>
           {% for layer in source_layers %}
             <div class="replace-mapping-row" data-old-layer-id="{{ layer.id }}">
@@ -59,6 +61,13 @@
     </calcite-stepper-item>
 
     <calcite-stepper-item heading="Select items" description="Choose maps and apps to update">
+      <calcite-notice open kind="info" icon scale="s" width="full">
+        <div slot="message">
+          These lists come from the EnterpriseViz database
+          {% if last_synced %}(last synced {{ last_synced|timesince }} ago){% endif %} -
+          consumers added to the portal since the last sync are not listed here.
+        </div>
+      </calcite-notice>
       <div role="group" aria-labelledby="replace-maps-label">
         <calcite-label id="replace-maps-label">Affected Maps</calcite-label>
         <calcite-table id="replace-maps-table" scale="s" caption="Affected Maps" striped

@@ -1,0 +1,156 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+{% if job.status == "dry_run" %}
+  {% if job.dry_run_summary.warnings %}
+    <calcite-notice open kind="warning" icon width="full">
+      <div slot="title">Warnings</div>
+      <div slot="message">
+        {% for warning in job.dry_run_summary.warnings %}
+          {{ warning }}{% if not forloop.last %}<br>{% endif %}
+        {% endfor %}
+      </div>
+    </calcite-notice>
+  {% endif %}
+
+  <calcite-label>Replacements</calcite-label>
+  <calcite-table scale="s" caption="Replacement pairs" bordered striped
+                 aria-label="Strings that will be replaced">
+    <calcite-table-row slot="table-header">
+      <calcite-table-header heading="Current reference"></calcite-table-header>
+      <calcite-table-header heading="Replacement"></calcite-table-header>
+    </calcite-table-row>
+    {% for pair in job.replacement_pairs %}
+      <calcite-table-row>
+        <calcite-table-cell><code>{{ pair.0 }}</code></calcite-table-cell>
+        <calcite-table-cell><code>{{ pair.1 }}</code></calcite-table-cell>
+      </calcite-table-row>
+    {% endfor %}
+  </calcite-table>
+
+  <calcite-label class="margin-top-1">Dry run results</calcite-label>
+  <calcite-table scale="s" caption="Dry run results" bordered striped page-size="10"
+                 aria-label="Pending changes per item">
+    <calcite-table-row slot="table-header">
+      <calcite-table-header heading="Title"></calcite-table-header>
+      <calcite-table-header heading="Type"></calcite-table-header>
+      <calcite-table-header heading="Owner"></calcite-table-header>
+      <calcite-table-header heading="URL" description="url property"></calcite-table-header>
+      <calcite-table-header heading="Data" description="item JSON"></calcite-table-header>
+      <calcite-table-header heading="Resources" description="config/story resources"></calcite-table-header>
+      <calcite-table-header heading="Notes"></calcite-table-header>
+    </calcite-table-row>
+    {% for row in job.dry_run_summary.items %}
+      <calcite-table-row>
+        <calcite-table-cell>{{ row.title }}</calcite-table-cell>
+        <calcite-table-cell>{{ row.type }}</calcite-table-cell>
+        <calcite-table-cell>{{ row.owner }}</calcite-table-cell>
+        <calcite-table-cell>{{ row.url_count }}</calcite-table-cell>
+        <calcite-table-cell>{{ row.data_count }}</calcite-table-cell>
+        <calcite-table-cell>{{ row.resource_count }}</calcite-table-cell>
+        <calcite-table-cell>{{ row.note }}</calcite-table-cell>
+      </calcite-table-row>
+    {% empty %}
+      <calcite-table-row>
+        <calcite-table-cell col-span="7">
+          <calcite-notice open kind="info" icon scale="s">
+            <div slot="message">No items analyzed.</div>
+          </calcite-notice>
+        </calcite-table-cell>
+      </calcite-table-row>
+    {% endfor %}
+  </calcite-table>
+
+  {% with totals=job.dry_run_summary.totals %}
+    <calcite-notice open kind="brand" icon="information" width="full" class="margin-top-1">
+      <div slot="message">
+        {{ totals.items_affected|default:0 }} item(s) affected:
+        {{ totals.url|default:0 }} URL, {{ totals.data|default:0 }} data,
+        {{ totals.resources|default:0 }} resource replacement(s).
+      </div>
+    </calcite-notice>
+    {% if totals.items_affected %}
+      <calcite-button kind="danger" icon-start="overwrite-features" class="margin-top-1"
+                      hx-post="{% url 'enterpriseviz:replace_execute' instance=instance_alias job_id=job.pk %}"
+                      hx-target="#replace-dryrun-container"
+                      hx-swap="innerHTML"
+                      data-confirm-sheet
+                      data-confirm-message="Apply these replacements to {{ totals.items_affected }} item(s)?"
+                      data-confirm-details="Every change is backed up first and can be reverted."
+                      data-confirm-button="Execute"
+                      data-confirm-icon="overwrite-features"
+                      label="Execute the replacement">
+        Execute replacement
+      </calcite-button>
+    {% endif %}
+  {% endwith %}
+
+{% elif job.status == "analyzing" or job.status == "pending" or job.status == "running" or job.status == "reverting" %}
+  <calcite-notice open kind="info" icon width="full">
+    <div slot="message">This job is currently {{ job.get_status_display|lower }}.</div>
+  </calcite-notice>
+
+{% else %}
+  {% if job.status == "failed" %}
+    <calcite-notice open kind="danger" icon width="full">
+      <div slot="title">Job failed</div>
+      <div slot="message">
+        {{ job.error_message|default:"See logs for details." }}
+        {% if can_revert %}
+          <br>Items that had already been updated before the failure are listed below
+          and can be reverted.
+        {% endif %}
+      </div>
+    </calcite-notice>
+  {% else %}
+    <calcite-notice open {% if job.status == "completed" %}kind="success"{% elif job.status == "reverted" %}kind="brand"{% else %}kind="warning"{% endif %} icon width="full">
+      <div slot="title">{{ job.get_status_display }}</div>
+      <div slot="message">
+        {% if job.executed_at %}Executed {{ job.executed_at|date:'M j, Y h:i A' }}.{% endif %}
+        {% if job.reverted_at %} Reverted {{ job.reverted_at|date:'M j, Y h:i A' }}.{% endif %}
+        {% if job.error_message %}<br>{{ job.error_message }}{% endif %}
+      </div>
+    </calcite-notice>
+  {% endif %}
+
+  {% if backups %}
+    <calcite-table scale="s" caption="Item results" bordered striped page-size="10"
+                   class="margin-top-1" aria-label="Per-item replacement results">
+      <calcite-table-row slot="table-header">
+        <calcite-table-header heading="Title"></calcite-table-header>
+        <calcite-table-header heading="Type"></calcite-table-header>
+        <calcite-table-header heading="Owner"></calcite-table-header>
+        <calcite-table-header heading="Status"></calcite-table-header>
+        <calcite-table-header heading="Detail"></calcite-table-header>
+      </calcite-table-row>
+      {% for backup in backups %}
+        <calcite-table-row>
+          <calcite-table-cell>{{ backup.item_title|default:backup.item_id }}</calcite-table-cell>
+          <calcite-table-cell>{{ backup.item_type }}</calcite-table-cell>
+          <calcite-table-cell>{{ backup.item_owner }}</calcite-table-cell>
+          <calcite-table-cell>
+            <calcite-chip scale="s"
+                          kind="{% if backup.status == 'applied' or backup.status == 'reverted' %}inverse{% else %}neutral{% endif %}"
+                          icon="{% if backup.status == 'applied' or backup.status == 'reverted' %}check-circle{% elif backup.status == 'failed' or backup.status == 'revert_failed' %}exclamation-mark-triangle{% endif %}">
+              {{ backup.get_status_display }}
+            </calcite-chip>
+          </calcite-table-cell>
+          <calcite-table-cell>{{ backup.error|default:"" }}</calcite-table-cell>
+        </calcite-table-row>
+      {% endfor %}
+    </calcite-table>
+  {% endif %}
+
+  {% if can_revert %}
+    <calcite-button kind="danger" appearance="outline" icon-start="reset" class="margin-top-1"
+                    hx-post="{% url 'enterpriseviz:replace_revert' instance=instance_alias job_id=job.pk %}"
+                    hx-target="#replace-dryrun-container"
+                    hx-swap="innerHTML"
+                    data-confirm-sheet
+                    data-confirm-message="Restore all items changed by this job to their backed-up state?"
+                    data-confirm-details="Items edited in the portal after the replacement are skipped here; revert those individually from the replacement report to confirm overwriting their edits."
+                    data-confirm-button="Revert"
+                    data-confirm-icon="reset"
+                    label="Revert this replacement">
+      Revert replacement
+    </calcite-button>
+  {% endif %}
+{% endif %}

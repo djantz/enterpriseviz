@@ -1,0 +1,16 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+{% include "partials/progress_bar.html" %}
+<div id="replace-preview-loader"
+     hx-get="{% url 'enterpriseviz:replace_preview' instance=instance job_id=job_id %}"
+     hx-trigger="updateComplete from:body once"
+     hx-target="#replace-dryrun-container"
+     hx-swap="innerHTML"
+     aria-hidden="true"></div>
+{% if source_service_pk %}
+  <div id="replace-history-refresh"
+       hx-get="{% url 'enterpriseviz:replace_history' instance=instance service_pk=source_service_pk %}"
+       hx-trigger="updateComplete from:body once"
+       hx-target="#replace-history-container"
+       hx-swap="innerHTML"
+       aria-hidden="true"></div>
+{% endif %}
