@@ -745,6 +745,12 @@ async function setupReplaceForm(modal) {
             goToNextStep();
         } else {
             serializeLayerMappings();
+            // Only enter the loading state when the submit will actually be
+            // issued; htmx halts the request when form validation fails
+            if (!form.checkValidity()) {
+                form.reportValidity();
+                return;
+            }
             dryRunPending = true;
             nextButton.loading = true;
             nextButton.disabled = true;
@@ -768,6 +774,12 @@ async function setupReplaceForm(modal) {
     });
 
     form.addEventListener("updateComplete", function () {
+        if (dryRunPending) stopDryRunLoading();
+    });
+
+    // htmx skips the request entirely (so afterSettle never fires) when a
+    // form element fails validation at submit time
+    form.addEventListener("htmx:validation:halted", function () {
         if (dryRunPending) stopDryRunLoading();
     });
 }

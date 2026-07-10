@@ -3942,15 +3942,25 @@ If you have questions, contact your portal administrator.
 """
 
 
-def _verify_privileges(user):
-    """Verify user has admin privileges."""
-    required = ["portal:admin:viewUsers", "portal:admin:deleteUsers",
-                "portal:admin:disableUsers", "portal:admin:manageLicenses",
-                "portal:admin:reassignItems"]
-    return all(priv in user.privileges for priv in required)
+# Privileges needed by the user-management tools (the default check)
+USER_ADMIN_PRIVILEGES = ("portal:admin:viewUsers", "portal:admin:deleteUsers",
+                         "portal:admin:disableUsers", "portal:admin:manageLicenses",
+                         "portal:admin:reassignItems")
+
+# Privileges needed to view and update other members' items (Replace Service)
+CONTENT_ADMIN_PRIVILEGES = ("portal:admin:viewItems", "portal:admin:updateItems")
 
 
-def _connect_portal_task(portal_alias, tool_result, credential_token=None):
+def _verify_privileges(user, required=USER_ADMIN_PRIVILEGES):
+    """Verify user has the required admin privileges."""
+    missing = [priv for priv in required if priv not in user.privileges]
+    if missing:
+        logger.error(f"User '{user.username}' is missing privilege(s): {', '.join(missing)}")
+    return not missing
+
+
+def _connect_portal_task(portal_alias, tool_result, credential_token=None,
+                         required_privileges=USER_ADMIN_PRIVILEGES):
     """Establish portal connection with error tracking."""
     try:
         portal_instance = Portal.objects.get(alias=portal_alias)
@@ -3960,8 +3970,9 @@ def _connect_portal_task(portal_alias, tool_result, credential_token=None):
             logger.error(f"Failed to connect to portal '{portal_alias}'")
             return portal_instance, None
 
-        if not _verify_privileges(target.users.me):
-            tool_result.add_error(f"User '{target.users.me.username}' lacks required admin privileges")
+        if not _verify_privileges(target.users.me, required_privileges):
+            tool_result.add_error(f"User '{target.users.me.username}' lacks required admin "
+                                  f"privileges ({', '.join(required_privileges)})")
             logger.error(f"User '{target.users.me.username}' lacks required admin privileges")
             return portal_instance, None
 
@@ -4743,12 +4754,24 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
             logger.warning(f"Replacement backup purge failed: {e}")
 
         if is_execute:
-            job.status = "running"
-            job.celery_task_id = self.request.id
-            job.save(update_fields=["status", "celery_task_id"])
+            # Claim the pending -> running transition; a zombie task whose job
+            # was auto-failed as abandoned must abort, not resurrect it
+            claimed = ReplacementJob.objects.filter(pk=job.pk, status="pending").update(
+                status="running", celery_task_id=self.request.id,
+                status_updated=timezone.now())
+            if not claimed:
+                job.refresh_from_db()
+                message = (f"Job {job.id} is '{job.status}', not 'pending'; execution aborted "
+                           f"(the job may have been auto-failed as abandoned)")
+                logger.warning(f"[{portal_alias}] {message}")
+                tool_result.add_error(message)
+                progress_recorder.set_progress(100, 100, "Aborted")
+                return tool_result.to_json()
+            job.refresh_from_db()
 
         progress_recorder.set_progress(0, 100, "Connecting to portal...")
-        portal_instance, target = _connect_portal_task(portal_alias, tool_result, credential_token)
+        portal_instance, target = _connect_portal_task(portal_alias, tool_result, credential_token,
+                                                       required_privileges=CONTENT_ADMIN_PRIVILEGES)
         if not target:
             progress_recorder.set_progress(100, 100, "Connection failed")
             job.status = "failed"
@@ -4848,13 +4871,16 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
                         backup.error = ("Item was modified in the portal after the dry run; "
                                         "re-analyzed and updated from its current content.")
                     # Snapshot the post-update modified time so a later revert
-                    # can detect (and flag) edits made after the replacement
+                    # can detect (and flag) edits made after the replacement.
+                    # 0 = snapshot failed: the revert flow must treat the item
+                    # as possibly edited rather than silently skip the check
                     try:
                         refreshed = target.content.get(item.id)
-                        backup.applied_modified_at = getattr(refreshed, "modified", None)
+                        backup.applied_modified_at = getattr(refreshed, "modified", None) or 0
                     except Exception:
+                        backup.applied_modified_at = 0
                         logger.warning(f"[{portal_alias}] Unable to read post-update modified "
-                                       f"time for {item.id}")
+                                       f"time for {item.id}; revert will require confirmation")
                     tool_result.actions_taken += 1
                     applied_ids.append(item.id)
                 else:
@@ -4895,7 +4921,7 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
             # Conditional transition so a job no longer 'analyzing' (e.g.
             # auto-failed as abandoned) is never resurrected to executable
             updated = ReplacementJob.objects.filter(pk=job.pk, status="analyzing").update(
-                dry_run_summary=summary, status="dry_run")
+                dry_run_summary=summary, status="dry_run", status_updated=timezone.now())
             if not updated:
                 logger.warning(f"[{portal_alias}] Job {job.id} left the 'analyzing' state "
                                f"during the dry run; its results were discarded")
@@ -4966,12 +4992,27 @@ def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None
 
     try:
         if not is_partial:
-            job.status = "reverting"
-        job.revert_task_id = self.request.id
-        job.save(update_fields=["status", "revert_task_id"])
+            # The view set 'reverting' before queueing; claim it so a zombie
+            # task whose job was auto-failed as abandoned aborts instead of
+            # resurrecting it
+            claimed = ReplacementJob.objects.filter(pk=job.pk, status="reverting").update(
+                revert_task_id=self.request.id)
+            if not claimed:
+                job.refresh_from_db()
+                message = (f"Job {job.id} is '{job.status}', not 'reverting'; revert aborted "
+                           f"(the job may have been auto-failed as abandoned)")
+                logger.warning(f"[{portal_alias}] {message}")
+                tool_result.add_error(message)
+                progress_recorder.set_progress(100, 100, "Aborted")
+                return tool_result.to_json()
+            job.refresh_from_db()
+        else:
+            job.revert_task_id = self.request.id
+            job.save(update_fields=["revert_task_id"])
 
         progress_recorder.set_progress(0, 100, "Connecting to portal...")
-        portal_instance, target = _connect_portal_task(portal_alias, tool_result, credential_token)
+        portal_instance, target = _connect_portal_task(portal_alias, tool_result, credential_token,
+                                                       required_privileges=CONTENT_ADMIN_PRIVILEGES)
         if not target:
             progress_recorder.set_progress(100, 100, "Connection failed")
             if not is_partial:
@@ -4996,6 +5037,15 @@ def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None
             progress = int(10 + (index / max(total, 1)) * 80)
             progress_recorder.set_progress(progress, 100, f"Reverting {backup.item_title}")
             try:
+                # No reserved state is persisted between enqueue and execution
+                # (a crashed worker must never strand an item unrevertable), so
+                # duplicate requests can enqueue the same backup twice; re-check
+                # the row at execution time so the second revert no-ops
+                backup.refresh_from_db()
+                if backup.status not in ReplacementItemBackup.REVERTABLE_STATUSES:
+                    logger.info(f"[{portal_alias}] Backup {backup.pk} ({backup.item_title}) "
+                                f"is already '{backup.status}'; skipping")
+                    continue
                 status = utils.revert_item(target, backup, force=force)
                 tool_result.processed += 1
                 if status in ("REVERTED", "REVERTED_STALE"):

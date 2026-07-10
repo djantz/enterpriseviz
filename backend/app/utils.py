@@ -3903,8 +3903,9 @@ def count_occurrences(text, search_strings):
             continue
         if '://' in search_string:
             total += len(re.findall(_url_regex(search_string), text, flags=re.IGNORECASE))
-            total += len(re.findall(re.escape(quote(search_string, safe='')), text,
-                                    flags=re.IGNORECASE))
+            encoded = quote(search_string, safe='')
+            pattern = re.escape(encoded) + (r'(?![0-9])' if encoded[-1].isdigit() else '')
+            total += len(re.findall(pattern, text, flags=re.IGNORECASE))
         else:
             total += text.count(search_string)
     return total
@@ -4195,8 +4196,10 @@ def revert_item(target, backup, force=False):
         logger.warning(message)
         return f'REVERT FAILED: {message}'
 
+    # None = pre-snapshot backup (no check possible); 0 = snapshot failed at
+    # execute time, so the item must be treated as possibly edited
     current_modified = getattr(item, "modified", None)
-    had_newer_edits = bool(backup.applied_modified_at and current_modified
+    had_newer_edits = bool(backup.applied_modified_at is not None and current_modified
                            and current_modified != backup.applied_modified_at)
     if had_newer_edits and not force:
         logger.warning(f"Item {backup.item_title} ({backup.item_id}) was modified after "
@@ -4258,7 +4261,7 @@ def check_backup_newer_edits(portal, credential_token, backup):
         return {"has_newer_edits": False, "modified_at": None, "error": None}
 
     current_modified = getattr(item, "modified", None)
-    has_newer_edits = bool(backup.applied_modified_at and current_modified
+    has_newer_edits = bool(backup.applied_modified_at is not None and current_modified
                            and current_modified != backup.applied_modified_at)
     modified_at = None
     if has_newer_edits:
@@ -4321,10 +4324,14 @@ def get_replacement_job(instance_alias, job_id):
 def active_replacement_job_exists(portal):
     """
     Checks whether a replacement job is currently active for the portal
-    (blocking a new one from starting). 'Analyzing' jobs old enough that
-    their dry-run task must be dead - the Celery hard time limit is 100
-    minutes and analysis always starts at job creation - are auto-failed
-    first so an abandoned analysis can never brick the portal's replace flow.
+    (blocking a new one from starting). Any active job whose status has not
+    changed for well over the Celery hard time limit (100 minutes) can only
+    be abandoned - a worker killed mid-run (OOM, hard timeout, eviction)
+    never reports back - so such jobs are auto-failed first and can never
+    brick the portal's replace flow. The tasks claim their expected status
+    at start, so a zombie task of an auto-failed job aborts instead of
+    resurrecting it. Items an abandoned execute already updated keep their
+    'applied' backups and stay revertable from the failed job.
 
     :param portal: Portal model instance
     :return: True when a job is active
@@ -4333,12 +4340,13 @@ def active_replacement_job_exists(portal):
     from .models import ReplacementJob
 
     expired = ReplacementJob.objects.filter(
-        portal_instance=portal, status="analyzing",
-        created__lt=timezone.now() - timedelta(hours=2),
-    ).update(status="failed",
-             error_message="Dry-run analysis never reported completion; run a new dry run.")
+        portal_instance=portal, status__in=ReplacementJob.ACTIVE_STATUSES,
+        status_updated__lt=timezone.now() - timedelta(hours=2),
+    ).update(status="failed", status_updated=timezone.now(),
+             error_message="Abandoned: the task never reported completion. Items that were "
+                           "already updated remain revertable from their backups.")
     if expired:
-        logger.warning(f"Auto-failed {expired} abandoned 'analyzing' replacement job(s) "
+        logger.warning(f"Auto-failed {expired} abandoned replacement job(s) "
                        f"for portal '{portal.alias}'")
     return ReplacementJob.objects.filter(
         portal_instance=portal, status__in=ReplacementJob.ACTIVE_STATUSES).exists()

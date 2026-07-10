@@ -4,7 +4,8 @@
  * @param {Object} data - Graph data with nodes and links
  * @param {Array} data.nodes - Array of node objects with {id, name, type}
  * @param {Array} data.links - Array of link objects with {source, target}
- * @returns {Object} Cytoscape instance
+ * @returns {Promise<Object|null>} Resolves to the graph control API, or null
+ *     when the container or graph data is unavailable
  */
 // TODO: Add filter by portal
 // TODO: Add toggle to hide layers in service view
@@ -13,7 +14,7 @@ function initDependencyGraph(containerId, data) {
     const container = document.getElementById(containerId);
     if (!container) {
         console.warn(`initDependencyGraph: Container #${containerId} not found.`);
-        return null;
+        return Promise.resolve(null);
     }
 
     // Auto-detect and parse graph data if not provided
@@ -21,21 +22,21 @@ function initDependencyGraph(containerId, data) {
         const dataEl = document.getElementById('graph-data');
         if (!dataEl) {
             console.warn('initDependencyGraph: #graph-data element not found.');
-            return null;
+            return Promise.resolve(null);
         }
 
         try {
             data = JSON.parse(dataEl.textContent);
         } catch (err) {
             console.warn('initDependencyGraph: Failed to parse graph data JSON.', err);
-            return null;
+            return Promise.resolve(null);
         }
     }
 
     // Validate data structure
     if (!data.nodes || !Array.isArray(data.nodes) || !Array.isArray(data.links)) {
         console.warn('initDependencyGraph: Invalid or missing graph data structure.');
-        return null;
+        return Promise.resolve(null);
     }
 
     var iconPath = '/static/build/icons/'

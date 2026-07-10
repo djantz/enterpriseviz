@@ -24,8 +24,8 @@ class ServiceAdmin(admin.ModelAdmin):
 class AppAdmin(admin.ModelAdmin):
     search_fields = ["app_title"]
 
-class MapServerAdmin(admin.ModelAdmin):
-    search_fields = ["webmap_id", "service_id"]
+class MapServiceAdmin(admin.ModelAdmin):
+    search_fields = ["webmap_id__webmap_title", "service_id__service_name"]
 
 
 class WebhookNotificationLogAdmin(admin.ModelAdmin):
@@ -106,7 +106,7 @@ admin.site.register(Portal)
 admin.site.register(Service, ServiceAdmin)
 admin.site.register(Layer, LayerAdmin)
 admin.site.register(App, AppAdmin)
-admin.site.register(Map_Service, MapServerAdmin)
+admin.site.register(Map_Service, MapServiceAdmin)
 admin.site.register(Map_Layer)
 admin.site.register(App_Service)
 admin.site.register(App_Map)

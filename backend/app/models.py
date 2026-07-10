@@ -24,6 +24,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator, validate_email
 from django.db import models
+from django.utils import timezone
 from django_celery_beat.models import PeriodicTask
 from django_celery_results.models import TaskResult
 from django_cryptography.fields import encrypt
@@ -778,6 +779,10 @@ class ReplacementJob(models.Model):
     revert_task_id = models.CharField(max_length=100, blank=True)
     error_message = models.TextField(blank=True)
     created = models.DateTimeField(auto_now_add=True)
+    status_updated = models.DateTimeField(
+        default=timezone.now,
+        help_text="When status last changed; anchors abandoned-job cleanup."
+    )
     executed_at = models.DateTimeField(null=True, blank=True)
     reverted_at = models.DateTimeField(null=True, blank=True)
 
@@ -788,6 +793,21 @@ class ReplacementJob(models.Model):
         indexes = [
             models.Index(fields=["portal_instance", "status"]),
         ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._loaded_status = self.status
+
+    def save(self, *args, **kwargs):
+        # Keep status_updated in step with status transitions, including
+        # saves restricted by update_fields
+        if self.status != self._loaded_status:
+            self.status_updated = timezone.now()
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None and "status_updated" not in update_fields:
+                kwargs["update_fields"] = [*update_fields, "status_updated"]
+        super().save(*args, **kwargs)
+        self._loaded_status = self.status
 
     def __str__(self):
         return f"Replace {self.source_service_name} ({self.get_status_display()}, {self.created:%Y-%m-%d %H:%M})"

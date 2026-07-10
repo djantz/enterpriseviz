@@ -2374,6 +2374,7 @@ def replace_dry_run_view(request, instance, service_pk):
         "job_id": job.id,
         "phase": "dry_run",
         "source_service_pk": service.pk,
+        "results_target": f"#{request.headers.get('HX-Target') or 'replace-dryrun-container'}",
     })
 
 
@@ -2468,6 +2469,7 @@ def replace_execute_view(request, instance, job_id):
         "job_id": job.id,
         "phase": "execute",
         "source_service_pk": job.source_service_id,
+        "results_target": f"#{request.headers.get('HX-Target') or 'replace-dryrun-container'}",
     })
 
 
@@ -2535,6 +2537,7 @@ def replace_revert_view(request, instance, job_id):
         "job_id": job.id,
         "phase": "revert",
         "source_service_pk": job.source_service_id,
+        "results_target": f"#{request.headers.get('HX-Target') or 'replace-dryrun-container'}",
     })
 
 
@@ -2631,7 +2634,7 @@ def replace_revert_item_view(request, instance, backup_id):
     # would overwrite those edits - ask the user first, offering the backup
     # download as the non-destructive alternative
     force = request.POST.get("force") == "1"
-    if not force and backup.applied_modified_at:
+    if not force and backup.applied_modified_at is not None:
         check = utils.check_backup_newer_edits(job.portal_instance, cred["token"], backup)
         if check["error"]:
             return danger(check["error"])
