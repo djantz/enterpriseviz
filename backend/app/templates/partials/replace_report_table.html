@@ -1,0 +1,87 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<div class="datatables-toolbar">
+  <div class="dt-buttons"></div>
+  <div class="datatables-filter" id="datatable-replacements-filter"></div>
+</div>
+<table id="datatable-replacements" class="table table-striped wrap" width="100%"
+       aria-label="Service replacement report">
+  <thead>
+  <tr>
+    <th scope="col">Date</th>
+    <th scope="col">Service</th>
+    <th scope="col" class="url">Service URL</th>
+    <th scope="col">Replaced With</th>
+    <th scope="col" class="url">Replacement URL</th>
+    <th scope="col">Item</th>
+    <th scope="col" class="url">Item URL</th>
+    <th scope="col">Type</th>
+    <th scope="col">Owner</th>
+    <th scope="col">URL</th>
+    <th scope="col">Data</th>
+    <th scope="col">Resources</th>
+    <th scope="col">Status</th>
+    <th scope="col">Notes</th>
+    <th scope="col" class="no-export">Actions</th>
+  </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+      <td>
+        <time datetime="{{ row.job.created|date:'c' }}">{{ row.job.created|date:'M j, Y h:i A' }}</time>
+      </td>
+      <td>
+        {% if row.source_url %}
+          <calcite-link href="{{ row.source_url }}" target="_blank" rel="noopener noreferrer">{{ row.source }}</calcite-link>
+        {% else %}{{ row.source }}{% endif %}
+      </td>
+      <td>{{ row.source_url }}</td>
+      <td>
+        {% if row.target_url and not row.is_split %}
+          <calcite-link href="{{ row.target_url }}" target="_blank" rel="noopener noreferrer">{{ row.targets }}</calcite-link>
+        {% else %}{{ row.targets }}{% if row.is_split %} (layer split){% endif %}{% endif %}
+      </td>
+      <td>{{ row.target_url }}</td>
+      <td>
+        {% if row.item_url and row.item_id %}
+          <calcite-link href="{{ row.item_url }}" target="_blank" rel="noopener noreferrer">{{ row.item_title }}</calcite-link>
+        {% else %}{{ row.item_title }}{% endif %}
+      </td>
+      <td>{{ row.item_url }}</td>
+      <td>{{ row.item_type }}</td>
+      <td>{{ row.item_owner }}</td>
+      <td>{{ row.url_count }}</td>
+      <td>{{ row.data_count }}</td>
+      <td>{{ row.resource_count }}</td>
+      <td>{{ row.status_label }}</td>
+      <td>{{ row.note }}</td>
+      <td>
+        <div class="replace-report-row-actions">
+          {% if row.has_backup %}
+            <calcite-button scale="s" kind="neutral" appearance="outline" icon-start="download-to"
+                            href="{% url 'enterpriseviz:replace_backup_export' instance=instance_alias backup_id=row.backup_id %}"
+                            download
+                            label="Download backup JSON for {{ row.item_title }}">
+              Backup
+            </calcite-button>
+          {% endif %}
+          {% if row.revert_eligible %}
+            <calcite-button scale="s" kind="danger" appearance="outline" icon-start="reset"
+                            hx-post="{% url 'enterpriseviz:replace_revert_item' instance=instance_alias backup_id=row.backup_id %}"
+                            hx-target="#replace-report-actions"
+                            hx-swap="innerHTML"
+                            data-confirm-sheet
+                            data-confirm-message="Restore '{{ row.item_title }}' to its backed-up state?"
+                            data-confirm-details="If the item was edited in the portal after the replacement, you will be asked to confirm again before those edits are overwritten."
+                            data-confirm-button="Revert"
+                            data-confirm-icon="reset"
+                            label="Revert {{ row.item_title }}">
+              Revert
+            </calcite-button>
+          {% endif %}
+        </div>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>

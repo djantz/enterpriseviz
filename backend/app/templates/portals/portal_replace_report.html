@@ -1,0 +1,47 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+{% block content %}
+  <div class="row">
+    <div class="col-md-12 col-sm-12 col-xs-12">
+      <div class="x_panel x_panel--top">
+        <div class="x_title">
+          <h2>
+            <calcite-icon icon="overwrite-features" preload="true" scale="s" aria-hidden="true"></calcite-icon>
+            <div class="icon_space">Service Replacement Report<small>All replacement jobs for this portal</small></div>
+          </h2>
+          <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+            <li>
+              <calcite-button appearance="transparent" kind="neutral" scale="s"
+                              class="collapse-link"
+                              icon-start="chevron-up"
+                              label="Collapse panel">
+              </calcite-button>
+            </li>
+            <li>
+              <calcite-button appearance="transparent" kind="neutral" scale="s"
+                              class="close-link"
+                              icon-start="x"
+                              label="Close panel">
+              </calcite-button>
+            </li>
+          </ul>
+          <div class="clearfix"></div>
+        </div>
+        <div class="x_content">
+          <p class="text-muted font-13 m-b-30">
+            One row per affected map or app. Dry-run rows show what would change; executed rows
+            show what did change and can be reverted individually. Use the export buttons to
+            share results for testing.
+          </p>
+          <div id="replace-report-actions" aria-live="polite"></div>
+          <div id="replace-report-table"
+               hx-get="{% url 'enterpriseviz:replace_report' instance=instance_alias %}?partial=table"
+               hx-trigger="updateComplete from:body"
+               hx-target="this"
+               hx-swap="innerHTML">
+            {% include "partials/replace_report_table.html" %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock content %}

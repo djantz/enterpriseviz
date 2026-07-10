@@ -800,6 +800,17 @@ progress_bar {
   font-size: 12px;
   color: var(--calcite-color-text-2);
 }
+
+.replace-report-row-actions {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.progress_bar-label strong {
+  color: var(--calcite-color-text-1);
+}
+
 calcite-table {
   width: 100%;
 }
