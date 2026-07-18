@@ -1,0 +1,33 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<calcite-notice open kind="warning" icon="exclamation-mark-triangle" width="full">
+  <div slot="title">'{{ backup.item_title|default:backup.item_id }}' was edited after the replacement</div>
+  <div slot="message">
+    This item has been modified in the portal{% if modified_at %} (last modified
+    {{ modified_at|date:'M j, Y h:i A' }}){% endif %} since the replacement updated it.
+    Reverting restores the pre-replacement backup and <strong>overwrites those later
+    edits</strong>. If the edits should be kept, download the backup and re-apply only the
+    needed parts manually - for example in ArcGIS Online Assistant - instead of reverting.
+  </div>
+</calcite-notice>
+
+<div class="replace-report-row-actions margin-top-1">
+  <calcite-button scale="s" kind="neutral" appearance="outline" icon-start="download-to"
+                  href="{% url 'enterpriseviz:replace_backup_export' instance=instance_alias backup_id=backup.pk %}"
+                  download
+                  label="Download backup JSON for {{ backup.item_title|default:backup.item_id }}">
+    Download backup
+  </calcite-button>
+  <calcite-button scale="s" kind="danger" icon-start="reset"
+                  hx-post="{% url 'enterpriseviz:replace_revert_item' instance=instance_alias backup_id=backup.pk %}"
+                  hx-vals='{"force": "1"}'
+                  hx-target="#replace-report-actions"
+                  hx-swap="innerHTML"
+                  label="Revert and overwrite the later edits">
+    Revert anyway
+  </calcite-button>
+  <calcite-button scale="s" kind="neutral" appearance="outline" icon-start="x-circle"
+                  data-clear-target="#replace-report-actions"
+                  label="Cancel the revert">
+    Cancel
+  </calcite-button>
+</div>

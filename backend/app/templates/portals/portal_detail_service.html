@@ -138,7 +138,14 @@
                           data-modal-trigger="notify-modal"
                           label="Notify affected users about changes">Notify
           </calcite-button>
+          <calcite-button scale="s" kind="inverse" width="full" class="margin-top-1"
+                          hx-get="{% url 'enterpriseviz:replace_modal' instance=item.portal_instance.alias service_pk=item.pk %}"
+                          hx-target="#replace_service_modal"
+                          hx-swap="innerHTML"
+                          label="Replace this service in consuming maps and apps">Replace
+          </calcite-button>
           {% include "portals/portal_notify.html" with change_item_name=item %}
+          <div id="replace_service_modal"></div>
         </div>
         {% endif %}
       </div>

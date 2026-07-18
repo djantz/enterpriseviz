@@ -27,6 +27,7 @@ from django.contrib.admin.utils import unquote
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
+from django.urls import reverse
 from django.contrib.auth.forms import AuthenticationForm
 from django.core.exceptions import FieldError
 from django.core.mail import get_connection, EmailMessage
@@ -36,6 +37,7 @@ from django.http import Http404
 from django.http import HttpResponse, JsonResponse, HttpResponseForbidden
 from django.shortcuts import render, redirect, get_object_or_404
 from django.template import loader
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django_celery_results.models import TaskResult
@@ -46,7 +48,7 @@ from django_tables2.export.views import ExportMixin
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
 from .forms import ScheduleForm, SiteSettingsForm, ToolsForm, WebhookSettingsForm, PortalCredentialsForm
 from .models import Portal, User, Webmap, Service, Layer, App, PortalCreateForm, UserProfile, LogEntry, SiteSettings, \
-    PortalToolSettings
+    PortalToolSettings, ReplacementJob
 from .request_context import get_django_request_context
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *
@@ -2198,4 +2200,488 @@ def webhook_settings_view(request):
     return render(request, 'portals/webhook_settings.html', {
         'form': form,
         'current_secret': bool(site_settings.webhook_secret)
+    })
+
+
+def _render_replace_credentials(request, portal, error, post_url, button_label, action_label):
+    """
+    Renders the inline credential prompt for a replacement action, targeting
+    the same container the triggering request targeted.
+    """
+    hx_target = request.headers.get("HX-Target") or "replace-dryrun-container"
+    return render(request, "partials/replace_credentials.html", {
+        "portal_url": portal.url,
+        "error": error,
+        "post_url": post_url,
+        "button_label": button_label,
+        "action_label": action_label,
+        "target_selector": f"#{hx_target}",
+    })
+
+
+@staff_member_required
+def replace_modal_view(request, instance, service_pk):
+    """
+    Renders the Replace Service modal: replacement candidates, the source
+    service's sublayer inventory, consuming maps/apps, and job history.
+    """
+    portal = get_object_or_404(Portal, alias=instance)
+    service = get_object_or_404(Service, pk=service_pk, portal_instance=portal)
+
+    candidates = Service.objects.filter(portal_instance=portal) \
+        .exclude(pk=service.pk).order_by("service_name") \
+        .values("pk", "service_name", "service_type")
+    maps = Webmap.objects.filter(map_service__service_id=service) \
+        .select_related("portal_instance").distinct()
+    apps = service.apps.select_related("app_owner", "portal_instance").distinct()
+
+    # Consumers come from the local database, so surface how fresh it is
+    sync_times = [t for t in (portal.webmap_updated, portal.webapp_updated) if t]
+
+    return render(request, "portals/portal_replace.html", {
+        "item": service,
+        "instance_alias": instance,
+        "candidates": candidates,
+        "source_layers": utils.get_source_layer_inventory(service),
+        "maps": maps,
+        "apps": apps,
+        "jobs": utils.get_service_replacement_jobs(service),
+        "last_synced": min(sync_times) if sync_times else None,
+    })
+
+
+@staff_member_required
+@require_POST
+def replace_dry_run_view(request, instance, service_pk):
+    """
+    Validates the replacement configuration, creates a ReplacementJob, and
+    queues the dry-run analysis task. Returns the progress bar partial.
+    """
+    portal = get_object_or_404(Portal, alias=instance)
+    service = get_object_or_404(Service, pk=service_pk, portal_instance=portal)
+    danger = utils.danger_alert_response
+
+    if utils.active_replacement_job_exists(portal):
+        return danger("Another replacement job is already running for this portal. "
+                      "Wait for it to finish before starting a new one.")
+
+    mode = request.POST.get("mode", "simple")
+    selected_maps = [m for m in request.POST.get("selected_maps", "").split(",") if m]
+    selected_apps = [a for a in request.POST.get("selected_apps", "").split(",") if a]
+    if not selected_maps and not selected_apps:
+        return danger("Select at least one map or app to update.")
+
+    # Only known consumers of this service may be targeted
+    known_map_ids = set(Webmap.objects.filter(map_service__service_id=service)
+                        .values_list("webmap_id", flat=True))
+    known_app_ids = set(service.apps.values_list("app_id", flat=True))
+    if set(selected_maps) - known_map_ids or set(selected_apps) - known_app_ids:
+        return danger("Some selected items are not known consumers of this service. "
+                      "Close the dialog and reopen it to refresh the lists.")
+
+    if mode == "advanced":
+        try:
+            layer_mappings = json.loads(request.POST.get("layer_mappings") or "[]")
+        except json.JSONDecodeError:
+            return danger("Invalid layer mapping data.")
+        if not layer_mappings:
+            return danger("Add at least one layer mapping or switch to simple mode.")
+        target_pks = {m.get("target_service_id") for m in layer_mappings}
+        valid_pks = set(Service.objects.filter(
+            portal_instance=portal, pk__in=target_pks).values_list("pk", flat=True))
+        if service.pk in valid_pks or target_pks - valid_pks:
+            return danger("Layer mappings reference an invalid replacement service.")
+        config = {"mode": "advanced", "layer_mappings": layer_mappings}
+    else:
+        try:
+            target_pk = int(request.POST.get("target_service", ""))
+        except ValueError:
+            return danger("Select a replacement service.")
+        if target_pk == service.pk or not Service.objects.filter(
+                portal_instance=portal, pk=target_pk).exists():
+            return danger("Invalid replacement service.")
+        config = {"mode": "simple", "target_service_id": target_pk}
+
+    try:
+        rows, warnings, partial = utils.build_mapping_rows(service, config)
+        pairs = utils.build_replacements(rows)
+    except Exception as e:
+        logger.error(f"Failed to build replacement mapping for service {service.pk}: {e}",
+                     exc_info=True)
+        return danger("Failed to build the replacement mapping. See logs for details.")
+
+    if not pairs:
+        return danger("The configuration produces no replacements - the source and "
+                      "replacement service URLs and item IDs are identical.")
+
+    cred = utils.resolve_replacement_credentials(request, portal)
+    if cred["prompt"]:
+        return _render_replace_credentials(
+            request, portal, cred["error"],
+            post_url=reverse("enterpriseviz:replace_dry_run",
+                             kwargs={"instance": instance, "service_pk": service.pk}),
+            button_label="Authenticate & run dry run",
+            action_label="run the dry run")
+
+    # In a partial replacement (layer split, or layers left unmapped),
+    # whole-service references cannot be repointed; the dry run counts how
+    # many references to these URLs and item IDs remain per item
+    unreplaced_references = []
+    if partial:
+        unreplaced_references = [u.rstrip("/") for u in (service.service_url or []) if u]
+        unreplaced_references += [v for v in (service.portal_id or {}).values() if v]
+
+    # Lock the portal row so two racing requests cannot both pass the
+    # active-job check and create concurrent jobs
+    with transaction.atomic():
+        Portal.objects.select_for_update().get(pk=portal.pk)
+        if utils.active_replacement_job_exists(portal):
+            return danger("Another replacement job is already running for this portal. "
+                          "Wait for it to finish before starting a new one.")
+        job = ReplacementJob.objects.create(
+            portal_instance=portal,
+            source_service=service,
+            source_service_name=service.service_name or "",
+            replacement_config=config,
+            replacement_pairs=[list(p) for p in pairs],
+            selected_map_ids=selected_maps,
+            selected_app_ids=selected_apps,
+            status="analyzing",
+            initiated_by=request.user,
+            dry_run_summary={"items": [], "warnings": warnings,
+                             "unreplaced_references": unreplaced_references, "totals": {}},
+        )
+
+    if cred["token"]:
+        utils.cache_replacement_credentials(job.id, cred["token"], request.user.pk)
+
+    try:
+        task = process_replacement_task.delay(job.id, "dry_run", credential_token=cred["token"])
+        job.celery_task_id = task.id
+        job.save(update_fields=["celery_task_id"])
+    except Exception as e:
+        logger.error(f"Failed to queue replacement dry run for job {job.id}: {e}", exc_info=True)
+        job.delete()
+        return danger("Failed to queue the dry run. See logs for details.")
+
+    logger.info(f"Queued replacement dry run job {job.id} for service "
+                f"'{service.service_name}' ({instance}). Task ID: {task.id}")
+    return render(request, "partials/replace_progress.html", {
+        "instance": instance,
+        "task_id": task.id,
+        "value": 0,
+        "progress": {"state": "PENDING", "complete": False},
+        "task_name": "Replace Service Dry Run",
+        "job_id": job.id,
+        "phase": "dry_run",
+        "source_service_pk": service.pk,
+        "results_target": f"#{request.headers.get('HX-Target') or 'replace-dryrun-container'}",
+    })
+
+
+@staff_member_required
+def replace_target_layers_view(request, instance, target_pk):
+    """
+    Returns the sublayer options of a candidate replacement service for the
+    advanced mapping table row selects.
+    """
+    target = get_object_or_404(Service, pk=target_pk, portal_instance__alias=instance)
+    return render(request, "partials/replace_layer_options.html", {
+        "layers": utils.get_source_layer_inventory(target),
+    })
+
+
+@staff_member_required
+def replace_preview_view(request, instance, job_id):
+    """
+    Renders the dry-run preview (with Execute) or, for finished jobs, the
+    execution results (with Revert).
+    """
+    job, error = utils.get_replacement_job(instance, job_id)
+    if error:
+        return error
+    return render(request, "partials/replace_preview.html", {
+        "job": job,
+        "instance_alias": instance,
+        "backups": job.item_backups.order_by("item_title") if job.status not in
+                   ("analyzing", "dry_run", "pending") else None,
+        "can_revert": job.status in ReplacementJob.REVERTABLE_STATUSES
+                      and job.item_backups.filter(
+                          status__in=["applied", "revert_failed"]).exists(),
+    })
+
+
+@staff_member_required
+@require_POST
+def replace_execute_view(request, instance, job_id):
+    """
+    Queues execution of a previously dry-run replacement job.
+    """
+    job, error = utils.get_replacement_job(instance, job_id)
+    if error:
+        return error
+    danger = utils.danger_alert_response
+
+    if job.status != "dry_run":
+        return danger(f"This job is '{job.get_status_display()}' and can no longer be executed. "
+                      f"Run a new dry run first.")
+    if utils.active_replacement_job_exists(job.portal_instance):
+        return danger("Another replacement job is already running for this portal.")
+
+    cred = utils.resolve_replacement_credentials(request, job.portal_instance, job_id=job.id)
+    if cred["prompt"]:
+        return _render_replace_credentials(
+            request, job.portal_instance, cred["error"],
+            post_url=reverse("enterpriseviz:replace_execute",
+                             kwargs={"instance": instance, "job_id": job.pk}),
+            button_label="Authenticate & execute",
+            action_label="execute the replacement")
+
+    # Lock the portal row and re-check under the lock so two racing requests
+    # cannot both mark the job pending or start concurrent jobs
+    with transaction.atomic():
+        Portal.objects.select_for_update().get(pk=job.portal_instance_id)
+        job.refresh_from_db()
+        if job.status != "dry_run":
+            return danger(f"This job is '{job.get_status_display()}' and can no longer be "
+                          f"executed. Run a new dry run first.")
+        if utils.active_replacement_job_exists(job.portal_instance):
+            return danger("Another replacement job is already running for this portal.")
+        job.status = "pending"
+        job.save(update_fields=["status"])
+
+    try:
+        task = process_replacement_task.delay(job.id, "execute", credential_token=cred["token"])
+    except Exception as e:
+        logger.error(f"Failed to queue replacement execution for job {job.id}: {e}", exc_info=True)
+        job.status = "dry_run"
+        job.save(update_fields=["status"])
+        return danger("Failed to queue the replacement. See logs for details.")
+
+    job.celery_task_id = task.id
+    job.save(update_fields=["celery_task_id"])
+    logger.info(f"Queued replacement execution job {job.id} ({instance}). Task ID: {task.id}")
+    return render(request, "partials/replace_progress.html", {
+        "instance": instance,
+        "task_id": task.id,
+        "value": 0,
+        "progress": {"state": "PENDING", "complete": False},
+        "task_name": "Replace Service",
+        "job_id": job.id,
+        "phase": "execute",
+        "source_service_pk": job.source_service_id,
+        "results_target": f"#{request.headers.get('HX-Target') or 'replace-dryrun-container'}",
+    })
+
+
+@staff_member_required
+@require_POST
+def replace_revert_view(request, instance, job_id):
+    """
+    Queues a revert of a completed replacement job from its item backups.
+    """
+    job, error = utils.get_replacement_job(instance, job_id)
+    if error:
+        return error
+    danger = utils.danger_alert_response
+
+    # "failed" is revertable too: an execute that died mid-run may have
+    # already updated (and backed up) some items
+    if job.status not in ReplacementJob.REVERTABLE_STATUSES:
+        return danger(f"This job is '{job.get_status_display()}' and cannot be reverted.")
+    if not job.item_backups.filter(status__in=["applied", "revert_failed"]).exists():
+        return danger("No backups remain for this job (they may have been removed by the "
+                      "retention policy), so it cannot be reverted.")
+    if utils.active_replacement_job_exists(job.portal_instance):
+        return danger("Another replacement job is already running for this portal.")
+
+    cred = utils.resolve_replacement_credentials(request, job.portal_instance, job_id=job.id)
+    if cred["prompt"]:
+        return _render_replace_credentials(
+            request, job.portal_instance, cred["error"],
+            post_url=reverse("enterpriseviz:replace_revert",
+                             kwargs={"instance": instance, "job_id": job.pk}),
+            button_label="Authenticate & revert",
+            action_label="revert the replacement")
+
+    # Lock the portal row and re-check under the lock so two racing requests
+    # cannot both queue a revert or start concurrent jobs
+    with transaction.atomic():
+        Portal.objects.select_for_update().get(pk=job.portal_instance_id)
+        job.refresh_from_db()
+        if job.status not in ReplacementJob.REVERTABLE_STATUSES:
+            return danger(f"This job is '{job.get_status_display()}' and cannot be reverted.")
+        if utils.active_replacement_job_exists(job.portal_instance):
+            return danger("Another replacement job is already running for this portal.")
+        prior_status = job.status
+        job.status = "reverting"
+        job.save(update_fields=["status"])
+
+    try:
+        task = revert_replacement_task.delay(job.id, credential_token=cred["token"],
+                                             prior_status=prior_status)
+    except Exception as e:
+        logger.error(f"Failed to queue revert for job {job.id}: {e}", exc_info=True)
+        job.status = prior_status
+        job.save(update_fields=["status"])
+        return danger("Failed to queue the revert. See logs for details.")
+
+    job.revert_task_id = task.id
+    job.save(update_fields=["revert_task_id"])
+    logger.info(f"Queued replacement revert job {job.id} ({instance}). Task ID: {task.id}")
+    return render(request, "partials/replace_progress.html", {
+        "instance": instance,
+        "task_id": task.id,
+        "value": 0,
+        "progress": {"state": "PENDING", "complete": False},
+        "task_name": "Revert Replacement",
+        "job_id": job.id,
+        "phase": "revert",
+        "source_service_pk": job.source_service_id,
+        "results_target": f"#{request.headers.get('HX-Target') or 'replace-dryrun-container'}",
+    })
+
+
+@staff_member_required
+def replace_history_view(request, instance, service_pk):
+    """
+    Renders the job history fragment for a service's Replace modal.
+    """
+    service = get_object_or_404(Service, pk=service_pk, portal_instance__alias=instance)
+    return render(request, "partials/replace_history.html", {
+        "jobs": utils.get_service_replacement_jobs(service),
+        "instance_alias": instance,
+        "item": service,
+    })
+
+
+@staff_member_required
+def replace_report_view(request, instance):
+    """
+    Full replacement report for a portal: every job's source and target
+    services with one row per affected map/app, exportable via the standard
+    table export buttons. Renders the page or, with ?partial=table, just the
+    table fragment so it can refresh itself when a task completes.
+    """
+    portal = get_object_or_404(Portal, alias=instance)
+    rows = utils.get_replacement_report_rows(portal)
+    context = {
+        "instance_alias": instance,
+        "rows": rows,
+        "portal": Portal.objects.values_list("alias", "portal_type", "url"),
+        "instance": portal,
+    }
+
+    if request.GET.get("partial") == "table":
+        return render(request, "partials/replace_report_table.html", context)
+
+    template = "portals/portal_replace_report.html" if request.htmx \
+        else "portals/portal_replace_report_full.html"
+    return render(request, template, context)
+
+
+@staff_member_required
+def replace_backup_export_view(request, instance, backup_id):
+    """
+    Downloads a single item's pre-change backup as a JSON file so it can be
+    applied manually (e.g. via ArcGIS Online Assistant) instead of reverted.
+    """
+    from .models import ReplacementItemBackup
+
+    backup = ReplacementItemBackup.objects.filter(
+        pk=backup_id, job__portal_instance__alias=instance).first()
+    if backup is None:
+        return HttpResponse(status=404, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Backup not found."})})
+
+    payload = utils.build_backup_export(backup)
+    response = JsonResponse(payload, json_dumps_params={"indent": 2})
+    filename = f"backup_{backup.item_id or backup.pk}.json"
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+@staff_member_required
+@require_POST
+def replace_revert_item_view(request, instance, backup_id):
+    """
+    Queues a revert of a single item from its backup row (partial revert of
+    a replacement job).
+    """
+    from .models import ReplacementItemBackup
+
+    backup = ReplacementItemBackup.objects.filter(
+        pk=backup_id, job__portal_instance__alias=instance).select_related("job").first()
+    danger = utils.danger_alert_response
+    if backup is None:
+        return danger("Backup not found.")
+
+    job = backup.job
+    if backup.status not in ReplacementItemBackup.REVERTABLE_STATUSES:
+        return danger(f"This item is '{backup.get_status_display()}' and cannot be reverted.")
+    if utils.active_replacement_job_exists(job.portal_instance):
+        return danger("Another replacement job is already running for this portal.")
+
+    cred = utils.resolve_replacement_credentials(request, job.portal_instance, job_id=job.id)
+    if cred["prompt"]:
+        return _render_replace_credentials(
+            request, job.portal_instance, cred["error"],
+            post_url=reverse("enterpriseviz:replace_revert_item",
+                             kwargs={"instance": instance, "backup_id": backup.pk}),
+            button_label="Authenticate & revert item",
+            action_label=f"revert '{backup.item_title or backup.item_id}'")
+
+    # If the item was edited in the portal after the replacement, reverting
+    # would overwrite those edits - ask the user first, offering the backup
+    # download as the non-destructive alternative
+    force = request.POST.get("force") == "1"
+    if not force and backup.applied_modified_at is not None:
+        check = utils.check_backup_newer_edits(job.portal_instance, cred["token"], backup)
+        if check["error"]:
+            return danger(check["error"])
+        if check["has_newer_edits"]:
+            return render(request, "partials/replace_revert_confirm.html", {
+                "backup": backup,
+                "instance_alias": instance,
+                "modified_at": check["modified_at"],
+            })
+
+    # Lock the portal row and re-check under the lock so an item revert
+    # cannot start while another job is being queued. The backup is also
+    # claimed here (revert_claimed_at) so a duplicate/concurrent request for
+    # the same backup is rejected instead of queueing a second revert task;
+    # a claim older than REVERT_CLAIM_LEASE is treated as abandoned (crashed
+    # worker) and can be reclaimed.
+    with transaction.atomic():
+        Portal.objects.select_for_update().get(pk=job.portal_instance_id)
+        backup.refresh_from_db()
+        if backup.status not in ReplacementItemBackup.REVERTABLE_STATUSES:
+            return danger(f"This item is '{backup.get_status_display()}' and cannot be reverted.")
+        if utils.active_replacement_job_exists(job.portal_instance):
+            return danger("Another replacement job is already running for this portal.")
+        lease_cutoff = timezone.now() - ReplacementItemBackup.REVERT_CLAIM_LEASE
+        claimed = ReplacementItemBackup.objects.filter(pk=backup.pk).filter(
+            Q(revert_claimed_at__isnull=True) | Q(revert_claimed_at__lt=lease_cutoff)
+        ).update(revert_claimed_at=timezone.now())
+        if not claimed:
+            return danger("This item's revert is already in progress.")
+
+    try:
+        task = revert_replacement_task.delay(job.id, credential_token=cred["token"],
+                                             backup_ids=[backup.pk], force=force)
+    except Exception as e:
+        logger.error(f"Failed to queue item revert for backup {backup.pk}: {e}", exc_info=True)
+        ReplacementItemBackup.objects.filter(pk=backup.pk).update(revert_claimed_at=None)
+        return danger("Failed to queue the revert. See logs for details.")
+
+    job.revert_task_id = task.id
+    job.save(update_fields=["revert_task_id"])
+    logger.info(f"Queued item revert for '{backup.item_title}' (job {job.id}, {instance}). "
+                f"Task ID: {task.id}")
+    return render(request, "partials/replace_item_progress.html", {
+        "instance": instance,
+        "task_id": task.id,
+        "value": 0,
+        "progress": {"state": "PENDING", "complete": False},
+        "task_name": f"Revert '{backup.item_title or backup.item_id}'",
     })

@@ -73,25 +73,29 @@ function initDataTable(selector, filterSelector, columnContains, usageTarget) {
                 extend: "copyHtml5",
                 text: "Copy",
                 tag: 'calcite-button',
-                attr: {scale: "s", kind: "inverse", "icon-start": "copy-to-clipboard"}
+                attr: {scale: "s", kind: "inverse", "icon-start": "copy-to-clipboard"},
+                exportOptions: {columns: ':not(.no-export)'}
             },
             {
                 extend: "csvHtml5",
                 text: "CSV",
                 tag: 'calcite-button',
-                attr: {scale: "s", kind: "inverse", "icon-start": "file-csv"}
+                attr: {scale: "s", kind: "inverse", "icon-start": "file-csv"},
+                exportOptions: {columns: ':not(.no-export)'}
             },
             {
                 extend: "excelHtml5",
                 text: "Excel",
                 tag: 'calcite-button',
-                attr: {scale: "s", kind: "inverse", "icon-start": "file-excel"}
+                attr: {scale: "s", kind: "inverse", "icon-start": "file-excel"},
+                exportOptions: {columns: ':not(.no-export)'}
             },
             {
                 extend: "pdfHtml5",
                 text: "PDF",
                 tag: 'calcite-button',
-                attr: {scale: "s", kind: "inverse", "icon-start": "file-pdf"}
+                attr: {scale: "s", kind: "inverse", "icon-start": "file-pdf"},
+                exportOptions: {columns: ':not(.no-export)'}
             }
         ],
         language: {
@@ -618,6 +622,168 @@ function setupNotifyModalStepper() {
     });
 }
 
+async function seedAndSyncSelected(tableId, inputId) {
+    const table = document.getElementById(tableId);
+    const hiddenInput = document.getElementById(inputId);
+    if (!table || !hiddenInput) return;
+
+    if (table.componentOnReady) {
+        await table.componentOnReady();
+    }
+
+    const seed = () => {
+        const rows = table.selectedItems?.length
+            ? table.selectedItems
+            : Array.from(table.querySelectorAll("calcite-table-row[selected]"));
+        hiddenInput.value = rows.map(row => row.dataset.id).filter(Boolean).join(",");
+    };
+    seed();
+    table.addEventListener("calciteTableSelect", seed);
+}
+
+async function setupReplaceForm(modal) {
+    const stepper = document.getElementById("replace-stepper");
+    const nextButton = document.getElementById("replace-portal-next");
+    const form = document.getElementById("replace-portal-form");
+    if (!stepper || !nextButton || !form) return;
+
+    // Pre-selected rows must be reflected in the hidden inputs immediately
+    seedAndSyncSelected("replace-maps-table", "replace-selected-maps");
+    seedAndSyncSelected("replace-apps-table", "replace-selected-apps");
+
+    const modeInput = document.getElementById("replace-mode");
+    const targetSelect = document.getElementById("replace-target-select");
+    const advancedToggle = document.getElementById("replace-advanced-toggle");
+    const advancedTable = document.getElementById("replace-advanced-table");
+
+    if (advancedToggle && advancedTable) {
+        advancedToggle.addEventListener("calciteSwitchChange", () => {
+            const advanced = advancedToggle.checked;
+            advancedTable.hidden = !advanced;
+            if (targetSelect) targetSelect.disabled = advanced;
+            if (modeInput) modeInput.value = advanced ? "advanced" : "simple";
+        });
+
+        const instanceAlias = advancedTable.dataset.instance;
+        advancedTable.querySelectorAll(".replace-mapping-row").forEach((row) => {
+            const serviceSelect = row.querySelector(".replace-row-service");
+            const layerSelect = row.querySelector(".replace-row-layer");
+            if (!serviceSelect || !layerSelect) return;
+            serviceSelect.addEventListener("calciteSelectChange", () => {
+                if (!serviceSelect.value) {
+                    layerSelect.innerHTML = '<calcite-option value="" selected>Same layer ID</calcite-option>';
+                    return;
+                }
+                htmx.ajax("GET",
+                    `/enterpriseviz/portal/${instanceAlias}/replace/target/${serviceSelect.value}/layers/`,
+                    {target: layerSelect, swap: "innerHTML"});
+            });
+        });
+    }
+
+    function serializeLayerMappings() {
+        const mappingsInput = document.getElementById("replace-layer-mappings");
+        if (!mappingsInput || !advancedTable) return;
+        const mappings = [];
+        advancedTable.querySelectorAll(".replace-mapping-row").forEach((row) => {
+            const serviceSelect = row.querySelector(".replace-row-service");
+            const layerSelect = row.querySelector(".replace-row-layer");
+            if (serviceSelect?.value) {
+                const oldLayerId = parseInt(row.dataset.oldLayerId, 10);
+                mappings.push({
+                    old_layer_id: oldLayerId,
+                    target_service_id: parseInt(serviceSelect.value, 10),
+                    new_layer_id: layerSelect?.value ? parseInt(layerSelect.value, 10) : oldLayerId
+                });
+            }
+        });
+        mappingsInput.value = JSON.stringify(mappings);
+    }
+
+    let currentStepIndex = 0;
+    const stepperItems = stepper.querySelectorAll("calcite-stepper-item");
+    currentStepIndex = Array.from(stepperItems).findIndex(item => item.selected);
+    if (currentStepIndex === -1) currentStepIndex = 0;
+
+    function updateButtonState(stepIndex) {
+        if (stepIndex < stepperItems.length - 1) {
+            nextButton.textContent = "Next";
+            nextButton.setAttribute("icon-start", "chevron-right");
+        } else {
+            nextButton.textContent = "Run Dry Run";
+            nextButton.setAttribute("icon-start", "play");
+        }
+    }
+
+    function goToNextStep() {
+        if (currentStepIndex < stepperItems.length - 1) {
+            stepperItems[currentStepIndex].selected = false;
+            currentStepIndex++;
+            stepperItems[currentStepIndex].selected = true;
+            updateButtonState(currentStepIndex);
+        }
+    }
+
+    stepper.addEventListener("calciteStepperItemSelect", function () {
+        currentStepIndex = Array.from(stepperItems).findIndex(item => item.selected);
+        updateButtonState(currentStepIndex);
+    });
+
+    updateButtonState(currentStepIndex);
+
+    let dryRunPending = false;
+
+    function stopDryRunLoading() {
+        dryRunPending = false;
+        nextButton.loading = false;
+        nextButton.disabled = false;
+    }
+
+    nextButton.addEventListener("click", function (event) {
+        if (currentStepIndex < stepperItems.length - 1) {
+            event.preventDefault();
+            goToNextStep();
+        } else {
+            serializeLayerMappings();
+            // Only enter the loading state when the submit will actually be
+            // issued; htmx halts the request when form validation fails
+            if (!form.checkValidity()) {
+                form.reportValidity();
+                return;
+            }
+            dryRunPending = true;
+            nextButton.loading = true;
+            nextButton.disabled = true;
+            htmx.trigger(form, 'submit');
+        }
+    });
+
+    // Keep the button in a loading state for as long as the dry-run task is
+    // actually running. The initial POST only queues the task and returns the
+    // progress bar, so loading must persist until the task reports completion
+    // (the `updateComplete` event, which bubbles up from the polling progress
+    // bar). If the response was instead a credential prompt or a validation
+    // error - i.e. no progress bar was swapped in - there is no task to wait
+    // for, so clear the loading state immediately.
+    form.addEventListener("htmx:afterSettle", function () {
+        if (!dryRunPending) return;
+        const container = document.getElementById("replace-dryrun-container");
+        if (!container || !container.querySelector("#progress-bar")) {
+            stopDryRunLoading();
+        }
+    });
+
+    form.addEventListener("updateComplete", function () {
+        if (dryRunPending) stopDryRunLoading();
+    });
+
+    // htmx skips the request entirely (so afterSettle never fires) when a
+    // form element fails validation at submit time
+    form.addEventListener("htmx:validation:halted", function () {
+        if (dryRunPending) stopDryRunLoading();
+    });
+}
+
 htmx.on("htmx:load", async (e) => {
     const target = e.detail.elt;
     const parent = target.parentNode.id;
@@ -634,8 +800,16 @@ htmx.on("htmx:load", async (e) => {
             await init_DataTables(table);
         }
     }
-    // Main content updates - reinitialize page-level components
-    if (document.getElementById('graph-container')) {
+    // Only (re)initialize page-level components when they are part of the
+    // content that was just swapped in - not on every unrelated fragment swap
+    // (e.g. the progress bar polling every few seconds), which would otherwise
+    // rebuild the dependency graph and re-fetch its icons on each poll.
+    const inSwappedContent = (selector) => {
+        if (target.matches && target.matches(selector)) return target;
+        return target.querySelector ? target.querySelector(selector) : null;
+    };
+
+    if (inSwappedContent('#graph-container')) {
         initDependencyGraph('graph-container').then(function(graph) {
             if (graph) {
                 graph.connectControls();
@@ -644,12 +818,13 @@ htmx.on("htmx:load", async (e) => {
             console.error('Error initializing graph:', err);
         });
     }
-    if (document.getElementById('line-chart')) {
+    if (inSwappedContent('#line-chart')) {
         init_Charts();
     }
 
-    // Initialize notify modal
-    if (currentPath.match(/\/portal\/[^/]+\/service/) || currentPath.match(/\/portal\/[^/]+\/map/) || currentPath.includes('/layer/')) {
+    // Initialize notify modal only when the page content containing it loads
+    if ((currentPath.match(/\/portal\/[^/]+\/service/) || currentPath.match(/\/portal\/[^/]+\/map/) || currentPath.includes('/layer/'))
+        && inSwappedContent('#notify-modal')) {
         initPortalNotification();
     }
 
@@ -882,6 +1057,7 @@ const FORM_SETUP_HANDLERS = {
     'update-form-container': setupPortalFormLogic,
     'webhook-form-container': initWebhookSecretGenerator,
     'tools-form-container': initPortalTools,
+    'replace-form-container': setupReplaceForm,
 
 };
 
@@ -893,6 +1069,7 @@ const MODAL_TRIGGER_MAP = {
     'progress-container': 'credentials-modal',
     'webhook_settings_modal': 'webhook-modal',
     'tool_settings_modal': 'tool-modal',
+    'replace_service_modal': 'replace-modal',
 
 };
 
@@ -1336,6 +1513,66 @@ function initWebhookSecretGenerator() {
         pendingDeleteConfig = null;
     });
 })();
+
+// Calcite confirmation sheet for htmx actions (replaces browser-native
+// hx-confirm dialogs). Any element with a data-confirm-sheet attribute has
+// its htmx request held until the user confirms in the sheet; message,
+// details, and button text come from data-confirm-* attributes.
+(function () {
+    const sheet = document.getElementById('replace-confirm-sheet');
+    const message = document.getElementById('replace-confirm-message');
+    const details = document.getElementById('replace-confirm-details');
+    const confirmYes = document.getElementById('replace-confirm-yes');
+    const confirmNo = document.getElementById('replace-confirm-no');
+
+    if (!sheet || !message || !details || !confirmYes || !confirmNo) {
+        // Sheet not present (e.g., non-staff user)
+        return;
+    }
+
+    let pendingRequest = null;
+
+    document.body.addEventListener('htmx:confirm', function (evt) {
+        const source = evt.detail.elt.closest?.('[data-confirm-sheet]');
+        if (!source) return;
+        evt.preventDefault();
+
+        message.textContent = source.getAttribute('data-confirm-message') || 'Are you sure you want to proceed?';
+        details.textContent = source.getAttribute('data-confirm-details') || '';
+        confirmYes.textContent = source.getAttribute('data-confirm-button') || 'Confirm';
+        confirmYes.setAttribute('icon-start', source.getAttribute('data-confirm-icon') || 'check');
+
+        pendingRequest = evt.detail;
+        sheet.open = true;
+    });
+
+    confirmYes.addEventListener('click', function () {
+        if (pendingRequest) {
+            // true = skip htmx's built-in hx-confirm dialog
+            pendingRequest.issueRequest(true);
+            pendingRequest = null;
+        }
+        sheet.open = false;
+    });
+
+    confirmNo.addEventListener('click', function () {
+        pendingRequest = null;
+        sheet.open = false;
+    });
+
+    sheet.addEventListener('calciteSheetClose', function () {
+        pendingRequest = null;
+    });
+})();
+
+// CSP-safe cancel buttons: clear the container named by data-clear-target
+// (used by inline confirmation panels swapped in by the server)
+document.addEventListener('click', function (e) {
+    const trigger = e.target.closest?.('[data-clear-target]');
+    if (!trigger) return;
+    const target = document.querySelector(trigger.getAttribute('data-clear-target'));
+    if (target) target.innerHTML = '';
+});
 
 document.addEventListener('htmx:load', function (event) {
     // Find all sortable table headers

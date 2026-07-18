@@ -222,6 +222,95 @@ Once you've configured the `.env` files, you can deploy EnterpriseViz using Dock
             * Configure minimum metadata score threshold (50%, 75%, 90%, 100%)
             * Choose between immediate (webhook) or daily processing
 
+    * **Replace Service**
+
+      When a service is republished — moved to a new server, renamed, or split into multiple
+      services — every web map and app that references it still points at the old URLs and item IDs.
+      The Replace Service tool repoints those consumers in place, without republishing the maps or
+      apps themselves. It is available to staff users from the **Replace** button on a service's
+      details page.
+
+        * **The process:**
+            1. **Choose a replacement target.** Simple mode swaps the whole service for a single
+               replacement (URLs and portal item IDs). An *Advanced* toggle exposes a per-layer
+               mapping table so individual sublayers can be routed to different replacement
+               services — for example, when one large service is split into several smaller ones.
+               Layers left on *No change* keep pointing at the source service; in that case
+               whole-service URL and item-ID references are deliberately left in place too, and the
+               dry run reports how many remain per item.
+            2. **Select the affected items.** The consuming web maps and directly-referencing apps
+               known to EnterpriseViz are listed with all items pre-selected; deselect anything that
+               should be left untouched. (Apps that use the service only through a web map are
+               covered by updating the map.) These lists come from the EnterpriseViz database — the
+               step shows when the portal was last synced, and consumers added to the portal after
+               that sync are not listed, so refresh portal data first if it is stale.
+            3. **Dry run.** A background job analyzes every selected item and reports exactly what
+               would change — per item counts of URL, item data, and resource replacements (Web
+               Experience configs and StoryMap draft/published resources included) — plus the full
+               list of replacement string pairs. No portal item is modified during a dry run; only
+               the preview counts and the job's own status are saved.
+            4. **Execute.** After reviewing the preview, an explicit confirmation applies the
+               changes. Every modified item is backed up first, then updated; when finished,
+               EnterpriseViz resyncs its own records for the affected items from the portal.
+        * **Reference matching:** Service URLs are matched case-insensitively and in the encoded
+          forms that appear inside real item JSON (JSON-escaped `https:\/\/...` and percent-encoded
+          `https%3A%2F%2F...` embeds). Sublayer URLs use digit-boundary matching so `.../1` never
+          matches inside `.../12`. One caveat: items that reference a service by portal item ID
+          plus a *numeric* `layerId` property (rather than by URL) keep their layer number — if an
+          advanced mapping renumbers layers, the dry run warns so those items can be verified after
+          execution.
+        * **Credentials:** If the portal stores credentials (or has a valid token), the tool uses
+          them automatically. Otherwise you are prompted for an admin username and password inside
+          the modal; they are validated against the portal, held encrypted in the server cache for
+          up to one hour (so dry run → execute → revert can reuse them without re-prompting *you*
+          while that cache entry is still valid — each staff user enters their own credentials),
+          never written to the database, and discarded once the job
+          is fully reverted.
+        * **Error handling:** Items are processed independently — one failure never aborts the run.
+          An item is skipped (and reported) if it was deleted from the portal, if its backup could
+          not be saved (an item is *never* modified without a saved backup), or if a replacement
+          would corrupt its JSON (each change is validated before being queued). Items modified in
+          the portal between the dry run and execution are re-analyzed fresh and updated from the
+          current content, with a note recorded on the item's result row. Per-item results and
+          errors are shown in the results table, recorded on the job, and included in the admin
+          notification email. Only one replacement job can run per portal at a time; a dry-run
+          analysis abandoned by a dead worker is failed automatically so it never blocks new jobs.
+        * **Reverting:** Executed jobs — including *failed* runs whose earlier items were already
+          updated before the failure — can be reverted from the results view or the modal's
+          *History* tab. Revert restores each item's URL property, item data, and resources from the
+          backups taken at execution time, then resyncs the database records. Items edited in the
+          portal *after* the replacement are never overwritten silently: a full-job revert skips
+          them (with a note in the results), and reverting one individually first shows a
+          confirmation with the item's last-modified time, a *Download backup* button — so the
+          backup can be applied by hand in ArcGIS Online Assistant when the later edits should be
+          kept — and an explicit *Revert anyway*. Partial revert failures (e.g., an item deleted
+          since execution) are reported per item and can be retried. Individual maps or apps can
+          also be reverted one at a time from the replacement report (below) without undoing the
+          rest of the job; the job is only marked reverted once every applied item has been
+          restored.
+        * **Replacement report:** *Open full report* (History tab of the Replace modal, or
+          `/portal/<alias>/replacements/`) opens a dedicated page listing every replacement job for 
+          the portal — source service, replacement service(s), and one row per affected map/app with
+          its owner, replacement counts, and current status. Dry-run analyses appear alongside 
+          executed changes so results can be reviewed before executing.
+            * **Links and exports:** In the table, the service, replacement service, and item titles
+              link to their portal pages. The table supports the standard Copy/CSV/Excel/PDF export
+              buttons for sharing test results with item owners; exports include the service URL,
+              replacement service URL, and item URL as their own columns (separate from the linked
+              titles).
+            * **Per-item revert:** Eligible rows include a Revert button that restores just that
+              map or app; the job is only marked reverted once every applied item has been restored.
+            * **Backup download:** Each executed row offers a *Backup* download of that item's
+              pre-change state as a JSON file (item URL, item data JSON, and any resources). This
+              lets an administrator restore an item manually — for example by pasting the data JSON
+              into [ArcGIS Assistant](https://assistant.esri-ps.com/) — when the built-in
+              revert cannot be used.
+        * **Backup retention:** Item backups are kept for **90 days** by default (configurable via
+          the `REPLACEMENT_BACKUP_RETENTION_DAYS` Django setting; set it to `0` to keep backups
+          indefinitely). Expired backups are purged automatically the next time any replacement job
+          runs. Job history is kept indefinitely for auditing, but once a job's backups have been
+          purged it can no longer be reverted.
+
 ## Limitations
 
 Currently, EnterpriseViz has the following known limitation:
@@ -236,6 +325,15 @@ Currently, EnterpriseViz has the following known limitation:
 
 ## Changelog
 
+### July 2026 - Replace Service Tool
+* **Service Replacement** - New staff-only tool on service detail pages that repoints consuming web maps and apps to a replacement service via string-level replacement of service URLs and portal item IDs in item JSON, URL properties, and app resources (Web Experience configs, StoryMap draft/published resources).
+* **Simple & Split Modes** - Swap a whole service one-for-one, or map individual sublayers to different replacement services when a service has been split apart.
+* **Dry Run Preview** - Every replacement starts with a dry run showing per-item replacement counts and the exact string pairs before an explicit, confirmed execution.
+* **Backups & Revert** - Each modified item's pre-change state is snapshotted to the database before updating; executed jobs (including failed runs with partially-applied changes) can be reverted one-click from the results view or job history, and individual items can be reverted from the replacement report without undoing the whole job. Items edited after the replacement are never overwritten without confirmation: full-job reverts skip them, and per-item reverts prompt with the option to download the backup for manual restoration instead. Backups are retained for 90 days by default (`REPLACEMENT_BACKUP_RETENTION_DAYS`).
+* **Replacement Report** - Portal-wide report page (with the portal navigation sidebar) listing every job's source and replacement services with one row per affected map/app (owner, counts, status). Service, replacement, and item titles link to their portal pages; Copy/CSV/Excel/PDF exports add the service, replacement, and item URLs as separate columns. Rows support per-item revert and a per-item JSON *Backup* download for manual restoration (e.g. via ArcGIS Online Assistant).
+* **Credential Prompt** - Portals without stored credentials prompt for admin credentials inline; validated credentials are cached encrypted for up to an hour, scoped to the submitting user, so multi-step flows can reuse them without re-prompting while that cache entry is still valid.
+* **Safety Guards** - Per-item error isolation, JSON validity checks on every change, stale-item detection between dry run and execution, case- and encoding-tolerant URL matching (JSON-escaped and percent-encoded forms), digit-boundary-safe sublayer URL matching, one-job-per-portal locking with automatic cleanup of abandoned analyses, and automatic database resync of affected items after execution or revert. Execute and revert confirmations use Calcite confirmation sheets (not browser-native dialogs), and reverts that would overwrite post-replacement edits require an explicit second confirmation.
+
 ### July 2026 - Calcite Design System 5.1 Upgrade
 * **Calcite Components Upgraded to 5.1** - Updated CDN from 3.3.3 to 5.1, picking up two major versions of design system improvements and bug fixes.
 * **Design Token Migration** - Migrated deprecated `--calcite-color-foreground-*` and `--calcite-color-background` tokens to the new `--calcite-color-surface-*` naming convention for v5 compatibility.
@@ -246,7 +344,7 @@ Currently, EnterpriseViz has the following known limitation:
 ### June 2026 - Multi-Server Federated Portal Support
 * **Per-Server Folder Processing** - Batch tasks are now scoped to a specific (server, folder) pair instead of re-querying all servers for each folder, eliminating duplicate work and incorrect cross-server service associations.
 * **Per-Server Usage Reporting** - Usage reports are now fetched from each server individually rather than from the last server in the loop.
-* * **Correct Service URLs for Federated Servers** - Service URLs are now built from each server's own public URL rather than always using the first hosting server's URL. Fixes broken webmap/app linkage for services hosted on non-hosting federated servers.
+* **Correct Service URLs for Federated Servers** - Service URLs are now built from each server's own public URL rather than always using the first hosting server's URL. Fixes broken webmap/app linkage for services hosted on non-hosting federated servers.
 
 ### April 2026 - Map Layer Linking & Parsing Improvements
 * **Layer-Service Linking Update** - Layer-service links now use `service_layer_id`, enabling correct association of feature classes to multiple service layers (including those with definition queries).
