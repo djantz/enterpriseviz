@@ -202,7 +202,9 @@ ADMIN_URL = "admin/"
 WEBHOOK_URL = "webhook/"
 WEBHOOK_SECRET = env("WEBHOOK_SECRET", default="your_secure_secret_here")
 # https://docs.djangoproject.com/en/dev/ref/settings/#admins
-ADMINS = [()]
+# Must be a list of ("Name", "email") 2-tuples for the mail_admins 500-error
+# handler to work; leave empty to disable error emails.
+ADMINS = []
 # https://docs.djangoproject.com/en/dev/ref/settings/#managers
 MANAGERS = ADMINS
 # https://cookiecutter-django.readthedocs.io/en/latest/settings.html#other-environment-settings
