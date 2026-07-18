@@ -62,5 +62,5 @@ class MySocialAuthExceptionMiddleware(SocialAuthExceptionMiddleware):
         from django.template import loader
         if isinstance(exception, AuthForbidden):
             context = {"details": "Not Authorized - User does not have the required ArcGIS user role"}
-            template = loader.get_template("app/page_403.html")
+            template = loader.get_template("403.html")
             return HttpResponse(template.render(context, request), status=403)

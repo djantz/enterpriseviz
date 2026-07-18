@@ -1,0 +1,48 @@
+{# Standard error pages (400/403/404/500 extend this). Uses Calcite from the #}
+{# same CDN as base_site.html, with plain-CSS fallbacks so the page stays #}
+{# readable if the CDN is unreachable. Rendered with little or no context — #}
+{# reference only block content, {% url %}, and the optional "details" var. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EnterpriseViz! | {% block title %}Error{% endblock %}</title>
+  {# Same Calcite distribution as base_site.html; it injects global styles #}
+  {# (mode classes, CSS variables) itself — there is no separate calcite.css. #}
+  <script type="module" src="https://js.arcgis.com/calcite-components/5.1"></script>
+  <style>
+    html, body { margin: 0; min-height: 100vh; }
+    body {
+      display: flex; align-items: center; justify-content: center;
+      background: var(--calcite-color-background, #f8f8f8);
+      color: var(--calcite-color-text-1, #151515);
+      font-family: var(--calcite-font-family, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
+    }
+    main { width: min(90vw, 32rem); }
+    .error-code {
+      font-size: 4rem; font-weight: 700; line-height: 1; margin: 0 0 1rem;
+      text-align: center; color: var(--calcite-color-brand, #007ac2);
+    }
+    .home-link { display: flex; justify-content: center; margin-top: 1rem; }
+  </style>
+</head>
+<body class="calcite-mode-auto">
+<main>
+  <p class="error-code">{% block code %}{% endblock %}</p>
+  <calcite-notice open kind="{% block kind %}warning{% endblock %}"
+                  icon="{% block icon %}exclamation-mark-triangle{% endblock %}" width="full">
+    <div slot="title">{% block heading %}{% endblock %}</div>
+    <div slot="message">
+      {% block message %}{% endblock %}
+      {% if details %}<br>{{ details }}{% endif %}
+    </div>
+  </calcite-notice>
+  <div class="home-link">
+    <calcite-button icon-start="home" href="{% url 'enterpriseviz:index' %}" label="Go to home page">
+      Go to home page
+    </calcite-button>
+  </div>
+</main>
+</body>
+</html>

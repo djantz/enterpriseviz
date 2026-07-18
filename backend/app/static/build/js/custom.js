@@ -1349,3 +1349,13 @@ document.addEventListener('htmx:load', function (event) {
         });
     });
 });
+
+document.addEventListener('htmx:beforeSwap', function (event) {
+    // htmx ignores 4xx/5xx bodies by default. The server flags navigation
+    // error responses (an in-page Calcite notice) with X-Error-Page so they
+    // swap into the page instead of failing silently.
+    if (event.detail.xhr.status >= 400 && event.detail.xhr.getResponseHeader('X-Error-Page')) {
+        event.detail.shouldSwap = true;
+        event.detail.isError = false;
+    }
+});
