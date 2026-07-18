@@ -768,7 +768,9 @@ def refresh_portal_view(request):
                     "full_refresh": full_refresh,
                     "error_message": "Please correct the errors below."
                 }
-                return render(request, "portals/portal_credentials.html", context, status=400)
+                response = render(request, "portals/portal_credentials.html", context, status=400)
+                response["X-Error-Page"] = "true"
+                return response
         else:
             # Need to show credential form
             logger.debug(f"Credentials required for {portal.alias}; rendering credential form.")
@@ -1088,8 +1090,9 @@ def update_portal_view(request, instance):
                     username = form.cleaned_data.get("username", "N/A")
                     url = form.cleaned_data.get("url", portal.url)
                     logger.warning(f"Auth failed for {instance} ({url}) as {username}.")
-                    response = render(request, "portals/portal_update.html", {"form": form, "instance": instance},
-                                      status=401)
+                    response = render(request, "partials/portal_update_form.html",
+                                      {"form": form, "instance": instance}, status=401)
+                    response["X-Error-Page"] = "true"
                     response["HX-Trigger-After-Settle"] = json.dumps(
                         {"showDangerAlert": f"Unable to connect to {url} as {username}."})
                     return response
@@ -1109,8 +1112,10 @@ def update_portal_view(request, instance):
             return response
         else:
             logger.warning(f"Form invalid. Errors: {form.errors}")
-            return render(request, "portals/portal_update.html", {"form": form, "instance": instance},
-                          status=400)
+            response = render(request, "partials/portal_update_form.html",
+                              {"form": form, "instance": instance}, status=400)
+            response["X-Error-Page"] = "true"
+            return response
 
     form = PortalCreateForm(instance=portal)
     return render(request, "portals/portal_update.html", {"form": form, "instance": instance})
@@ -2040,7 +2045,9 @@ def tool_settings(request, instance):
                 'webhook_configured': webhook_configured,
                 'email_configured': email_configured
             }
-            return render(request, "partials/portal_tools_form.html", context, status=400)
+            response = render(request, "partials/portal_tools_form.html", context, status=400)
+            response["X-Error-Page"] = "true"
+            return response
     else:
         form = ToolsForm(instance=tool_settings_obj)
 

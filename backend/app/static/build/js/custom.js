@@ -1588,11 +1588,31 @@ document.addEventListener('htmx:load', function (event) {
 });
 
 document.addEventListener('htmx:beforeSwap', function (event) {
-    // htmx ignores 4xx/5xx bodies by default. The server flags navigation
-    // error responses (an in-page Calcite notice) with X-Error-Page so they
-    // swap into the page instead of failing silently.
-    if (event.detail.xhr.status >= 400 && event.detail.xhr.getResponseHeader('X-Error-Page')) {
+    // htmx ignores 4xx/5xx bodies by default. The server flags error
+    // responses whose body should still swap (navigation error panels, form
+    // re-renders with field errors) with X-Error-Page.
+    const xhr = event.detail.xhr;
+    if (xhr.status >= 400 && xhr.getResponseHeader('X-Error-Page')) {
         event.detail.shouldSwap = true;
         event.detail.isError = false;
+    } else if (xhr.status >= 400 && !event.detail.shouldSwap) {
+        // Unswapped error responses never settle, so htmx drops their
+        // HX-Trigger-After-Settle header and the alert events in it (e.g.
+        // showDangerAlert on a 401 from the add-portal form). Fire those
+        // triggers manually; listeners live on document.body.
+        const header = xhr.getResponseHeader('HX-Trigger-After-Settle');
+        if (!header) return;
+        try {
+            if (header.startsWith('{')) {
+                Object.entries(JSON.parse(header)).forEach(([name, detail]) => {
+                    htmx.trigger(document.body, name,
+                        detail !== null && typeof detail === 'object' ? detail : {value: detail});
+                });
+            } else {
+                header.split(',').forEach((name) => htmx.trigger(document.body, name.trim()));
+            }
+        } catch (err) {
+            console.error('Could not process HX-Trigger-After-Settle on error response', err);
+        }
     }
 });
