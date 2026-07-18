@@ -4004,7 +4004,10 @@ def write_resource_text(item, resource_name, text):
         try:
             item.resources.update(folder_name=folder_name, file_name=file_name, file=temp_path)
         finally:
-            os.remove(temp_path)
+            try:
+                os.remove(temp_path)
+            except OSError:
+                logger.warning(f"Unable to remove temp file {temp_path}")
         return True
     except Exception:
         logger.warning(f"Unable to update resource {resource_name} for {item.title}")
@@ -4223,6 +4226,8 @@ def revert_item(target, backup, force=False):
         # Restore resources
         for resource_name, old_text in (backup.resources or {}).items():
             pre_revert_text = read_resource_text(item, resource_name)
+            if pre_revert_text is None:
+                raise RuntimeError(f"Failed to revert resource {resource_name}")
             if not write_resource_text(item, resource_name, old_text):
                 raise RuntimeError(f"Failed to revert resource {resource_name}")
             applied_resources.append((resource_name, pre_revert_text))
