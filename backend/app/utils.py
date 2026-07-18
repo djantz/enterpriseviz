@@ -3782,10 +3782,8 @@ def build_mapping_rows(source_service, config):
 def build_replacements(mapping_rows):
     """
     Builds an ordered list of (old, new) replacement pairs from mapping rows.
-    Ordering matters: full service URLs are replaced before derived
-    server-root URLs so services that moved to a different server folder are
-    repointed correctly before the generic root swap runs. Item IDs are
-    replaced last.
+    Only explicitly mapped service URLs and item IDs are replaced. Item IDs
+    are replaced last.
 
     :param mapping_rows: Row dicts with source_url/target_url/source_id/target_id
     :type mapping_rows: list
@@ -3793,7 +3791,6 @@ def build_replacements(mapping_rows):
     :rtype: list
     """
     url_pairs = {}
-    root_pairs = {}
     id_pairs = {}
 
     for row in mapping_rows:
@@ -3804,20 +3801,12 @@ def build_replacements(mapping_rows):
 
         if source_url and target_url and source_url != target_url:
             url_pairs[source_url] = target_url
-            # Derive server-root replacement (handles references to other
-            # endpoints on the same server, e.g. geometry/print services)
-            if '/rest/services' in source_url and '/rest/services' in target_url:
-                source_root = source_url.split('/rest/services')[0]
-                target_root = target_url.split('/rest/services')[0]
-                if source_root != target_root:
-                    root_pairs[source_root] = target_root
 
         if source_id and target_id and source_id != target_id:
             id_pairs[source_id] = target_id
 
-    # Longest first so full service URLs win before server roots
+    # Longest first so full service URLs win before shorter ones
     replacements = sorted(url_pairs.items(), key=lambda kv: len(kv[0]), reverse=True)
-    replacements += sorted(root_pairs.items(), key=lambda kv: len(kv[0]), reverse=True)
     replacements += list(id_pairs.items())
     return replacements
 
@@ -4012,8 +4001,10 @@ def write_resource_text(item, resource_name, text):
                                          delete=False, encoding='utf-8') as tfile:
             tfile.write(text)
             temp_path = tfile.name
-        item.resources.update(folder_name=folder_name, file_name=file_name, file=temp_path)
-        os.remove(temp_path)
+        try:
+            item.resources.update(folder_name=folder_name, file_name=file_name, file=temp_path)
+        finally:
+            os.remove(temp_path)
         return True
     except Exception:
         logger.warning(f"Unable to update resource {resource_name} for {item.title}")
@@ -4143,18 +4134,28 @@ def backup_item(job, item, changes):
 
 def apply_changes(item, changes):
     """
-    Applies a pending change set to an item.
+    Applies a pending change set to an item. Each write's result is checked
+    (write_resource_text/item.update returning falsy is treated the same as
+    an exception). If a write fails after earlier resource writes already
+    succeeded, those are rolled back (in reverse order) before returning.
 
     :param item: arcgis Item to update
     :param changes: Pending change set from analyze_item
     :type changes: dict
-    :return: Status string ('UPDATED' or 'FAILED: ...')
+    :return: Status string ('UPDATED', 'FAILED: ...' when nothing was left
+             changed (nothing was written, or a partial write was
+             successfully rolled back), or 'PARTIAL: ...' when some writes
+             could not be rolled back (the item is left changed and must
+             remain revertable))
     :rtype: str
     """
+    applied_resources = []  # (resource_name, old_text) successfully written, for rollback
     try:
         # Resources first (Web Experience config, StoryMap draft/published)
-        for resource_name, _, new_text, _ in changes['resources']:
-            write_resource_text(item, resource_name, new_text)
+        for resource_name, old_text, new_text, _ in changes['resources']:
+            if not write_resource_text(item, resource_name, new_text):
+                raise RuntimeError(f"Failed to write resource {resource_name}")
+            applied_resources.append((resource_name, old_text))
 
         # Data and URL
         update_props = {}
@@ -4162,14 +4163,22 @@ def apply_changes(item, changes):
             update_props['url'] = changes['newURL']
 
         if changes['dataCount']:
-            item.update(item_properties=update_props or {}, data=changes['newDataText'])
+            if not item.update(item_properties=update_props or {}, data=changes['newDataText']):
+                raise RuntimeError("Item update failed")
         elif update_props:
-            item.update(item_properties=update_props)
+            if not item.update(item_properties=update_props):
+                raise RuntimeError("Item update failed")
 
         return 'UPDATED'
     except Exception as e:
         logger.warning(f"Failed to update {item.title} ({item.id}): {e}")
-        return f'FAILED: {e}'
+        if not applied_resources:
+            return f'FAILED: {e}'
+        rollback_failed = False
+        for resource_name, old_text in reversed(applied_resources):
+            if not write_resource_text(item, resource_name, old_text):
+                rollback_failed = True
+        return f'{"PARTIAL" if rollback_failed else "FAILED"}: {e}'
 
 
 def revert_item(target, backup, force=False):
@@ -4209,10 +4218,14 @@ def revert_item(target, backup, force=False):
         logger.warning(f"Item {backup.item_title} ({backup.item_id}) was modified after "
                        f"the replacement; confirmed revert overwrites those edits")
 
+    applied_resources = []  # (resource_name, pre_revert_text) successfully reverted, for rollback
     try:
         # Restore resources
         for resource_name, old_text in (backup.resources or {}).items():
-            write_resource_text(item, resource_name, old_text)
+            pre_revert_text = read_resource_text(item, resource_name)
+            if not write_resource_text(item, resource_name, old_text):
+                raise RuntimeError(f"Failed to revert resource {resource_name}")
+            applied_resources.append((resource_name, pre_revert_text))
 
         # Restore data and url
         update_props = {}
@@ -4220,13 +4233,24 @@ def revert_item(target, backup, force=False):
             update_props['url'] = backup.url_property
 
         if backup.data_text:
-            item.update(item_properties=update_props or {}, data=backup.data_text)
+            if not item.update(item_properties=update_props or {}, data=backup.data_text):
+                raise RuntimeError("Item update failed")
         elif update_props:
-            item.update(item_properties=update_props)
+            if not item.update(item_properties=update_props):
+                raise RuntimeError("Item update failed")
 
         return 'REVERTED_STALE' if had_newer_edits else 'REVERTED'
     except Exception as e:
         logger.warning(f"Revert failed for {backup.item_title} ({backup.item_id}): {e}")
+        if not applied_resources:
+            return f'REVERT FAILED: {e}'
+        rollback_failed = False
+        for resource_name, pre_revert_text in reversed(applied_resources):
+            if pre_revert_text is None or not write_resource_text(item, resource_name, pre_revert_text):
+                rollback_failed = True
+        if rollback_failed:
+            return (f'REVERT FAILED: {e} (some reverted resources could not be rolled back; '
+                    f'item left partially changed, retry the revert)')
         return f'REVERT FAILED: {e}'
 
 

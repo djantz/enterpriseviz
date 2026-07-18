@@ -247,7 +247,8 @@ Once you've configured the `.env` files, you can deploy EnterpriseViz using Dock
             3. **Dry run.** A background job analyzes every selected item and reports exactly what
                would change — per item counts of URL, item data, and resource replacements (Web
                Experience configs and StoryMap draft/published resources included) — plus the full
-               list of replacement string pairs. Nothing is modified during a dry run.
+               list of replacement string pairs. No portal item is modified during a dry run; only
+               the preview counts and the job's own status are saved.
             4. **Execute.** After reviewing the preview, an explicit confirmation applies the
                changes. Every modified item is backed up first, then updated; when finished,
                EnterpriseViz resyncs its own records for the affected items from the portal.
@@ -261,8 +262,9 @@ Once you've configured the `.env` files, you can deploy EnterpriseViz using Dock
         * **Credentials:** If the portal stores credentials (or has a valid token), the tool uses
           them automatically. Otherwise you are prompted for an admin username and password inside
           the modal; they are validated against the portal, held encrypted in the server cache for
-          up to one hour (so dry run → execute → revert won't re-prompt *you* — each staff user
-          enters their own credentials), never written to the database, and discarded once the job
+          up to one hour (so dry run → execute → revert can reuse them without re-prompting *you*
+          while that cache entry is still valid — each staff user enters their own credentials),
+          never written to the database, and discarded once the job
           is fully reverted.
         * **Error handling:** Items are processed independently — one failure never aborts the run.
           An item is skipped (and reported) if it was deleted from the portal, if its backup could
@@ -329,7 +331,7 @@ Currently, EnterpriseViz has the following known limitation:
 * **Dry Run Preview** - Every replacement starts with a dry run showing per-item replacement counts and the exact string pairs before an explicit, confirmed execution.
 * **Backups & Revert** - Each modified item's pre-change state is snapshotted to the database before updating; executed jobs (including failed runs with partially-applied changes) can be reverted one-click from the results view or job history, and individual items can be reverted from the replacement report without undoing the whole job. Items edited after the replacement are never overwritten without confirmation: full-job reverts skip them, and per-item reverts prompt with the option to download the backup for manual restoration instead. Backups are retained for 90 days by default (`REPLACEMENT_BACKUP_RETENTION_DAYS`).
 * **Replacement Report** - Portal-wide report page (with the portal navigation sidebar) listing every job's source and replacement services with one row per affected map/app (owner, counts, status). Service, replacement, and item titles link to their portal pages; Copy/CSV/Excel/PDF exports add the service, replacement, and item URLs as separate columns. Rows support per-item revert and a per-item JSON *Backup* download for manual restoration (e.g. via ArcGIS Online Assistant).
-* **Credential Prompt** - Portals without stored credentials prompt for admin credentials inline; validated credentials are cached encrypted for up to an hour, scoped to the submitting user, so multi-step flows don't re-prompt.
+* **Credential Prompt** - Portals without stored credentials prompt for admin credentials inline; validated credentials are cached encrypted for up to an hour, scoped to the submitting user, so multi-step flows can reuse them without re-prompting while that cache entry is still valid.
 * **Safety Guards** - Per-item error isolation, JSON validity checks on every change, stale-item detection between dry run and execution, case- and encoding-tolerant URL matching (JSON-escaped and percent-encoded forms), digit-boundary-safe sublayer URL matching, one-job-per-portal locking with automatic cleanup of abandoned analyses, and automatic database resync of affected items after execution or revert. Execute and revert confirmations use Calcite confirmation sheets (not browser-native dialogs), and reverts that would overwrite post-replacement edits require an explicit second confirmation.
 
 ### July 2026 - Calcite Design System 5.1 Upgrade

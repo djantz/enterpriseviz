@@ -87,6 +87,15 @@ class ReplacementJobAdmin(admin.ModelAdmin):
                        "selected_app_ids", "dry_run_summary", "celery_task_id",
                        "revert_task_id", "created", "executed_at", "reverted_at")
 
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 
 class ReplacementItemBackupAdmin(admin.ModelAdmin):
     list_display = ("created", "item_title", "item_type", "item_owner", "status", "job")
@@ -98,6 +107,12 @@ class ReplacementItemBackupAdmin(admin.ModelAdmin):
                        "applied_modified_at", "counts", "created")
 
     def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
         return False
 
 

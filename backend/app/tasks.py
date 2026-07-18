@@ -29,6 +29,7 @@ from celery.exceptions import Ignore
 from celery_progress.backend import ProgressRecorder, Progress
 from django.conf import settings as django_settings
 from django.core.exceptions import MultipleObjectsReturned
+from django.db.models import Q
 from django.utils import timezone
 
 from . import utils
@@ -42,6 +43,11 @@ logger = logging.getLogger('enterpriseviz.tasks')
 @shared_task(name="apply_site_log_level_in_worker")
 def apply_site_log_level_in_worker():
     utils.apply_global_log_level()
+
+
+@shared_task
+def purge_expired_replacement_backups_task():
+    utils.purge_expired_replacement_backups()
 
 
 @shared_task(bind=True, name="Update All")
@@ -4805,6 +4811,7 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
             if item is None:
                 message = f"Item {item_id} not found in portal"
                 logger.warning(f"[{portal_alias}] {message}")
+                tool_result.add_error(message)
                 tool_result.add_extra_metric("skipped_items",
                                              tool_result.extra_metrics.get("skipped_items", 0) + 1)
                 if is_execute:
@@ -4883,6 +4890,11 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
                                        f"time for {item.id}; revert will require confirmation")
                     tool_result.actions_taken += 1
                     applied_ids.append(item.id)
+                elif status.startswith("PARTIAL"):
+                    backup.status = "apply_failed"
+                    backup.error = status
+                    tool_result.add_error(f"Update partially applied for {item.title} "
+                                          f"({item.id}): {status}; revert to restore original state")
                 else:
                     backup.status = "failed"
                     backup.error = status
@@ -4920,8 +4932,12 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
             }
             # Conditional transition so a job no longer 'analyzing' (e.g.
             # auto-failed as abandoned) is never resurrected to executable
-            updated = ReplacementJob.objects.filter(pk=job.pk, status="analyzing").update(
-                dry_run_summary=summary, status="dry_run", status_updated=timezone.now())
+            dry_run_status = "dry_run" if tool_result.errors == 0 else "failed"
+            update_fields = {"dry_run_summary": summary, "status": dry_run_status,
+                             "status_updated": timezone.now()}
+            if tool_result.errors:
+                update_fields["error_message"] = "; ".join(tool_result.error_messages[:10])
+            updated = ReplacementJob.objects.filter(pk=job.pk, status="analyzing").update(**update_fields)
             if not updated:
                 logger.warning(f"[{portal_alias}] Job {job.id} left the 'analyzing' state "
                                f"during the dry run; its results were discarded")
@@ -5033,19 +5049,26 @@ def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None
 
         reverted_ids = []
         skipped_newer = 0
+        claim_lease_cutoff = timezone.now() - ReplacementItemBackup.REVERT_CLAIM_LEASE
         for index, backup in enumerate(backups):
             progress = int(10 + (index / max(total, 1)) * 80)
             progress_recorder.set_progress(progress, 100, f"Reverting {backup.item_title}")
             try:
-                # No reserved state is persisted between enqueue and execution
-                # (a crashed worker must never strand an item unrevertable), so
-                # duplicate requests can enqueue the same backup twice; re-check
-                # the row at execution time so the second revert no-ops
-                backup.refresh_from_db()
-                if backup.status not in ReplacementItemBackup.REVERTABLE_STATUSES:
+                # Atomically claim the backup so a concurrent duplicate request
+                # (or a redelivered copy of this same task, e.g. after a worker
+                # crash) cannot revert it twice. A claim older than
+                # REVERT_CLAIM_LEASE is treated as abandoned and reclaimable.
+                claimed = ReplacementItemBackup.objects.filter(
+                    pk=backup.pk, status__in=ReplacementItemBackup.REVERTABLE_STATUSES
+                ).filter(
+                    Q(revert_claimed_at__isnull=True) | Q(revert_claimed_at__lt=claim_lease_cutoff)
+                ).update(revert_claimed_at=timezone.now())
+                if not claimed:
+                    backup.refresh_from_db()
                     logger.info(f"[{portal_alias}] Backup {backup.pk} ({backup.item_title}) "
-                                f"is already '{backup.status}'; skipping")
+                                f"is already '{backup.status}' or claimed; skipping")
                     continue
+                backup.refresh_from_db()
                 status = utils.revert_item(target, backup, force=force)
                 tool_result.processed += 1
                 if status in ("REVERTED", "REVERTED_STALE"):
@@ -5067,10 +5090,12 @@ def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None
                     backup.status = "revert_failed"
                     backup.error = status
                     tool_result.add_error(f"{backup.item_title} ({backup.item_id}): {status}")
-                backup.save(update_fields=["status", "error"])
+                backup.revert_claimed_at = None
+                backup.save(update_fields=["status", "error", "revert_claimed_at"])
             except Exception as e:
                 tool_result.add_error(f"Error reverting {backup.item_id}: {e}")
                 logger.error(f"[{portal_alias}] Error reverting {backup.item_id}: {e}", exc_info=True)
+                ReplacementItemBackup.objects.filter(pk=backup.pk).update(revert_claimed_at=None)
 
         progress_recorder.set_progress(92, 100, "Queueing database resync...")
         for item_id in reverted_ids:
@@ -5079,9 +5104,10 @@ def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None
             else:
                 process_webapp.delay(portal_alias, item_id, "update")
 
-        # The job only becomes "reverted" once no applied items remain; items
+        # The job only becomes "reverted" once no revertable items remain; items
         # skipped for newer edits (or failures) keep it in a revertable state
-        if not job.item_backups.filter(status="applied").exists():
+        if not job.item_backups.filter(
+                status__in=ReplacementItemBackup.REVERTABLE_STATUSES).exists():
             job.status = "reverted" if tool_result.errors == 0 else "completed_errors"
             job.reverted_at = timezone.now()
         elif not is_partial:

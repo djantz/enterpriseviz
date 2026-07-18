@@ -37,6 +37,7 @@ from django.http import Http404
 from django.http import HttpResponse, JsonResponse, HttpResponseForbidden
 from django.shortcuts import render, redirect, get_object_or_404
 from django.template import loader
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django_celery_results.models import TaskResult
@@ -2646,7 +2647,11 @@ def replace_revert_item_view(request, instance, backup_id):
             })
 
     # Lock the portal row and re-check under the lock so an item revert
-    # cannot start while another job is being queued
+    # cannot start while another job is being queued. The backup is also
+    # claimed here (revert_claimed_at) so a duplicate/concurrent request for
+    # the same backup is rejected instead of queueing a second revert task;
+    # a claim older than REVERT_CLAIM_LEASE is treated as abandoned (crashed
+    # worker) and can be reclaimed.
     with transaction.atomic():
         Portal.objects.select_for_update().get(pk=job.portal_instance_id)
         backup.refresh_from_db()
@@ -2654,12 +2659,19 @@ def replace_revert_item_view(request, instance, backup_id):
             return danger(f"This item is '{backup.get_status_display()}' and cannot be reverted.")
         if utils.active_replacement_job_exists(job.portal_instance):
             return danger("Another replacement job is already running for this portal.")
+        lease_cutoff = timezone.now() - ReplacementItemBackup.REVERT_CLAIM_LEASE
+        claimed = ReplacementItemBackup.objects.filter(pk=backup.pk).filter(
+            Q(revert_claimed_at__isnull=True) | Q(revert_claimed_at__lt=lease_cutoff)
+        ).update(revert_claimed_at=timezone.now())
+        if not claimed:
+            return danger("This item's revert is already in progress.")
 
     try:
         task = revert_replacement_task.delay(job.id, credential_token=cred["token"],
                                              backup_ids=[backup.pk], force=force)
     except Exception as e:
         logger.error(f"Failed to queue item revert for backup {backup.pk}: {e}", exc_info=True)
+        ReplacementItemBackup.objects.filter(pk=backup.pk).update(revert_claimed_at=None)
         return danger("Failed to queue the revert. See logs for details.")
 
     job.revert_task_id = task.id

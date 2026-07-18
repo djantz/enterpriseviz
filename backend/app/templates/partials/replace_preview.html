@@ -129,7 +129,7 @@
           <calcite-table-cell>
             <calcite-chip scale="s"
                           kind="{% if backup.status == 'applied' or backup.status == 'reverted' %}inverse{% else %}neutral{% endif %}"
-                          icon="{% if backup.status == 'applied' or backup.status == 'reverted' %}check-circle{% elif backup.status == 'failed' or backup.status == 'revert_failed' %}exclamation-mark-triangle{% endif %}">
+                          icon="{% if backup.status == 'applied' or backup.status == 'reverted' %}check-circle{% elif backup.status == 'failed' or backup.status == 'revert_failed' or backup.status == 'apply_failed' %}exclamation-mark-triangle{% endif %}">
               {{ backup.get_status_display }}
             </calcite-chip>
           </calcite-table-cell>

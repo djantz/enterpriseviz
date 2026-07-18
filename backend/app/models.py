@@ -18,6 +18,7 @@
 from __future__ import unicode_literals
 
 import json
+from datetime import timedelta
 
 from django import forms
 from django.conf import settings
@@ -823,13 +824,19 @@ class ReplacementItemBackup(models.Model):
         ("analyzed", "Analyzed"),
         ("applied", "Applied"),
         ("failed", "Failed"),
+        ("apply_failed", "Partially Applied (Failed)"),
         ("skipped", "Skipped"),
         ("reverted", "Reverted"),
         ("revert_failed", "Revert Failed"),
     ]
 
     # Backup statuses eligible for (re-)revert
-    REVERTABLE_STATUSES = ("applied", "revert_failed")
+    REVERTABLE_STATUSES = ("applied", "revert_failed", "apply_failed")
+
+    # How long a revert claim (revert_claimed_at) is honored before it's
+    # treated as abandoned (worker crashed/broker redelivery) and the row
+    # becomes claimable again
+    REVERT_CLAIM_LEASE = timedelta(hours=2)
 
     job = models.ForeignKey(
         ReplacementJob,
@@ -862,6 +869,13 @@ class ReplacementItemBackup(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="analyzed")
     error = models.TextField(blank=True)
     created = models.DateTimeField(auto_now_add=True)
+    revert_claimed_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Set when a revert claims this backup, so a concurrent duplicate "
+                  "request or redelivered task cannot revert it twice. Cleared when "
+                  "the revert finishes; a claim older than REVERT_CLAIM_LEASE is "
+                  "treated as abandoned and becomes claimable again."
+    )
 
     class Meta:
         verbose_name = "Replacement Item Backup"
