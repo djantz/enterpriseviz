@@ -200,6 +200,34 @@
     </calcite-panel>
   </calcite-sheet>
   {% endif %}
+  {% if user.is_staff %}
+  <!-- Reusable confirmation sheet for htmx actions carrying data-confirm-sheet
+       attributes (replaces browser-native hx-confirm dialogs) -->
+  <calcite-sheet label="Confirm Action" position="block-end" display-mode="float" id="replace-confirm-sheet"
+                 height="s" width="s" class="delete-confirm-sheet">
+    <calcite-panel heading="Confirm Action" heading-level="2">
+      <calcite-notice open kind="danger" icon="exclamation-mark-triangle" width="full">
+        <div slot="title">
+          <div id="replace-confirm-message">Are you sure you want to proceed?</div>
+        </div>
+        <div slot="message">
+          <div id="replace-confirm-details"></div>
+        </div>
+      </calcite-notice>
+
+      <div class="delete-confirm-buttons">
+        <calcite-button id="replace-confirm-yes" width="full" kind="danger" icon-start="check"
+                        label="Confirm action">
+          Confirm
+        </calcite-button>
+        <calcite-button id="replace-confirm-no" width="full" kind="neutral" appearance="outline"
+                        label="Cancel action">
+          Cancel
+        </calcite-button>
+      </div>
+    </calcite-panel>
+  </calcite-sheet>
+  {% endif %}
 {% endblock body %}
 </body>
 {% block javascripts %}

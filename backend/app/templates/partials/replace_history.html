@@ -1,0 +1,60 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<calcite-label>Replacement history</calcite-label>
+<calcite-table scale="s" caption="Replacement history" bordered striped page-size="10"
+               aria-label="Past replacement jobs for this service">
+  <calcite-table-row slot="table-header">
+    <calcite-table-header heading="Created"></calcite-table-header>
+    <calcite-table-header heading="By"></calcite-table-header>
+    <calcite-table-header heading="Status"></calcite-table-header>
+    <calcite-table-header heading="Items"></calcite-table-header>
+    <calcite-table-header heading="Executed"></calcite-table-header>
+    <calcite-table-header heading="Actions"></calcite-table-header>
+  </calcite-table-row>
+  {% for job in jobs %}
+    <calcite-table-row>
+      <calcite-table-cell>
+        <time datetime="{{ job.created|date:'c' }}">{{ job.created|date:'M j, Y h:i A' }}</time>
+      </calcite-table-cell>
+      <calcite-table-cell>{{ job.initiated_by|default:"" }}</calcite-table-cell>
+      <calcite-table-cell>
+        <calcite-chip scale="s"
+                      kind="{% if job.status == 'completed' %}inverse{% else %}neutral{% endif %}"
+                      icon="{% if job.status == 'completed' %}check-circle{% elif job.status == 'failed' %}exclamation-mark-triangle{% elif job.status == 'reverted' %}reset{% endif %}">
+          {{ job.get_status_display }}
+        </calcite-chip>
+      </calcite-table-cell>
+      <calcite-table-cell>{{ job.selected_map_ids|length }} map(s), {{ job.selected_app_ids|length }} app(s)</calcite-table-cell>
+      <calcite-table-cell>
+        {% if job.executed_at %}
+          <time datetime="{{ job.executed_at|date:'c' }}">{{ job.executed_at|date:'M j, Y h:i A' }}</time>
+        {% endif %}
+      </calcite-table-cell>
+      <calcite-table-cell>
+        {% if job.has_revertable_backups %}
+          {% if job.status == "completed" or job.status == "completed_errors" or job.status == "failed" %}
+            <calcite-button scale="s" kind="danger" appearance="outline" icon-start="reset"
+                            hx-post="{% url 'enterpriseviz:replace_revert' instance=instance_alias job_id=job.pk %}"
+                            hx-target="#replace-history-container"
+                            hx-swap="innerHTML"
+                            data-confirm-sheet
+                            data-confirm-message="Restore all items changed by this job to their backed-up state?"
+                            data-confirm-details="Items edited in the portal after the replacement are skipped here; revert those individually from the replacement report to confirm overwriting their edits."
+                            data-confirm-button="Revert"
+                            data-confirm-icon="reset"
+                            label="Revert this replacement job">
+              Revert
+            </calcite-button>
+          {% endif %}
+        {% endif %}
+      </calcite-table-cell>
+    </calcite-table-row>
+  {% empty %}
+    <calcite-table-row>
+      <calcite-table-cell col-span="6">
+        <calcite-notice open kind="info" icon scale="s">
+          <div slot="message">No replacement jobs for this service yet.</div>
+        </calcite-notice>
+      </calcite-table-cell>
+    </calcite-table-row>
+  {% endfor %}
+</calcite-table>

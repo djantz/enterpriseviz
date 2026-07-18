@@ -19,6 +19,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
 import shutil
@@ -31,6 +32,7 @@ from itertools import combinations, groupby
 from operator import itemgetter
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import quote
 
 import requests
 from arcgis import gis
@@ -40,7 +42,8 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import get_connection, EmailMultiAlternatives, EmailMessage
 from django.core.validators import validate_email
-from django.db.models import F, Prefetch, QuerySet, Q
+from django.db.models import Exists, F, OuterRef, Prefetch, QuerySet, Q
+from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare
 from django.utils.html import escape
@@ -3567,3 +3570,1100 @@ def _extract_database_info(connection_string):
         return db_server, db_version, db_database
 
     return None, None, None
+
+
+# ----------------------------------------------------------------------
+# Service replacement (Replace Service tool)
+#
+# Repoints consuming portal items (web maps, apps, Experience Builder,
+# StoryMaps, ...) from a source service to one or more replacement
+# services by string-level find/replace of service URLs and portal item
+# IDs inside item JSON data, item resources, and the url property.
+# Adapted from the ArcGIS API for Python remap_data() function.
+# ----------------------------------------------------------------------
+
+# Item types whose get_data() content is JSON and can be updated by string
+# replacement (aligned with Esri's remap_data _TEXT_BASED_ITEM_TYPES, plus
+# additional Enterprise types). Items of other types still get their URL
+# property checked.
+TEXT_BASED_ITEM_TYPES = (
+    'Web Map', 'Web Scene', 'Map Service', 'Feature Collection',
+    'Web Mapping Application', 'Application', 'Dashboard', 'Operation View',
+    'Data Pipeline', 'Hub Site Application', 'Hub Page', 'Hub Initiative',
+    'Site Application', 'Site Page', 'QuickCapture Project',
+    'Geoprocessing Service', 'Form', 'Solution', 'Workforce Project',
+    'Insights Page', 'Insights Workbook', 'Mobile Application'
+)
+
+# Types whose real content lives (partly) in item RESOURCES, per Esri's
+# remap_data(): updating get_data() alone would miss the actual references
+RESOURCE_BASED_ITEM_TYPES = ('Web Experience', 'StoryMap')
+
+
+def _endpoint_suffix(url):
+    """
+    Returns the server-type suffix of a service URL (e.g. 'MapServer',
+    'FeatureServer'), used to pair source and target endpoints by type.
+
+    :param url: Service endpoint URL
+    :type url: str
+    :return: Last path segment of the URL
+    :rtype: str
+    """
+    return url.rstrip('/').rsplit('/', 1)[-1]
+
+
+def _pair_endpoint_urls(source_urls, target_urls, warnings):
+    """
+    Pairs source endpoint URLs with target endpoint URLs by server-type
+    suffix. Unmatched source endpoints fall back to the first target URL
+    with a warning.
+
+    :param source_urls: Source service endpoint URLs
+    :type source_urls: list
+    :param target_urls: Target service endpoint URLs
+    :type target_urls: list
+    :param warnings: Warning list appended to in place
+    :type warnings: list
+    :return: List of (source_url, target_url) tuples
+    :rtype: list
+    """
+    pairs = []
+    targets_by_suffix = {_endpoint_suffix(tu): tu.rstrip('/') for tu in target_urls}
+    for su in source_urls:
+        su = su.rstrip('/')
+        suffix = _endpoint_suffix(su)
+        tu = targets_by_suffix.get(suffix)
+        if tu is None and target_urls:
+            tu = target_urls[0].rstrip('/')
+            warnings.append(
+                f"No {suffix} endpoint on the replacement service; "
+                f"mapped {su} to {tu} - verify consumers."
+            )
+        if tu:
+            pairs.append((su, tu))
+    return pairs
+
+
+def _item_id_rows(source_service, target_service, warnings):
+    """
+    Builds item-ID mapping rows from the portal_id JSONFields of the source
+    and target services, matched by item-type key.
+
+    :param source_service: Source Service model instance
+    :param target_service: Target Service model instance
+    :param warnings: Warning list appended to in place
+    :type warnings: list
+    :return: List of row dicts with source_id/target_id set
+    :rtype: list
+    """
+    rows = []
+    source_ids = source_service.portal_id or {}
+    target_ids = target_service.portal_id or {}
+    unmatched = []
+    for key, source_id in source_ids.items():
+        target_id = target_ids.get(key)
+        if target_id:
+            rows.append({"source_url": "", "target_url": "",
+                         "source_id": source_id, "target_id": target_id})
+        else:
+            unmatched.append((key, source_id))
+
+    if unmatched:
+        distinct_targets = set(target_ids.values())
+        if len(distinct_targets) == 1:
+            target_id = distinct_targets.pop()
+            for key, source_id in unmatched:
+                rows.append({"source_url": "", "target_url": "",
+                             "source_id": source_id, "target_id": target_id})
+                warnings.append(
+                    f"No matching '{key}' item on the replacement service; "
+                    f"mapped item ID {source_id} to {target_id} - verify consumers."
+                )
+        else:
+            for key, source_id in unmatched:
+                warnings.append(
+                    f"Item ID {source_id} ('{key}') has no counterpart on the "
+                    f"replacement service and will not be replaced."
+                )
+    return rows
+
+
+def build_mapping_rows(source_service, config):
+    """
+    Reduces the UI replacement configuration (simple or advanced mode) to
+    mapping rows equivalent to the standalone script's CSV columns.
+
+    Simple mode swaps the whole service: endpoint URLs paired by server-type
+    suffix plus item-ID pairs. Advanced mode maps individual sublayers to
+    (possibly different) target services; base-URL and item-ID pairs are only
+    included when every known sublayer maps to the same target, because they
+    are ambiguous in a split and wrong when some layers are deliberately left
+    on the source service ("No change").
+
+    :param source_service: Source Service model instance
+    :param config: {'mode': 'simple', 'target_service_id': n} or
+                   {'mode': 'advanced', 'layer_mappings':
+                       [{'old_layer_id': n, 'target_service_id': n, 'new_layer_id': n}, ...]}
+    :type config: dict
+    :return: (rows, warnings, partial) - rows are dicts with
+             source_url/target_url/source_id/target_id; partial is True when
+             whole-service URL and item-ID references are intentionally left
+             unreplaced, so the dry run should count the remaining references
+    :rtype: tuple
+    """
+    from .models import Service
+
+    warnings = []
+    rows = []
+    source_urls = [u for u in (source_service.service_url or []) if u]
+    mode = config.get("mode", "simple")
+
+    if mode == "simple":
+        target_service = Service.objects.get(pk=config["target_service_id"])
+        for su, tu in _pair_endpoint_urls(source_urls, target_service.service_url or [], warnings):
+            rows.append({"source_url": su, "target_url": tu, "source_id": "", "target_id": ""})
+        rows.extend(_item_id_rows(source_service, target_service, warnings))
+        return rows, warnings, False
+
+    # Advanced mode: per-sublayer mapping
+    layer_mappings = config.get("layer_mappings", [])
+    target_ids = {m["target_service_id"] for m in layer_mappings}
+    targets = Service.objects.in_bulk(target_ids)
+
+    for mapping in layer_mappings:
+        target_service = targets.get(mapping["target_service_id"])
+        if target_service is None:
+            warnings.append(f"Target service {mapping['target_service_id']} not found; "
+                            f"layer {mapping['old_layer_id']} skipped.")
+            continue
+        old_layer = mapping["old_layer_id"]
+        new_layer = mapping["new_layer_id"]
+        for su, tu in _pair_endpoint_urls(source_urls, target_service.service_url or [], warnings):
+            rows.append({"source_url": f"{su}/{old_layer}", "target_url": f"{tu}/{new_layer}",
+                         "source_id": "", "target_id": ""})
+
+    if len(target_ids) > 1:
+        warnings.append(
+            "Layers map to multiple replacement services, so whole-service URL and "
+            "item-ID references cannot be replaced automatically. The preview shows "
+            "how many such references remain per item."
+        )
+        return rows, warnings, True
+
+    unmapped_layer_ids = ({layer["id"] for layer in get_source_layer_inventory(source_service)}
+                          - {m["old_layer_id"] for m in layer_mappings})
+    if unmapped_layer_ids and targets:
+        warnings.append(
+            f"Layer(s) {', '.join(str(i) for i in sorted(unmapped_layer_ids))} are set to "
+            f"'No change' and keep pointing at {source_service.service_name}, so "
+            f"whole-service URL and item-ID references are left in place. The preview "
+            f"shows how many such references remain per item."
+        )
+        return rows, warnings, True
+
+    if targets:
+        # Single target covering every known sublayer: whole-service
+        # references and item IDs are unambiguous
+        target_service = next(iter(targets.values()))
+        for su, tu in _pair_endpoint_urls(source_urls, target_service.service_url or [], warnings):
+            rows.append({"source_url": su, "target_url": tu, "source_id": "", "target_id": ""})
+        rows.extend(_item_id_rows(source_service, target_service, warnings))
+        if any(m["new_layer_id"] != m["old_layer_id"] for m in layer_mappings):
+            warnings.append(
+                "Some layers change layer id. Items that reference this service by portal "
+                "item ID plus a numeric layerId property (rather than by URL) keep the old "
+                "layer number and may point at the wrong layer after replacement - verify "
+                "those layers in the affected items."
+            )
+    return rows, warnings, False
+
+
+def build_replacements(mapping_rows):
+    """
+    Builds an ordered list of (old, new) replacement pairs from mapping rows.
+    Only explicitly mapped service URLs and item IDs are replaced. Item IDs
+    are replaced last.
+
+    :param mapping_rows: Row dicts with source_url/target_url/source_id/target_id
+    :type mapping_rows: list
+    :return: List of (old, new) tuples, longest URLs first
+    :rtype: list
+    """
+    url_pairs = {}
+    id_pairs = {}
+
+    for row in mapping_rows:
+        source_url = (row.get("source_url") or "").strip().rstrip('/')
+        target_url = (row.get("target_url") or "").strip().rstrip('/')
+        source_id = (row.get("source_id") or "").strip()
+        target_id = (row.get("target_id") or "").strip()
+
+        if source_url and target_url and source_url != target_url:
+            url_pairs[source_url] = target_url
+
+        if source_id and target_id and source_id != target_id:
+            id_pairs[source_id] = target_id
+
+    # Longest first so full service URLs win before shorter ones
+    replacements = sorted(url_pairs.items(), key=lambda kv: len(kv[0]), reverse=True)
+    replacements += list(id_pairs.items())
+    return replacements
+
+
+def _url_regex(url):
+    """
+    Builds a regex matching a service URL as it may appear inside item JSON:
+    letter case may differ (ArcGIS hosts and REST paths are case-insensitive,
+    and hand-entered app configs frequently mix case), and each '/' may be
+    JSON-escaped as '\\/'. A trailing digit gets a boundary guard so a
+    sublayer pair like '.../MapServer/1' never matches inside
+    '.../MapServer/12'. Compile/search with re.IGNORECASE.
+
+    :param url: Service URL to match
+    :type url: str
+    :return: Regex pattern string
+    :rtype: str
+    """
+    pattern = ''.join(r'\\?/' if ch == '/' else re.escape(ch) for ch in url)
+    if url[-1].isdigit():
+        pattern += r'(?![0-9])'
+    return pattern
+
+
+def apply_replacements(text, replacements):
+    """
+    Applies every (old, new) replacement pair to the text. URL pairs are
+    matched flexibly: case-insensitively, tolerating JSON-escaped slashes
+    (https:\\/\\/...) and percent-encoded embeds (https%3A%2F%2F...), all of
+    which appear in real item JSON. Non-URL pairs (item IDs) are matched
+    exactly, with a digit-boundary guard when the old string ends in a digit.
+
+    :param text: Text to process
+    :type text: str
+    :param replacements: List of (old, new) tuples
+    :type replacements: list
+    :return: (updated text, total number of replacements made)
+    :rtype: tuple
+    """
+    total = 0
+    for old, new in replacements:
+        if not old:
+            continue
+        if '://' in old:
+            # Lambda replacement so backslashes/group refs in `new` stay literal
+            text, count = re.subn(_url_regex(old), lambda _m: new, text, flags=re.IGNORECASE)
+            total += count
+            # Percent-encoded embeds, e.g. ?url=https%3A%2F%2Fserver...
+            enc_old, enc_new = quote(old, safe=''), quote(new, safe='')
+            pattern = re.escape(enc_old) + (r'(?![0-9])' if enc_old[-1].isdigit() else '')
+            text, count = re.subn(pattern, lambda _m: enc_new, text, flags=re.IGNORECASE)
+            total += count
+        elif old[-1].isdigit():
+            pattern = re.escape(old) + r'(?![0-9])'
+            text, count = re.subn(pattern, lambda _m: new, text)
+            total += count
+        else:
+            count = text.count(old)
+            if count:
+                text = text.replace(old, new)
+            total += count
+    return text, total
+
+
+def count_occurrences(text, search_strings):
+    """
+    Counts occurrences of each search string in the text, matching URL
+    strings with the same flexibility as apply_replacements (case,
+    JSON-escaped slashes, percent-encoding). Used to report whole-service
+    references that remain after a partial (split or unmapped-layer)
+    replacement.
+
+    :param text: Text to scan
+    :type text: str
+    :param search_strings: Strings to count
+    :type search_strings: list
+    :return: Total occurrence count
+    :rtype: int
+    """
+    total = 0
+    for search_string in search_strings:
+        if not search_string:
+            continue
+        if '://' in search_string:
+            total += len(re.findall(_url_regex(search_string), text, flags=re.IGNORECASE))
+            encoded = quote(search_string, safe='')
+            pattern = re.escape(encoded) + (r'(?![0-9])' if encoded[-1].isdigit() else '')
+            total += len(re.findall(pattern, text, flags=re.IGNORECASE))
+        else:
+            total += text.count(search_string)
+    return total
+
+
+def get_source_layer_inventory(service):
+    """
+    Returns the known sublayers of a service for the advanced mapping UI:
+    the union of Layer_Service rows (which carry layer names) and the
+    distinct sublayer ids referenced by consuming maps and apps.
+
+    :param service: Service model instance
+    :return: [{'id': n, 'name': str}] sorted by id
+    :rtype: list
+    """
+    from .models import Layer_Service, Map_Service, App_Service
+
+    layers = {}
+    for rel in Layer_Service.objects.filter(
+            service_id=service, service_layer_id__isnull=False
+    ).values("service_layer_id", "service_layer_name"):
+        layers[rel["service_layer_id"]] = rel["service_layer_name"] or ""
+
+    consumer_ids = set(Map_Service.objects.filter(
+        service_id=service, service_layer_id__isnull=False
+    ).values_list("service_layer_id", flat=True))
+    consumer_ids |= set(App_Service.objects.filter(
+        service_id=service, service_layer_id__isnull=False
+    ).values_list("service_layer_id", flat=True))
+    for layer_id in consumer_ids:
+        layers.setdefault(layer_id, "")
+
+    return [{"id": layer_id, "name": name} for layer_id, name in sorted(layers.items())]
+
+
+def get_resource_names(item):
+    """
+    Returns the resource names holding the item's real content, per item
+    type (based on Esri's remap_data implementation).
+
+    :param item: arcgis Item to inspect
+    :return: Resource names to process
+    :rtype: list
+    """
+    names = []
+    try:
+        if item.type == 'Web Experience':
+            names.append('config/config.json')
+        elif item.type == 'StoryMap':
+            for res in item.resources.list():
+                res_name = res['resource']
+                if 'draft' in res_name and res_name.endswith('.json') and 'express' not in res_name:
+                    names.append(res_name)
+            # Published content lives in published_data.json
+            data = item.get_data()
+            if data and data != {'unpublished': True}:
+                names.append('published_data.json')
+    except Exception:
+        logger.warning(f"Unable to list resources for {item.title} ({item.id})")
+    return names
+
+
+def read_resource_text(item, resource_name):
+    """
+    Reads an item resource as text.
+
+    :param item: arcgis Item owning the resource
+    :param resource_name: Resource name, e.g. 'config/config.json'
+    :type resource_name: str
+    :return: Resource content as text, or None
+    :rtype: str or None
+    """
+    try:
+        res = item.resources.get(resource_name)
+        if isinstance(res, (dict, list)):
+            return json.dumps(res)
+        if isinstance(res, bytes):
+            return res.decode('utf-8', errors='ignore')
+        if isinstance(res, str):
+            return res
+    except Exception:
+        logger.warning(f"Unable to read resource {resource_name} for {item.title}")
+    return None
+
+
+def write_resource_text(item, resource_name, text):
+    """
+    Writes text back to an item resource.
+
+    :param item: arcgis Item owning the resource
+    :param resource_name: Resource name, e.g. 'config/config.json'
+    :type resource_name: str
+    :param text: New resource content
+    :type text: str
+    :return: Success
+    :rtype: bool
+    """
+    try:
+        if '/' in resource_name:
+            folder_name, file_name = resource_name.rsplit('/', 1)
+        else:
+            folder_name, file_name = None, resource_name
+        with tempfile.NamedTemporaryFile(mode='w+', suffix='.json',
+                                         delete=False, encoding='utf-8') as tfile:
+            tfile.write(text)
+            temp_path = tfile.name
+        try:
+            item.resources.update(folder_name=folder_name, file_name=file_name, file=temp_path)
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                logger.warning(f"Unable to remove temp file {temp_path}")
+        return True
+    except Exception:
+        logger.warning(f"Unable to update resource {resource_name} for {item.title}")
+        return False
+
+
+def analyze_item(item, replacements):
+    """
+    Determines every change the replacements would make to an item without
+    modifying anything: the url property, the item data, and item resources
+    for resource-based types.
+
+    :param item: arcgis Item to analyze
+    :param replacements: List of (old, new) tuples
+    :type replacements: list
+    :return: Pending change set, or None if the item is unaffected
+    :rtype: dict or None
+    """
+    changes = {'newURL': None, 'urlCount': 0,
+               'oldDataText': None, 'newDataText': None, 'dataCount': 0,
+               'resources': [],  # (name, oldText, newText, count)
+               'resourceCount': 0,
+               'warnings': []}
+
+    # 1. Item URL property
+    try:
+        if item.url:
+            candidate, count = apply_replacements(str(item.url), replacements)
+            if count:
+                changes['newURL'] = candidate
+                changes['urlCount'] = count
+    except Exception:
+        pass
+
+    # 2. Item data
+    if item.type in TEXT_BASED_ITEM_TYPES or item.type in RESOURCE_BASED_ITEM_TYPES:
+        try:
+            data = item.get_data(try_json=True)
+            if isinstance(data, (dict, list)) and data:
+                text = json.dumps(data)
+            elif isinstance(data, str) and data:
+                text = data
+            elif isinstance(data, bytes) and data:
+                text = data.decode('utf-8', errors='ignore')
+            else:
+                text = None
+
+            if text:
+                candidate, count = apply_replacements(text, replacements)
+                if count:
+                    # Validate the result is still valid JSON before queueing
+                    try:
+                        json.loads(candidate)
+                        changes['oldDataText'] = text
+                        changes['newDataText'] = candidate
+                        changes['dataCount'] = count
+                    except json.JSONDecodeError:
+                        message = (f"Replacement produced invalid JSON for "
+                                   f"{item.title} ({item.id}); skipping data update")
+                        logger.warning(message)
+                        changes['warnings'].append(message)
+        except Exception:
+            logger.warning(f"Unable to read data for {item.title} ({item.id})")
+
+    # 3. Item resources (Web Experience config, StoryMap draft/published)
+    if item.type in RESOURCE_BASED_ITEM_TYPES:
+        for resource_name in get_resource_names(item):
+            old_text = read_resource_text(item, resource_name)
+            if not old_text:
+                continue
+            candidate, count = apply_replacements(old_text, replacements)
+            if count:
+                try:
+                    json.loads(candidate)
+                except json.JSONDecodeError:
+                    message = (f"Replacement produced invalid JSON in resource "
+                               f"{resource_name} for {item.title}; skipping")
+                    logger.warning(message)
+                    changes['warnings'].append(message)
+                    continue
+                changes['resources'].append((resource_name, old_text, candidate, count))
+                changes['resourceCount'] += count
+
+    if not changes['urlCount'] and not changes['dataCount'] and not changes['resourceCount']:
+        return None
+    return changes
+
+
+def backup_item(job, item, changes):
+    """
+    Snapshots everything about the item that is about to change (url, data,
+    resources) into a ReplacementItemBackup row so it can be reverted. The
+    url property is always snapshotted because revert restores it.
+
+    :param job: ReplacementJob the backup belongs to
+    :param item: arcgis Item being updated
+    :param changes: Pending change set from analyze_item
+    :type changes: dict
+    :return: ReplacementItemBackup, or None on failure - the item must NOT
+             be updated if backup failed
+    """
+    from .models import ReplacementItemBackup
+
+    try:
+        backup, _ = ReplacementItemBackup.objects.update_or_create(
+            job=job,
+            item_id=item.id,
+            defaults={
+                "item_type": item.type or "",
+                "item_title": item.title or "",
+                "item_owner": item.owner or "",
+                "url_property": item.url,
+                "data_text": changes['oldDataText'] if changes['dataCount'] else None,
+                "resources": {name: old_text for name, old_text, _, _ in changes['resources']},
+                "item_modified_at": getattr(item, "modified", None),
+                "counts": {"url": changes['urlCount'], "data": changes['dataCount'],
+                           "resources": changes['resourceCount']},
+                "status": "analyzed",
+                "error": "",
+            }
+        )
+        return backup
+    except Exception as e:
+        logger.warning(f"Backup FAILED for {item.title} ({item.id}): {e}")
+        return None
+
+
+def apply_changes(item, changes):
+    """
+    Applies a pending change set to an item. Each write's result is checked
+    (write_resource_text/item.update returning falsy is treated the same as
+    an exception). If a write fails after earlier resource writes already
+    succeeded, those are rolled back (in reverse order) before returning.
+
+    :param item: arcgis Item to update
+    :param changes: Pending change set from analyze_item
+    :type changes: dict
+    :return: Status string ('UPDATED', 'FAILED: ...' when nothing was left
+             changed (nothing was written, or a partial write was
+             successfully rolled back), or 'PARTIAL: ...' when some writes
+             could not be rolled back (the item is left changed and must
+             remain revertable))
+    :rtype: str
+    """
+    applied_resources = []  # (resource_name, old_text) successfully written, for rollback
+    try:
+        # Resources first (Web Experience config, StoryMap draft/published)
+        for resource_name, old_text, new_text, _ in changes['resources']:
+            if not write_resource_text(item, resource_name, new_text):
+                raise RuntimeError(f"Failed to write resource {resource_name}")
+            applied_resources.append((resource_name, old_text))
+
+        # Data and URL
+        update_props = {}
+        if changes['newURL'] is not None:
+            update_props['url'] = changes['newURL']
+
+        if changes['dataCount']:
+            if not item.update(item_properties=update_props or {}, data=changes['newDataText']):
+                raise RuntimeError("Item update failed")
+        elif update_props:
+            if not item.update(item_properties=update_props):
+                raise RuntimeError("Item update failed")
+
+        return 'UPDATED'
+    except Exception as e:
+        logger.warning(f"Failed to update {item.title} ({item.id}): {e}")
+        if not applied_resources:
+            return f'FAILED: {e}'
+        rollback_failed = False
+        for resource_name, old_text in reversed(applied_resources):
+            if not write_resource_text(item, resource_name, old_text):
+                rollback_failed = True
+        return f'{"PARTIAL" if rollback_failed else "FAILED"}: {e}'
+
+
+def revert_item(target, backup, force=False):
+    """
+    Restores one item from its ReplacementItemBackup row. If the item was
+    modified in the portal after the replacement was applied (per the
+    applied_modified_at snapshot), the revert is skipped unless force is set:
+    overwriting someone's later edits needs explicit user confirmation, and
+    downloading the backup and re-applying it manually (e.g. in ArcGIS Online
+    Assistant) may be the better path.
+
+    :param target: GIS connection
+    :param backup: ReplacementItemBackup to restore
+    :param force: Revert even when the item has post-replacement edits
+    :type force: bool
+    :return: Status string ('REVERTED', 'SKIPPED_NEWER_EDITS' when unforced
+             post-replacement edits were found, 'REVERTED_STALE' when a forced
+             revert overwrote them, or 'REVERT FAILED: ...')
+    :rtype: str
+    """
+    item = target.content.get(backup.item_id)
+    if item is None:
+        message = f"Item {backup.item_id} ({backup.item_title}) no longer exists; cannot revert"
+        logger.warning(message)
+        return f'REVERT FAILED: {message}'
+
+    # None = pre-snapshot backup (no check possible); 0 = snapshot failed at
+    # execute time, so the item must be treated as possibly edited
+    current_modified = getattr(item, "modified", None)
+    had_newer_edits = bool(backup.applied_modified_at is not None and current_modified
+                           and current_modified != backup.applied_modified_at)
+    if had_newer_edits and not force:
+        logger.warning(f"Item {backup.item_title} ({backup.item_id}) was modified after "
+                       f"the replacement; skipping revert until confirmed")
+        return 'SKIPPED_NEWER_EDITS'
+    if had_newer_edits:
+        logger.warning(f"Item {backup.item_title} ({backup.item_id}) was modified after "
+                       f"the replacement; confirmed revert overwrites those edits")
+
+    applied_resources = []  # (resource_name, pre_revert_text) successfully reverted, for rollback
+    try:
+        # Restore resources
+        for resource_name, old_text in (backup.resources or {}).items():
+            pre_revert_text = read_resource_text(item, resource_name)
+            if pre_revert_text is None:
+                raise RuntimeError(f"Failed to revert resource {resource_name}")
+            if not write_resource_text(item, resource_name, old_text):
+                raise RuntimeError(f"Failed to revert resource {resource_name}")
+            applied_resources.append((resource_name, pre_revert_text))
+
+        # Restore data and url
+        update_props = {}
+        if backup.url_property:
+            update_props['url'] = backup.url_property
+
+        if backup.data_text:
+            if not item.update(item_properties=update_props or {}, data=backup.data_text):
+                raise RuntimeError("Item update failed")
+        elif update_props:
+            if not item.update(item_properties=update_props):
+                raise RuntimeError("Item update failed")
+
+        return 'REVERTED_STALE' if had_newer_edits else 'REVERTED'
+    except Exception as e:
+        logger.warning(f"Revert failed for {backup.item_title} ({backup.item_id}): {e}")
+        if not applied_resources:
+            return f'REVERT FAILED: {e}'
+        rollback_failed = False
+        for resource_name, pre_revert_text in reversed(applied_resources):
+            if pre_revert_text is None or not write_resource_text(item, resource_name, pre_revert_text):
+                rollback_failed = True
+        if rollback_failed:
+            return (f'REVERT FAILED: {e} (some reverted resources could not be rolled back; '
+                    f'item left partially changed, retry the revert)')
+        return f'REVERT FAILED: {e}'
+
+
+def check_backup_newer_edits(portal, credential_token, backup):
+    """
+    Connects to the portal and checks whether a backed-up item was modified
+    after the replacement applied it, so the revert view can ask the user
+    before overwriting those edits. Items that no longer exist report no
+    newer edits - the revert task gives them a proper per-item failure.
+
+    :param portal: Portal model instance
+    :param credential_token: Optional temporary credential token
+    :type credential_token: str
+    :param backup: ReplacementItemBackup to check
+    :return: {'has_newer_edits': bool, 'modified_at': aware datetime or None,
+              'error': str or None}
+    :rtype: dict
+    """
+    try:
+        target = connect(portal, credential_token)
+    except Exception as e:
+        logger.error(f"Newer-edits check could not connect to portal '{portal.alias}': {e}")
+        return {"has_newer_edits": False, "modified_at": None,
+                "error": "Could not connect to the portal to check the item's current state. "
+                         "See logs for details."}
+
+    try:
+        item = target.content.get(backup.item_id)
+    except Exception:
+        item = None
+    if item is None:
+        return {"has_newer_edits": False, "modified_at": None, "error": None}
+
+    current_modified = getattr(item, "modified", None)
+    has_newer_edits = bool(backup.applied_modified_at is not None and current_modified
+                           and current_modified != backup.applied_modified_at)
+    modified_at = None
+    if has_newer_edits:
+        modified_at = datetime.fromtimestamp(current_modified / 1000, tz=dt_timezone.utc)
+    return {"has_newer_edits": has_newer_edits, "modified_at": modified_at, "error": None}
+
+
+# Temporary credentials entered for a replacement flow stay usable across the
+# dry-run -> execute -> revert steps without re-prompting
+REPLACEMENT_CREDENTIAL_TTL_SECONDS = 3600
+
+
+def danger_alert_response(message):
+    """
+    Builds an htmx response that shows a danger alert without swapping content.
+
+    :param message: Alert text shown to the user
+    :type message: str
+    :return: Response with an HX-Trigger-After-Settle header
+    :rtype: HttpResponse
+    """
+    return HttpResponse(status=200, headers={
+        "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": message})})
+
+
+def portal_has_credentials(portal):
+    """
+    Checks whether a background task can authenticate to the portal without
+    prompting: stored credentials or an unexpired stored token.
+
+    :param portal: Portal model instance
+    :return: True if a connection can be made from stored auth
+    :rtype: bool
+    """
+    if portal.store_password:
+        return True
+    return bool(portal.token and portal.token_expiration
+                and portal.token_expiration > timezone.now())
+
+
+def get_replacement_job(instance_alias, job_id):
+    """
+    Loads a ReplacementJob scoped to a portal alias.
+
+    :param instance_alias: Portal alias the job must belong to
+    :type instance_alias: str
+    :param job_id: ReplacementJob primary key
+    :type job_id: int
+    :return: (job, None) on success or (None, danger alert response)
+    :rtype: tuple
+    """
+    from .models import ReplacementJob
+
+    job = ReplacementJob.objects.filter(pk=job_id, portal_instance__alias=instance_alias).first()
+    if job is None:
+        return None, danger_alert_response("Replacement job not found.")
+    return job, None
+
+
+def active_replacement_job_exists(portal):
+    """
+    Checks whether a replacement job is currently active for the portal
+    (blocking a new one from starting). Any active job whose status has not
+    changed for well over the Celery hard time limit (100 minutes) can only
+    be abandoned - a worker killed mid-run (OOM, hard timeout, eviction)
+    never reports back - so such jobs are auto-failed first and can never
+    brick the portal's replace flow. The tasks claim their expected status
+    at start, so a zombie task of an auto-failed job aborts instead of
+    resurrecting it. Items an abandoned execute already updated keep their
+    'applied' backups and stay revertable from the failed job.
+
+    :param portal: Portal model instance
+    :return: True when a job is active
+    :rtype: bool
+    """
+    from .models import ReplacementJob
+
+    expired = ReplacementJob.objects.filter(
+        portal_instance=portal, status__in=ReplacementJob.ACTIVE_STATUSES,
+        status_updated__lt=timezone.now() - timedelta(hours=2),
+    ).update(status="failed", status_updated=timezone.now(),
+             error_message="Abandoned: the task never reported completion. Items that were "
+                           "already updated remain revertable from their backups.")
+    if expired:
+        logger.warning(f"Auto-failed {expired} abandoned replacement job(s) "
+                       f"for portal '{portal.alias}'")
+    return ReplacementJob.objects.filter(
+        portal_instance=portal, status__in=ReplacementJob.ACTIVE_STATUSES).exists()
+
+
+def get_service_replacement_jobs(service, limit=20):
+    """
+    Returns a service's recent replacement jobs for the history UI, each
+    annotated with has_revertable_backups so revert buttons only show for
+    jobs whose backups still exist (retention may have purged them).
+
+    :param service: Service model instance
+    :param limit: Most recent jobs to include
+    :type limit: int
+    :return: Annotated ReplacementJob queryset
+    :rtype: QuerySet
+    """
+    from .models import ReplacementJob, ReplacementItemBackup
+
+    return ReplacementJob.objects.filter(source_service=service).annotate(
+        has_revertable_backups=Exists(
+            ReplacementItemBackup.objects.filter(
+                job=OuterRef("pk"),
+                status__in=ReplacementItemBackup.REVERTABLE_STATUSES)))[:limit]
+
+
+def cache_replacement_credentials(job_id, credential_token, user_id):
+    """
+    Associates a credential token with a replacement job so later steps
+    (execute, revert) can reuse it without re-prompting. The key is scoped to
+    the submitting user: another staff user working the same job must enter
+    their own credentials.
+
+    :param job_id: ReplacementJob primary key
+    :type job_id: int
+    :param credential_token: CredentialManager token
+    :type credential_token: str
+    :param user_id: Django user pk the token belongs to
+    :type user_id: int
+    """
+    cache.set(f"replace_job_creds:{job_id}:{user_id}", credential_token,
+              timeout=REPLACEMENT_CREDENTIAL_TTL_SECONDS)
+
+
+def resolve_replacement_credentials(request, portal, job_id=None):
+    """
+    Resolves how a replacement task will authenticate to the portal.
+
+    Order: stored portal credentials/token, credentials submitted in this
+    request (validated against the portal, then cached under the job for the
+    submitting user), or a token this user cached in an earlier step of the
+    same job. If none apply the caller must render the credential prompt.
+
+    :param request: HttpRequest possibly carrying 'username'/'password'
+    :param portal: Portal model instance
+    :param job_id: Optional ReplacementJob pk for token reuse
+    :type job_id: int
+    :return: {'token': str or None, 'prompt': bool, 'error': str or None} -
+             'token' is None when stored portal auth suffices
+    :rtype: dict
+    """
+    if portal_has_credentials(portal):
+        return {"token": None, "prompt": False, "error": None}
+
+    username = (request.POST.get("username") or "").strip()
+    password = request.POST.get("password") or ""
+    if username and password:
+        auth_result = try_connection({"username": username, "password": password, "url": portal.url})
+        if not auth_result.get("authenticated", False):
+            logger.warning(f"Replacement credential validation failed for portal '{portal.alias}'")
+            return {"token": None, "prompt": True,
+                    "error": auth_result.get("error", "Authentication failed. Please verify credentials.")}
+        token = CredentialManager.store_credentials(
+            username, password, ttl_seconds=REPLACEMENT_CREDENTIAL_TTL_SECONDS)
+        if not token:
+            return {"token": None, "prompt": True,
+                    "error": "Failed to store credentials. Please try again."}
+        if job_id:
+            cache_replacement_credentials(job_id, token, request.user.pk)
+        return {"token": token, "prompt": False, "error": None}
+
+    if job_id:
+        token = cache.get(f"replace_job_creds:{job_id}:{request.user.pk}")
+        if token and CredentialManager.retrieve_credentials(token):
+            return {"token": token, "prompt": False, "error": None}
+
+    return {"token": None, "prompt": True, "error": None}
+
+
+def purge_expired_replacement_backups():
+    """
+    Deletes ReplacementItemBackup rows older than the retention window
+    (settings.REPLACEMENT_BACKUP_RETENTION_DAYS, default 90; 0 disables
+    purging). Jobs are kept for audit history; once its backups are purged a
+    job can no longer be reverted.
+
+    :return: Number of backup rows deleted
+    :rtype: int
+    """
+    from .models import ReplacementItemBackup
+
+    retention_days = getattr(settings, "REPLACEMENT_BACKUP_RETENTION_DAYS", 90)
+    if not retention_days:
+        return 0
+    cutoff = timezone.now() - timedelta(days=retention_days)
+    expired = ReplacementItemBackup.objects.filter(created__lt=cutoff)
+    count = expired.count()
+    if count:
+        expired.delete()
+        logger.info(f"Purged {count} replacement item backup(s) older than {retention_days} days")
+    return count
+
+
+def get_job_target_info(job):
+    """
+    Resolves the replacement target service name(s) and URL(s) for a job
+    from its stored configuration.
+
+    :param job: ReplacementJob instance
+    :return: (names, urls, is_split) - target service names (falling back to
+             the stored id when the Service row no longer exists), their first
+             service URLs, and whether layers were split across targets
+    :rtype: tuple
+    """
+    config = job.replacement_config or {}
+    if config.get("mode") == "advanced":
+        target_ids = []
+        for mapping in config.get("layer_mappings", []):
+            target_id = mapping.get("target_service_id")
+            if target_id and target_id not in target_ids:
+                target_ids.append(target_id)
+    else:
+        target_ids = [config.get("target_service_id")] if config.get("target_service_id") else []
+
+    services = Service.objects.in_bulk(target_ids)
+    names, urls = [], []
+    for tid in target_ids:
+        service = services.get(tid)
+        names.append(service.service_name if service else f"service {tid}")
+        service_urls = service.service_url_as_list() if service else []
+        urls.append(service_urls[0] if service_urls else "")
+    return names, urls, len(target_ids) > 1
+
+
+def get_job_target_names(job):
+    """
+    Resolves the replacement target service name(s) for a job.
+
+    :param job: ReplacementJob instance
+    :return: (names, is_split)
+    :rtype: tuple
+    """
+    names, _urls, is_split = get_job_target_info(job)
+    return names, is_split
+
+
+def item_page_url(portal, item_id):
+    """
+    Builds the portal item page URL for an item id.
+
+    :param portal: Portal model instance
+    :param item_id: Portal item id
+    :type item_id: str
+    :return: Item page URL, or "" when the id is missing
+    :rtype: str
+    """
+    if not item_id:
+        return ""
+    return f"{(portal.url or '').rstrip('/')}/home/item.html?id={item_id}"
+
+
+def get_replacement_report_rows(portal, max_jobs=200):
+    """
+    Flattens every replacement job for a portal into one row per affected
+    item for the replacement report table: executed jobs contribute their
+    backup rows (with live statuses and per-item revert eligibility),
+    un-executed dry runs contribute their analysis rows.
+
+    :param portal: Portal model instance
+    :param max_jobs: Most recent jobs to include
+    :type max_jobs: int
+    :return: List of row dicts
+    :rtype: list
+    """
+    from .models import ReplacementJob, ReplacementItemBackup
+
+    rows = []
+    jobs = (ReplacementJob.objects.filter(portal_instance=portal)
+            .select_related("initiated_by")
+            .prefetch_related("item_backups")
+            .order_by("-created")[:max_jobs])
+
+    for job in jobs:
+        target_names, target_urls, is_split = get_job_target_info(job)
+        source_url = ""
+        if job.source_service and job.source_service.service_url_as_list():
+            source_url = job.source_service.service_url_as_list()[0]
+        elif job.replacement_pairs:
+            source_url = job.replacement_pairs[0][0]
+        base = {
+            "job": job,
+            "source": job.source_service_name,
+            "source_url": source_url,
+            "targets": ", ".join(target_names) or "-",
+            "target_url": ", ".join(u for u in target_urls if u),
+            "is_split": is_split,
+        }
+
+        backups = list(job.item_backups.all())
+        if backups:
+            for backup in backups:
+                has_content = bool(backup.data_text or backup.resources or backup.url_property)
+                rows.append({**base,
+                             "item_title": backup.item_title or backup.item_id,
+                             "item_id": backup.item_id,
+                             "item_url": item_page_url(portal, backup.item_id),
+                             "item_type": backup.item_type,
+                             "item_owner": backup.item_owner,
+                             "url_count": (backup.counts or {}).get("url", 0),
+                             "data_count": (backup.counts or {}).get("data", 0),
+                             "resource_count": (backup.counts or {}).get("resources", 0),
+                             "status_label": backup.get_status_display(),
+                             "note": backup.error or "",
+                             "backup_id": backup.pk,
+                             "has_backup": has_content,
+                             "revert_eligible": backup.status in ReplacementItemBackup.REVERTABLE_STATUSES})
+            continue
+
+        summary_items = (job.dry_run_summary or {}).get("items", [])
+        if summary_items and job.status == "dry_run":
+            for item in summary_items:
+                rows.append({**base,
+                             "item_title": item.get("title") or item.get("item_id", ""),
+                             "item_id": item.get("item_id", ""),
+                             "item_url": item_page_url(portal, item.get("item_id", "")),
+                             "item_type": item.get("type", ""),
+                             "item_owner": item.get("owner", ""),
+                             "url_count": item.get("url_count", 0),
+                             "data_count": item.get("data_count", 0),
+                             "resource_count": item.get("resource_count", 0),
+                             "status_label": "Dry run (not executed)",
+                             "note": item.get("note", ""),
+                             "backup_id": None,
+                             "has_backup": False,
+                             "revert_eligible": False})
+            continue
+
+        # Job with no per-item rows (failed early, or empty analysis)
+        rows.append({**base,
+                     "item_title": "-", "item_id": "", "item_url": "", "item_type": "",
+                     "item_owner": "",
+                     "url_count": 0, "data_count": 0, "resource_count": 0,
+                     "status_label": job.get_status_display(),
+                     "note": job.error_message or "",
+                     "backup_id": None, "has_backup": False, "revert_eligible": False})
+    return rows
+
+
+def build_backup_export(backup):
+    """
+    Serializes a ReplacementItemBackup into a self-describing JSON payload for
+    manual restoration (e.g. via ArcGIS Online Assistant). JSON-typed content
+    is parsed so it round-trips as real JSON rather than an escaped string.
+
+    :param backup: ReplacementItemBackup instance
+    :return: Export payload
+    :rtype: dict
+    """
+    def parse_json_or_text(text):
+        if text is None:
+            return None
+        try:
+            return json.loads(text)
+        except (ValueError, TypeError):
+            return text
+
+    return {
+        "_note": ("Pre-change backup captured by EnterpriseViz before a service "
+                  "replacement. Use 'data' as the item's Data JSON and 'url' as the "
+                  "item URL to restore it manually (e.g. in ArcGIS Online Assistant)."),
+        "item_id": backup.item_id,
+        "item_title": backup.item_title,
+        "item_type": backup.item_type,
+        "item_owner": backup.item_owner,
+        "captured": backup.created.isoformat() if backup.created else None,
+        "job_id": backup.job_id,
+        "url": backup.url_property,
+        "data": parse_json_or_text(backup.data_text),
+        "resources": {name: parse_json_or_text(text)
+                      for name, text in (backup.resources or {}).items()},
+    }

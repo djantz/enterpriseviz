@@ -51,6 +51,10 @@ html, body {
   margin-top: 0.75rem;
 }
 
+.margin-top-1 {
+  margin-top: 1rem;
+}
+
 .margin-left-1 {
   margin-left: 1rem;
 }
@@ -694,7 +698,8 @@ table.dataTable > thead > tr > th.dt-orderable-asc.dt-orderable-desc.dt-ordering
 
 calcite-dialog#add-modal,
 calcite-dialog#schedule-modal,
-calcite-dialog#update-modal {
+calcite-dialog#update-modal,
+calcite-dialog#replace-modal {
   --calcite-dialog-size-x: 60rem;
 }
 
@@ -784,6 +789,26 @@ ul, pre {
 
 progress_bar {
   margin-top: 20px;
+}
+
+.progress_bar-label {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+  margin: 0 0 0.35rem;
+  font-size: 12px;
+  color: var(--calcite-color-text-2);
+}
+
+.replace-report-row-actions {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.progress_bar-label strong {
+  color: var(--calcite-color-text-1);
 }
 
 calcite-table {

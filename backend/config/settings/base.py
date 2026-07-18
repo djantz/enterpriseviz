@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/3.2/ref/settings/
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 from csp.constants import NONE, SELF, UNSAFE_INLINE, UNSAFE_EVAL, NONCE
 
 BASE_DIR = Path(__file__).resolve(strict=True).parent.parent.parent
@@ -337,6 +338,14 @@ CELERY_TASK_TIME_LIMIT = 5 * 60
 CELERY_TASK_SOFT_TIME_LIMIT = 60
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#beat-scheduler
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+# https://docs.celeryq.dev/en/stable/userguide/periodic-tasks.html#beat-entries
+# Synced into the django_celery_beat PeriodicTask table on beat startup.
+CELERY_BEAT_SCHEDULE = {
+    "purge-expired-replacement-backups": {
+        "task": "app.tasks.purge_expired_replacement_backups_task",
+        "schedule": crontab(hour=3, minute=0),
+    },
+}
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#worker-send-task-events
 CELERY_WORKER_SEND_TASK_EVENTS = True
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std-setting-task_send_sent_event
