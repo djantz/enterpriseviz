@@ -34,7 +34,7 @@ from django.core.mail import get_connection, EmailMessage
 from django.db import transaction, DatabaseError
 from django.db.models import Q
 from django.http import Http404
-from django.http import HttpResponse, JsonResponse, HttpResponseForbidden
+from django.http import HttpResponse, JsonResponse, HttpResponseForbidden, HttpResponseServerError
 from django.shortcuts import render, redirect, get_object_or_404
 from django.template import loader
 from django.utils import timezone
@@ -126,6 +126,7 @@ class Table(ExportMixin, SingleTableMixin, FilterView):
 
         instance_alias = self.kwargs.get("instance")
         if instance_alias:
+            get_object_or_404(Portal, alias=instance_alias)
             try:
                 return qs.filter(portal_instance__alias=instance_alias)
             except FieldError:
@@ -336,16 +337,14 @@ def portal_map_view(request, instance=None, id=None):
 
     if not id:
         logger.warning("Missing 'id' parameter.")
-        return HttpResponse(status=400, headers={
-            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error retrieving map details: ID missing."})})
+        return render_error(request, 400, "Error retrieving map details: ID missing.")
 
     try:
         logger.debug(f"Fetching map details for ID: {id}")
         details = utils.map_details(id)
         if "error" in details:
             logger.warning(f"Error in map details response for ID {id}: {details['error']}")
-            return HttpResponse(status=500,
-                                headers={"HX-Trigger-After-Settle": json.dumps({"showDangerAlert": details["error"]})})
+            return render_error(request, 500, details["error"])
 
         portal_data = Portal.objects.values_list("alias", "portal_type", "url")
         details["portal"] = portal_data
@@ -354,8 +353,7 @@ def portal_map_view(request, instance=None, id=None):
 
     except Exception as e:
         logger.error(f"Unexpected error for ID {id}: {e}", exc_info=True)
-        return HttpResponse(status=500, headers={"HX-Trigger-After-Settle": json.dumps(
-            {"showDangerAlert": "An unexpected error occurred while retrieving map details."})})
+        return render_error(request, 500, "An unexpected error occurred while retrieving map details.")
 
 
 @login_required
@@ -381,8 +379,7 @@ def portal_service_view(request, instance=None, url=None):
 
     if not instance or not url:
         logger.warning("Missing 'instance' or 'url' parameter.")
-        return HttpResponse(status=400, headers={
-            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Missing 'instance' or 'url' parameter."})})
+        return render_error(request, 400, "Missing 'instance' or 'url' parameter.")
 
     try:
         unquoted_url = unquote(url)
@@ -391,8 +388,7 @@ def portal_service_view(request, instance=None, url=None):
 
         if "error" in details:
             logger.warning(f"Error in service details for {instance}: {details['error']}")
-            return HttpResponse(status=500,
-                                headers={"HX-Trigger-After-Settle": json.dumps({"showDangerAlert": details["error"]})})
+            return render_error(request, 500, details["error"])
 
         portal_data = Portal.objects.values_list("alias", "portal_type", "url")
         details["portal"] = portal_data
@@ -417,8 +413,7 @@ def portal_service_view(request, instance=None, url=None):
 
     except Exception as e:
         logger.error(f"Unexpected error for instance {instance}: {e}", exc_info=True)
-        return HttpResponse(status=500, headers={"HX-Trigger-After-Settle": json.dumps(
-            {"showDangerAlert": "An unexpected error occurred while retrieving service details."})})
+        return render_error(request, 500, "An unexpected error occurred while retrieving service details.")
 
 
 @login_required
@@ -452,16 +447,14 @@ def portal_layer_view(request, name=None):
 
     if not name:
         logger.warning("Layer name missing.")
-        return HttpResponse(status=400, headers={
-            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Layer name is missing."})})
+        return render_error(request, 400, "Layer name is missing.")
 
     try:
         logger.debug(f"Fetching layer details for name: {name}")
         details = utils.layer_details(dbserver, database, version, name)
         if "error" in details:
             logger.warning(f"Error in layer details for {name}: {details['error']}")
-            return HttpResponse(status=500,
-                                headers={"HX-Trigger-After-Settle": json.dumps({"showDangerAlert": details["error"]})})
+            return render_error(request, 500, details["error"])
 
         portal_data = list(Portal.objects.values_list("alias", "portal_type", "url"))
         details["portal"] = portal_data
@@ -483,8 +476,7 @@ def portal_layer_view(request, name=None):
 
     except Exception as e:
         logger.error(f"Unexpected error for layer {name}: {e}", exc_info=True)
-        return HttpResponse(status=500, headers={"HX-Trigger-After-Settle": json.dumps(
-            {"showDangerAlert": "An unexpected error occurred while retrieving layer details."})})
+        return render_error(request, 500, "An unexpected error occurred while retrieving layer details.")
 
 
 @staff_member_required
@@ -599,8 +591,8 @@ def index_view(request, instance=None):
                 instance_item = Portal.objects.get(alias=instance)
                 logger.debug(f"Retrieved data for portal instance: {instance}")
             except Portal.DoesNotExist:
-                logger.warning(
-                    f"Portal instance '{instance}' not found, dashboard will show aggregate if instance_item is None.")
+                logger.warning(f"Portal instance '{instance}' not found.")
+                return render_error(request, 404, f"Portal '{instance}' not found.")
         else:
             logger.debug("Retrieved aggregated data across all portal instances")
 
@@ -776,7 +768,9 @@ def refresh_portal_view(request):
                     "full_refresh": full_refresh,
                     "error_message": "Please correct the errors below."
                 }
-                return render(request, "portals/portal_credentials.html", context, status=400)
+                response = render(request, "portals/portal_credentials.html", context, status=400)
+                response["X-Error-Page"] = "true"
+                return response
         else:
             # Need to show credential form
             logger.debug(f"Credentials required for {portal.alias}; rendering credential form.")
@@ -1096,8 +1090,9 @@ def update_portal_view(request, instance):
                     username = form.cleaned_data.get("username", "N/A")
                     url = form.cleaned_data.get("url", portal.url)
                     logger.warning(f"Auth failed for {instance} ({url}) as {username}.")
-                    response = render(request, "portals/portal_update.html", {"form": form, "instance": instance},
-                                      status=401)
+                    response = render(request, "partials/portal_update_form.html",
+                                      {"form": form, "instance": instance}, status=401)
+                    response["X-Error-Page"] = "true"
                     response["HX-Trigger-After-Settle"] = json.dumps(
                         {"showDangerAlert": f"Unable to connect to {url} as {username}."})
                     return response
@@ -1117,8 +1112,10 @@ def update_portal_view(request, instance):
             return response
         else:
             logger.warning(f"Form invalid. Errors: {form.errors}")
-            return render(request, "portals/portal_update.html", {"form": form, "instance": instance},
-                          status=400)
+            response = render(request, "partials/portal_update_form.html",
+                              {"form": form, "instance": instance}, status=400)
+            response["X-Error-Page"] = "true"
+            return response
 
     form = PortalCreateForm(instance=portal)
     return render(request, "portals/portal_update.html", {"form": form, "instance": instance})
@@ -1279,9 +1276,7 @@ def duplicates_view(request, instance):
         portal_instance_obj = Portal.objects.get(alias=instance)
     except Portal.DoesNotExist:
         logger.warning(f"Portal '{instance}' not found.")
-        return HttpResponse(status=404,
-                            headers={
-                                "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Portal not found."})})
+        return render_error(request, 404, "Portal not found.")
 
     similarity_threshold = 70
     logger.debug(f"Fetching duplicates for '{instance}' with threshold {similarity_threshold}%.")
@@ -1291,8 +1286,7 @@ def duplicates_view(request, instance):
         if "error" in duplicates_data:
             logger.warning(
                 f"Error from get_duplicates for '{instance}': {duplicates_data['error']}")
-            return HttpResponse(status=500, headers={
-                "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": duplicates_data['error']})})
+            return render_error(request, 500, duplicates_data['error'])
 
         context = {
             "duplicate_webmaps": duplicates_data.get("webmaps", []),
@@ -1305,8 +1299,7 @@ def duplicates_view(request, instance):
         return render(request, template_name, context)
     except Exception as e:
         logger.error(f"Error processing duplicates for '{instance}': {e}", exc_info=True)
-        return HttpResponse(status=500, headers={
-            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error processing duplicates."})})
+        return render_error(request, 500, "Error processing duplicates.")
 
 
 @login_required
@@ -1330,8 +1323,7 @@ def layerid_view(request, instance):
         portal = get_object_or_404(Portal, alias=instance)
     except Http404:
         logger.warning(f"Portal instance '{instance}' not found.")
-        return HttpResponse(status=404, headers={
-            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Portal '{instance}' not found."})})
+        return render_error(request, 404, f"Portal '{instance}' not found.")
 
     maps_found, apps_found, layer_url_searched = [], [], None
 
@@ -1398,9 +1390,7 @@ def metadata_view(request, instance):
         portal = get_object_or_404(Portal, alias=instance)
     except Http404:
         logger.warning(f"Portal '{instance}' not found.")
-        return HttpResponse(status=200, headers={
-            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Portal instance not found."})
-        })
+        return render_error(request, 404, "Portal instance not found.")
 
     # Determine if credentials are needed
     credentials_required = not portal.store_password
@@ -1990,9 +1980,7 @@ def tool_settings(request, instance):
         tool_settings_obj, _ = PortalToolSettings.objects.get_or_create(portal=portal_instance_obj)
     except Http404:
         logger.warning(f"Portal '{instance}' not found.")
-        return HttpResponse(status=404,
-                            headers={
-                                "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Portal not found."})})
+        return render_error(request, 404, "Portal not found.")
     except Exception as e:
         logger.error(f"Error getting/creating settings for '{instance}': {e}", exc_info=True)
         return HttpResponse(status=500, headers={
@@ -2057,7 +2045,9 @@ def tool_settings(request, instance):
                 'webhook_configured': webhook_configured,
                 'email_configured': email_configured
             }
-            return render(request, "partials/portal_tools_form.html", context, status=400)
+            response = render(request, "partials/portal_tools_form.html", context, status=400)
+            response["X-Error-Page"] = "true"
+            return response
     else:
         form = ToolsForm(instance=tool_settings_obj)
 
@@ -2685,3 +2675,64 @@ def replace_revert_item_view(request, instance, backup_id):
         "progress": {"state": "PENDING", "complete": False},
         "task_name": f"Revert '{backup.item_title or backup.item_id}'",
     })
+
+
+# Error handlers, wired up via handler400/403/404/500 in config.urls.
+# Individual views also route their own error paths through render_error.
+
+ERROR_PAGE_CONFIG = {
+    400: ("400.html", "Bad request"),
+    403: ("403.html", "Access denied"),
+    404: ("404.html", "Page not found"),
+    500: ("500.html", "Something went wrong"),
+}
+
+
+def render_error(request, status, message):
+    """
+    Render an error consistently for every kind of request.
+
+    HTMX navigations (target #mainbodycontent) get a Calcite notice partial
+    swapped into the page — the response carries an X-Error-Page header that
+    custom.js uses to opt the error response in to swapping, since HTMX
+    ignores 4xx/5xx bodies by default. Other HTMX requests (modals, polling,
+    actions) keep the HX-Trigger-After-Settle alert pattern. Direct requests
+    get the standard full error page.
+    """
+    template_name, title = ERROR_PAGE_CONFIG.get(status, ERROR_PAGE_CONFIG[500])
+    htmx = getattr(request, "htmx", None)
+    if htmx:
+        if htmx.target == "mainbodycontent":
+            response = render(request, "partials/error_panel.html",
+                              {"code": status, "title": title, "message": message},
+                              status=status)
+            response["X-Error-Page"] = "true"
+            return response
+        return HttpResponse(status=status, headers={
+            "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": message})})
+    return render(request, template_name, status=status)
+
+
+def error_400_view(request, exception=None):
+    return render_error(request, 400, "The server couldn't process this request.")
+
+
+def error_403_view(request, exception=None):
+    return render_error(request, 403, "You don't have permission to perform this action.")
+
+
+def error_404_view(request, exception=None):
+    return render_error(request, 404, "The requested page or resource was not found.")
+
+
+def error_500_view(request):
+    # Everything is wrapped: if rendering itself fails mid-500 (broken DB or
+    # context processors), fall back to a bare response rather than recursing.
+    try:
+        if getattr(request, "htmx", None):
+            return render_error(request, 500, "An unexpected server error occurred.")
+        template = loader.get_template("500.html")
+        return HttpResponseServerError(template.render())
+    except Exception:
+        return HttpResponseServerError(
+            "<h1>Server Error (500)</h1>", content_type="text/html")

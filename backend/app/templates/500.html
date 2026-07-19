@@ -1,0 +1,9 @@
+{# Rendered with an empty context (no context processors) — keep it free of #}
+{# context variables beyond what error_base already guards. #}
+{% extends "error_base.html" %}
+
+{% block title %}Server error{% endblock %}
+{% block code %}500{% endblock %}
+{% block kind %}danger{% endblock %}
+{% block heading %}Something went wrong{% endblock %}
+{% block message %}An unexpected error occurred and has been logged. Try refreshing, or come back later.{% endblock %}

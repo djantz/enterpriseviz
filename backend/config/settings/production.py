@@ -2,8 +2,7 @@ from .base import *  # noqa
 from .base import env
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-DEBUG_PROPAGATE_EXCEPTIONS = True
+DEBUG = False
 
 # GENERAL
 # ------------------------------------------------------------------------------
@@ -15,30 +14,12 @@ ALLOWED_HOSTS = [".azurewebsites.net", "localhost", "127.0.0.1"]
 CSRF_TRUSTED_ORIGINS = ["https://*.azurewebsites.net"]
 URL_PREFIX = None
 
-# DATABASES = {
-#     "default": {
-#             "ENGINE": "django.db.backends.postgresql",
-#             "NAME": env("AZURE_POSTGRESQL_DATABASE"),
-#             "HOST": env("AZURE_POSTGRESQL_HOST"),
-#             "USER": env("AZURE_POSTGRESQL_USERNAME"),
-#             "PASSWORD": env("AZURE_POSTGRESQL_PASSWORD"),
-#             "PORT": "5432",
-#             "OPTIONS": {"sslmode": "require"},
-#     }
-# }
-DATABASES = {
-    'default': {
-        'ENGINE': 'mssql',
-        "NAME": 'enterpriseviz-database',
-        "HOST": 'enterpriseviz.database.windows.net',
-        "USER": 'postgresuser@enterpriseviz',
-        "PASSWORD": '1x6s9n$A1P34',
-        'PORT': '',
-        'OPTIONS': {
-            'driver': 'ODBC Driver 18 for SQL Server',
-        }
-    },
-}
+# DATABASES
+# ------------------------------------------------------------------------------
+# https://docs.djangoproject.com/en/dev/ref/settings/#databases
+DATABASES = {"default": env.db("DATABASE_URL")}
+DATABASES["default"]["ATOMIC_REQUESTS"] = True
+DATABASES["default"]["CONN_MAX_AGE"] = env.int("CONN_MAX_AGE", default=60)
 
 # CACHES
 # ------------------------------------------------------------------------------
