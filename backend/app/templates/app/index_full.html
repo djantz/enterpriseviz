@@ -231,12 +231,15 @@
           </calcite-button>
 
           <div id="datatable-webmap_filter" class="table_filter">
+            {% include "partials/column_visibility.html" with table_name="webmap" config=table_columns.webmap %}
             <calcite-input prefix-text="Search" status="idle" scale="s" name="search" kind="inverse"
+                           id="webmap-table-search"
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='webmap' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='webmap' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
                            hx-target="#webmap-table"
                            hx-swap="innerHTML"
+                           hx-include="#webmap-visible-cols-input"
                            hx-indicator="#webmap-table-progress" autocomplete="off" label="Search web maps"></calcite-input>
           </div>
           <div id="webmap-table-progress" class="progress">
@@ -339,12 +342,15 @@
                           label="Download services as Excel">Excel
           </calcite-button>
           <div id="datatable-service_filter" class="table_filter">
+            {% include "partials/column_visibility.html" with table_name="service" config=table_columns.service %}
             <calcite-input prefix-text="Search" status="idle" scale="s" name="search"
+                           id="service-table-search"
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='service' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='service' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
                            hx-target="#service-table"
                            hx-swap="innerHTML"
+                           hx-include="#service-visible-cols-input"
                            hx-indicator="#service-table-progress" label="Search services"></calcite-input>
           </div>
           <div id="service-table-progress" class="progress">
@@ -411,12 +417,15 @@
           </calcite-button>
 
           <div id="datatable-layer_filter" class="table_filter">
+            {% include "partials/column_visibility.html" with table_name="layer" config=table_columns.layer %}
             <calcite-input prefix-text="Search" status="idle" scale="s" name="search"
+                           id="layer-table-search"
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='layer' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='layer' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
                            hx-target="#layer-table"
                            hx-swap="innerHTML"
+                           hx-include="#layer-visible-cols-input"
                            hx-indicator="#layer-table-progress" autocomplete="off" label="Search layers"></calcite-input>
           </div>
           <div id="layer-table-progress" class="progress">
@@ -522,12 +531,15 @@
           </calcite-button>
 
           <div id="datatable-app_filter" class="table_filter">
+            {% include "partials/column_visibility.html" with table_name="app" config=table_columns.app %}
             <calcite-input prefix-text="Search" status="idle" scale="s" name="search"
+                           id="app-table-search"
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='app' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='app' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
                            hx-target="#app-table"
                            hx-swap="innerHTML"
+                           hx-include="#app-visible-cols-input"
                            hx-indicator="#app-table-progress" autocomplete="off" label="Search apps"></calcite-input>
           </div>
           <div id="app-table-progress" class="progress">
@@ -609,12 +621,15 @@
           </calcite-button>
 
           <div id="datatable-users_filter" class="table_filter">
+            {% include "partials/column_visibility.html" with table_name="user" config=table_columns.user %}
             <calcite-input prefix-text="Search" status="idle" scale="s" name="search"
+                           id="user-table-search"
                            {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='user' %}"{% else %}
                            hx-get="{% url 'enterpriseviz:table' name='user' %}"{% endif %}
                            hx-trigger="keyup delay:500ms changed, search"
                            hx-target="#user-table"
                            hx-swap="innerHTML"
+                           hx-include="#user-visible-cols-input"
                            hx-indicator="#user-table-progress" autocomplete="off" label="Search users"></calcite-input>
           </div>
           <div id="user-table-progress" class="progress">

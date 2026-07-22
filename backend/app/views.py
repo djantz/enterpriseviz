@@ -32,7 +32,8 @@ from django.contrib.auth.forms import AuthenticationForm
 from django.core.exceptions import FieldError
 from django.core.mail import get_connection, EmailMessage
 from django.db import transaction, DatabaseError
-from django.db.models import Q
+from django.db.models import Count, F, IntegerField, OuterRef, Q, Subquery, Value
+from django.db.models.functions import Coalesce
 from django.http import Http404
 from django.http import HttpResponse, JsonResponse, HttpResponseForbidden, HttpResponseServerError
 from django.shortcuts import render, redirect, get_object_or_404
@@ -48,24 +49,119 @@ from django_tables2.export.views import ExportMixin
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
 from .forms import ScheduleForm, SiteSettingsForm, ToolsForm, WebhookSettingsForm, PortalCredentialsForm
 from .models import Portal, User, Webmap, Service, Layer, App, PortalCreateForm, UserProfile, LogEntry, SiteSettings, \
-    PortalToolSettings, ReplacementJob
+    PortalToolSettings, ReplacementJob, Map_Service, App_Map, App_Service, Layer_Service
 from .request_context import get_django_request_context
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
 from .tasks import *
 
 logger = logging.getLogger('enterpriseviz')
 
+def _related_count(through_model, owner_field, counted_field):
+    """COUNT(DISTINCT counted_field) of through-table rows referencing the outer row."""
+    return Coalesce(
+        Subquery(
+            through_model.objects.filter(**{owner_field: OuterRef("pk")})
+            .order_by()
+            .values(owner_field)
+            .annotate(c=Count(counted_field, distinct=True))
+            .values("c")[:1],
+            output_field=IntegerField(),
+        ),
+        Value(0),
+    )
+
+
+def _service_used_by_apps():
+    """Distinct apps consuming a service directly or via a webmap (matches service detail page)."""
+    apps = (
+        App.objects.filter(
+            Q(app_service__service_id=OuterRef("pk"))
+            | Q(app_map__webmap_id__map_service__service_id=OuterRef("pk"))
+        )
+        .order_by()
+        .annotate(_g=Value(1))
+        .values("_g")
+        .annotate(c=Count("id", distinct=True))
+        .values("c")[:1]
+    )
+    return Coalesce(Subquery(apps, output_field=IntegerField()), Value(0))
+
+
+def _annotate_webmap(qs):
+    return qs.annotate(
+        depends_on_count=_related_count(Map_Service, "webmap_id", "service_id"),
+        used_by_count=_related_count(App_Map, "webmap_id", "app_id"),
+    )
+
+
+def _annotate_service(qs):
+    return qs.annotate(
+        depends_on_count=_related_count(Layer_Service, "service_id", "layer_id"),
+        used_by_maps=_related_count(Map_Service, "service_id", "webmap_id"),
+        used_by_apps=_service_used_by_apps(),
+    ).annotate(used_by_count=F("used_by_maps") + F("used_by_apps"))
+
+
+def _annotate_app(qs):
+    return qs.annotate(
+        depends_on_maps=_related_count(App_Map, "app_id", "webmap_id"),
+        depends_on_services=_related_count(App_Service, "app_id", "service_id"),
+    ).annotate(depends_on_count=F("depends_on_maps") + F("depends_on_services"))
+
+
 # Configuration for the Table view
 TABLE_VIEW_MODEL_CONFIG = {
-    "webmap": {"model": Webmap, "table_class": WebmapTable, "filterset_class": WebmapFilter},
-    "service": {"model": Service, "table_class": ServiceTable, "filterset_class": ServiceFilter},
+    "webmap": {"model": Webmap, "table_class": WebmapTable, "filterset_class": WebmapFilter,
+               "annotate": _annotate_webmap},
+    "service": {"model": Service, "table_class": ServiceTable, "filterset_class": ServiceFilter,
+                "annotate": _annotate_service},
     "layer": {"model": Layer, "table_class": LayerTable, "filterset_class": LayerFilter},
-    "app": {"model": App, "table_class": AppTable, "filterset_class": AppFilter},
+    "app": {"model": App, "table_class": AppTable, "filterset_class": AppFilter,
+            "annotate": _annotate_app},
     "user": {"model": User, "table_class": UserTable, "filterset_class": UserFilter},
 }
 
 
-class Table(ExportMixin, SingleTableMixin, FilterView):
+class ColumnVisibilityViewMixin:
+    """
+    'visible_cols' GET-param handling for SingleTableMixin views.
+
+    Accepts repeated params (?visible_cols=a&visible_cols=b) and/or CSV
+    (?visible_cols=a,b). Absent param => table DEFAULT_VISIBLE_COLUMNS;
+    present-but-empty => hide all columns.
+    """
+    visible_cols_param = "visible_cols"
+
+    def _requested_visible_columns(self):
+        if self.visible_cols_param not in self.request.GET:
+            return None  # absent => defaults
+        raw = self.request.GET.getlist(self.visible_cols_param)
+        return [c for chunk in raw for c in chunk.split(",") if c]
+
+    def get_table_kwargs(self):
+        kwargs = super().get_table_kwargs()
+        table_class = self.get_table_class()
+        requested = self._requested_visible_columns()
+        visible = (list(table_class.default_visible_columns())
+                   if requested is None else requested)
+        kwargs["exclude"] = tuple(c for c in table_class.base_columns if c not in visible)
+        return kwargs
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        table_class = self.get_table_class()
+        params = self.request.GET.copy()
+        params.pop("page", None)
+        context["query_params_urlencode"] = params.urlencode()
+        context["all_columns"] = table_class.get_column_labels()
+        requested = self._requested_visible_columns()
+        context["current_visible_columns"] = (
+            list(table_class.default_visible_columns()) if requested is None else requested
+        )
+        return context
+
+
+class Table(ColumnVisibilityViewMixin, ExportMixin, SingleTableMixin, FilterView):
     """
     Dynamically renders tables, filters, and data based on a model type from URL.
 
@@ -100,7 +196,9 @@ class Table(ExportMixin, SingleTableMixin, FilterView):
             self.model = config["model"]
             self.table_class = config["table_class"]
             self.filterset_class = config["filterset_class"]
+            self.annotate_fn = config.get("annotate")
         else:
+            self.annotate_fn = None
             if not hasattr(self, 'model') or self.model is None:
                 raise Http404(f"Unsupported table type: {model_type}")
 
@@ -114,6 +212,16 @@ class Table(ExportMixin, SingleTableMixin, FilterView):
         self._configure_for_model_type()
         return self.filterset_class
 
+    def get_table_class(self):
+        """
+        Returns the table class after configuring for model type.
+
+        :return: The table class for the current model type.
+        :rtype: type[django_tables2.tables.Table]
+        """
+        self._configure_for_model_type()
+        return super().get_table_class()
+
     def get_queryset(self):
         """
         Returns the queryset for the current model type, optionally filtered by instance.
@@ -123,6 +231,8 @@ class Table(ExportMixin, SingleTableMixin, FilterView):
         """
         self._configure_for_model_type()
         qs = super().get_queryset()
+        if getattr(self, "annotate_fn", None):
+            qs = self.annotate_fn(qs)
 
         instance_alias = self.kwargs.get("instance")
         if instance_alias:
@@ -149,7 +259,7 @@ class Table(ExportMixin, SingleTableMixin, FilterView):
 
         self._configure_for_model_type()
 
-        table = self.table_class(context["filter"].qs)
+        table = self.table_class(context["filter"].qs, **self.get_table_kwargs())
         RequestConfig(self.request, paginate={"per_page": self.paginate_by}).configure(table)
 
         context.update({
@@ -162,7 +272,7 @@ class Table(ExportMixin, SingleTableMixin, FilterView):
         return context
 
 
-class LogTable(ExportMixin, SingleTableMixin, FilterView):
+class LogTable(ColumnVisibilityViewMixin, ExportMixin, SingleTableMixin, FilterView):
     """
     Displays a paginated and filterable table of LogEntry records.
 
@@ -194,84 +304,21 @@ class LogTable(ExportMixin, SingleTableMixin, FilterView):
         """
         return super().get_queryset().order_by("-timestamp")
 
-    def get_table_kwargs(self):
-        """
-        Dynamically sets 'exclude' kwarg for table based on 'visible_cols' GET params.
-
-        :return: Keyword arguments for table instantiation.
-        :rtype: dict
-        """
-        kwargs = super().get_table_kwargs()
-        all_column_field_names = [name for name, _ in self.table_class.base_columns.items()]
-        default_visible = list(self.table_class.DEFAULT_VISIBLE_COLUMNS)
-
-        if 'visible_cols' in self.request.GET:
-            visible_columns_param = self.request.GET.getlist('visible_cols')
-            # Handle `visible_cols=` (empty string from deselected all) vs `visible_cols` not present.
-            if len(visible_columns_param) == 1 and visible_columns_param[0] == '':
-                actual_visible_columns = []
-            else:
-                actual_visible_columns = [col for col in visible_columns_param if col]
-
-            # If 'visible_cols' was in GET and actual_visible_columns is empty, it means "show none"
-            if not actual_visible_columns and 'visible_cols' in self.request.GET:
-                kwargs['exclude'] = tuple(all_column_field_names)
-            else:  # Some columns specified or 'visible_cols' was not in GET (covered by else below)
-                excluded_columns = [
-                    col_name for col_name in all_column_field_names if col_name not in actual_visible_columns
-                ]
-                # If actual_visible_columns is empty because 'visible_cols' was NOT in GET,
-                # this branch shouldn't be hit due to outer 'if'.
-                # This path is for when actual_visible_columns is populated.
-                if actual_visible_columns:  # ensure it's not empty due to no param
-                    kwargs['exclude'] = tuple(excluded_columns)
-                else:  # 'visible_cols' in GET but empty list after filtering (e.g. ?visible_cols=&visible_cols=)
-                    # This case should be rare, treat as show none.
-                    kwargs['exclude'] = tuple(all_column_field_names)
-
-        else:
-            # 'visible_cols' not in request.GET, apply defaults
-            excluded_columns = [
-                col_name for col_name in all_column_field_names if col_name not in default_visible
-            ]
-            kwargs['exclude'] = tuple(excluded_columns)
-        return kwargs
-
     def get_context_data(self, **kwargs):
         """
-        Adds log-specific context data, including column visibility and pagination.
+        Adds log-specific pagination context; column visibility comes from the mixin.
 
         :param kwargs: Additional keyword arguments for context.
         :return: The context dictionary for template rendering.
         :rtype: dict
         """
         context = super().get_context_data(**kwargs)
-        query_params = self.request.GET.copy()
-        if 'page' in query_params:
-            del query_params['page']
-        context['query_params_urlencode'] = query_params.urlencode()
 
         page_obj = context.get('page_obj')
         if page_obj:
             context['paginator_range'] = page_obj.paginator.get_elided_page_range(
                 page_obj.number, on_each_side=1, on_ends=1
             )
-
-        all_columns = [(name, column.header) for name, column in self.table_class.base_columns.items()]
-        context['all_columns'] = all_columns
-
-        # Determine current_visible_columns based on what will be excluded/included
-        # This should reflect what the table is actually rendering.
-        # It's simpler to derive this from the request or defaults, similar to get_table_kwargs.
-        default_visible_list = list(self.table_class.DEFAULT_VISIBLE_COLUMNS)
-        if 'visible_cols' in self.request.GET:
-            visible_columns_param = self.request.GET.getlist('visible_cols')
-            if len(visible_columns_param) == 1 and visible_columns_param[0] == '':
-                context['current_visible_columns'] = []
-            else:
-                context['current_visible_columns'] = [col for col in visible_columns_param if col]
-        else:
-            context['current_visible_columns'] = default_visible_list
 
         return context
 
@@ -293,9 +340,9 @@ def logs_view(request):
     portals = Portal.objects.values_list("alias", "portal_type", "url")
 
     # Use LogEntryTable's definition for all columns
-    all_table_columns = [(name, column.header) for name, column in LogEntryTable.base_columns.items()]
+    all_table_columns = LogEntryTable.get_column_labels()
 
-    default_cols = list(LogEntryTable.DEFAULT_VISIBLE_COLUMNS)
+    default_cols = list(LogEntryTable.default_visible_columns())
 
     if 'visible_cols' in request.GET:
         visible_columns_param = request.GET.getlist('visible_cols')
@@ -596,6 +643,16 @@ def index_view(request, instance=None):
         else:
             logger.debug("Retrieved aggregated data across all portal instances")
 
+        table_columns = {}
+        for name, cfg in TABLE_VIEW_MODEL_CONFIG.items():
+            tc = cfg["table_class"]
+            defaults = list(tc.default_visible_columns())
+            table_columns[name] = {
+                "columns": [{"name": n, "label": l, "selected": n in defaults}
+                            for n, l in tc.get_column_labels()],
+                "default_csv": ",".join(defaults),
+            }
+
         context = {
             "webmaps": webmaps_count,
             "services": services_count,
@@ -603,7 +660,8 @@ def index_view(request, instance=None):
             "apps": apps_count,
             "users": users_count,
             "portal": portals,
-            "instance": instance_item
+            "instance": instance_item,
+            "table_columns": table_columns
         }
         return render(request, template, context)
     except Exception as e:

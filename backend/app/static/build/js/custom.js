@@ -284,6 +284,48 @@ function init_Charts() {
     });
 }
 
+// Generic per-table column visibility (index page panels). Each dropdown is
+// declared with data-column-visibility="<tableName>" and pairs with a hidden
+// CSV input (#<tableName>-visible-cols-input); htmx wiring lives on the
+// dropdown's hx-* attributes. Selections persist in localStorage.
+const COL_VIS_STORE_PREFIX = 'viz.visibleCols.';
+
+function initColumnVisibilityDropdowns(root) {
+    const scope = (root && root.querySelectorAll) ? root : document;
+    scope.querySelectorAll('calcite-dropdown[data-column-visibility]').forEach(async (dropdown) => {
+        if (dropdown.dataset.cvInit) return; // idempotent across htmx swaps
+        dropdown.dataset.cvInit = "true";
+        const tableName = dropdown.dataset.columnVisibility;
+        const hiddenInput = document.getElementById(`${tableName}-visible-cols-input`);
+        if (!hiddenInput) return;
+        await Promise.all([
+            customElements.whenDefined('calcite-dropdown'),
+            customElements.whenDefined('calcite-dropdown-item'),
+        ]);
+        if (dropdown.componentOnReady) await dropdown.componentOnReady();
+
+        const stored = localStorage.getItem(COL_VIS_STORE_PREFIX + tableName);
+        if (stored !== null) {
+            // Re-apply the saved selection to the dropdown UI and hidden input.
+            const visible = stored ? stored.split(',') : [];
+            dropdown.querySelectorAll('calcite-dropdown-item').forEach((item) => {
+                item.selected = visible.includes(item.getAttribute('value'));
+            });
+            hiddenInput.value = stored;
+        }
+        dropdown.addEventListener('calciteDropdownSelect', () => {
+            const selected = Array.from(dropdown.selectedItems || [])
+                .map((item) => item.getAttribute('value'))
+                .filter(Boolean);
+            const csv = selected.join(',');
+            hiddenInput.value = csv;
+            localStorage.setItem(COL_VIS_STORE_PREFIX + tableName, csv);
+            // Fired after the hidden input is synced so hx-include reads fresh state.
+            htmx.trigger(dropdown, 'columns:changed');
+        });
+    });
+}
+
 // Custom color function to ensure all colors are used before repeating
 function getInitialLogVisibleColumns() {
     let initialVisibleColumns = [];
@@ -838,6 +880,8 @@ htmx.on("htmx:load", async (e) => {
             console.warn("Log table URL not found for re-init after HTMX swap.");
         }
     }
+
+    initColumnVisibilityDropdowns(target);
 
     // Specific component updates
     if (parent === 'service-table') {
@@ -1572,6 +1616,20 @@ document.addEventListener('click', function (e) {
     if (!trigger) return;
     const target = document.querySelector(trigger.getAttribute('data-clear-target'));
     if (target) target.innerHTML = '';
+});
+
+document.addEventListener('htmx:configRequest', function (evt) {
+    // Apply the localStorage column selection to index-table requests that
+    // don't already carry one (notably the lazy hx-trigger="load" fetch,
+    // which fires before the async dropdown init finishes).
+    const path = (evt.detail.path || '').split('?')[0];
+    const m = path.match(/\/table\/(?:[^/]+\/)?(webmap|service|layer|app|user)\/$/);
+    if (!m) return;
+    if (evt.detail.path.includes('visible_cols=')) return; // sort/page links carry it in the URL
+    const params = evt.detail.parameters;
+    if (params.has && params.has('visible_cols')) return; // hx-include already supplied it
+    const stored = localStorage.getItem(COL_VIS_STORE_PREFIX + m[1]);
+    if (stored !== null) params.set('visible_cols', stored);
 });
 
 document.addEventListener('htmx:load', function (event) {
