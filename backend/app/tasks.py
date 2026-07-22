@@ -218,6 +218,8 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
         instance_item.webmap_updated = timezone.now()
         instance_item.save()
 
+        utils.update_layer_dependency_counts()
+
         if not result.error_messages:
             result.set_success()
         logger.info(f"Web maps update for portal '{instance_alias}' completed.")
@@ -1469,6 +1471,8 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
             instance_item.service_updated = update_time
             instance_item.save()
 
+            utils.update_layer_dependency_counts()
+
             result.set_success()
             logger.info(f"Services update for portal '{instance_alias}' completed successfully")
             logger.debug(f"Final result: {result.to_json()}")
@@ -1996,6 +2000,8 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
 
         instance_item.webapp_updated = timezone.now()
         instance_item.save()
+
+        utils.update_layer_dependency_counts()
 
         result.set_success()
         logger.info(f"Web applications update for portal '{instance_alias}' completed successfully")
@@ -3691,6 +3697,8 @@ def process_webmap(self, instance_alias, item_id, operation):
         instance_item.webmap_updated = update_time
         instance_item.save()
 
+        utils.update_layer_dependency_counts()
+
         logger.info(f"Web map {item_id} processing completed successfully")
         return
 
@@ -3808,6 +3816,8 @@ def process_service(self, instance_alias, item, operation):
                 logger.debug(f"No orphaned Layer_Service relationships found for service: {service_name}")
         instance_item.service_updated = update_time
         instance_item.save()
+
+        utils.update_layer_dependency_counts()
         return
     except Exception as e:
         logger.exception(f"Unable to update service {item} for {instance_alias}: {e}")
@@ -3847,6 +3857,8 @@ def process_webapp(self, instance_alias, item_id, operation):
 
         instance_item.webapp_updated = update_time
         instance_item.save()
+
+        utils.update_layer_dependency_counts()
 
         logger.info(f"Web application {item_id} processing completed successfully")
         return

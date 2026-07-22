@@ -42,8 +42,6 @@ class WebmapTable(ColumnVisibilityTableMixin, tables.Table):
           label="View details for {{ record.webmap_title }}">
           Details
         </calcite-button>""",
-        # Action-only column, excluded from CSV/Excel export. (Rendering it during
-        # export runs {% url %}/reverse(), which 500s on any value containing "/".)
         orderable=False, exclude_from_export=True, attrs={"td": {"class": "table-cell-details"}})
     title_link = tables.Column(verbose_name="Title", orderable=True, accessor="webmap_title")
     depends_on_count = tables.Column(verbose_name="Depends On", orderable=True, empty_values=())
@@ -82,7 +80,7 @@ class ServiceTable(ColumnVisibilityTableMixin, tables.Table):
         label="View details for {{ record.service_name }}">
         Details
         </calcite-button>""",
-        orderable=False, attrs={"td": {"class": "table-cell-details"}})
+        orderable=False, exclude_from_export=True, attrs={"td": {"class": "table-cell-details"}})
     URL = tables.TemplateColumn(
         '{% for url in record.service_url_as_list %} <calcite-link href="{{ url }}" target="_blank">{{ url }}</calcite-link>{% endfor %}',
         orderable=False)
@@ -175,7 +173,7 @@ class LayerTable(ColumnVisibilityTableMixin, tables.Table):
         label="View details for {{ record.layer_name }}">
         Details
         </calcite-button>""",
-        orderable=False, attrs={"td": {"class": "table-cell-details"}})
+        orderable=False, exclude_from_export=True, attrs={"td": {"class": "table-cell-details"}})
     used_by_count = tables.Column(verbose_name="Used By", orderable=True,
                                   accessor="layer_used_by_count", empty_values=())
 
@@ -187,6 +185,24 @@ class LayerTable(ColumnVisibilityTableMixin, tables.Table):
         attrs = {
             "class": "table table-striped"
         }
+
+    def render_used_by_count(self, value, record):
+        """Total distinct services + maps + apps using this feature class.
+
+        Reads the denormalized counts stored on the row by
+        utils.update_layer_dependency_counts (grouped by layer_name, since the
+        detail view treats one name across locations as a single item). The
+        title breaks the total down; the stored value keeps the column sortable.
+        """
+        return format_html(
+            '<span title="{} services, {} maps, {} apps">{}</span>',
+            record.layer_used_by_services, record.layer_used_by_maps,
+            record.layer_used_by_apps, value,
+        )
+
+    def value_used_by_count(self, value):
+        """Plain integer for CSV/Excel export (no tooltip markup)."""
+        return value
 
 
 
