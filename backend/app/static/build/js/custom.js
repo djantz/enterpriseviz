@@ -855,6 +855,7 @@ htmx.on("htmx:load", async (e) => {
         initDependencyGraph('graph-container').then(function(graph) {
             if (graph) {
                 graph.connectControls();
+                graph.connectFilter();
             }
         }).catch(function(err) {
             console.error('Error initializing graph:', err);

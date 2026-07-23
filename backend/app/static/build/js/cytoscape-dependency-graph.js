@@ -7,7 +7,6 @@
  * @returns {Promise<Object|null>} Resolves to the graph control API, or null
  *     when the container or graph data is unavailable
  */
-// TODO: Add filter by portal
 // TODO: Add toggle to hide layers in service view
 function initDependencyGraph(containerId, data) {
     // Ensure container exists
@@ -196,7 +195,8 @@ function initDependencyGraph(containerId, data) {
                 type: node.type,
                 typeLabel: config.label,
                 icon: config.icon,
-                iconUrl: iconSvgs[config.icon]
+                iconUrl: iconSvgs[config.icon],
+                instance: node.instance !== undefined ? node.instance : null
             }
         });
     });
@@ -333,6 +333,9 @@ function initDependencyGraph(containerId, data) {
     // Selection handling
     var selectedNode = null;
 
+    // Elements removed by the portal instance filter, kept for restoring
+    var removedEles = cy.collection();
+
     cy.on('tap', 'node', function (evt) {
         var node = evt.target;
 
@@ -404,6 +407,31 @@ function initDependencyGraph(containerId, data) {
     function clearSelection() {
         selectedNode = null;
         cy.elements().removeClass('highlighted dimmed edge-highlighted');
+    }
+
+    function applyInstanceFilter(selected) {
+        // selected: array of instance names ([] = show all). Restore first so
+        // successive filter changes compose from the full graph, then clear
+        // the highlight classes across the complete element set.
+        removedEles.restore();
+        removedEles = cy.collection();
+        clearSelection();
+
+        if (selected.length > 0) {
+            // Keep nodes from the selected instances plus every upstream
+            // dependency in their chain, whatever its instance (a portal B
+            // map may use a service from portal A). Nodes without an
+            // instance (e.g. merged layer nodes) always stay.
+            var selectedNodes = cy.nodes().filter(function (n) {
+                var inst = n.data('instance');
+                return inst === null || inst === undefined || selected.indexOf(inst) !== -1;
+            });
+            var keep = selectedNodes.union(selectedNodes.predecessors('node'));
+            removedEles = cy.remove(cy.nodes().not(keep));
+        }
+
+        cy.layout({name: 'dagre', rankDir: 'LR', nodeSep: 10, rankSep: 100, padding: 10}).run();
+        cy.fit(null, 10);
     }
 
     setTimeout(() => {
@@ -500,6 +528,42 @@ function initDependencyGraph(containerId, data) {
             });
             if (fullscreenBtn) fullscreenBtn.addEventListener('click', function () {
                 self.toggleFullscreen();
+            });
+        },
+
+        connectFilter: function () {
+            var content = container.closest('.x_content');
+            var actionBar = content ? content.querySelector('.graph-navigation-bar calcite-action-bar') : null;
+            if (!actionBar) return;
+
+            // Remove any dropdown from a previous HTMX swap
+            var oldSelect = document.getElementById('graph-instance-filter');
+            if (oldSelect) oldSelect.remove();
+
+            var instances = new Set();
+            data.nodes.forEach(function (node) {
+                if (node.instance !== null && node.instance !== undefined) {
+                    instances.add(node.instance);
+                }
+            });
+
+            // Filtering is a no-op unless nodes span multiple instances
+            if (instances.size < 2) return;
+
+            var $select = $('<calcite-combobox id="graph-instance-filter" slot="actions-start" placeholder="Instance" scale="s" selection-mode="multiple" placeholder-icon="filter" label="Filter by Portal instance"></calcite-combobox>');
+            Array.from(instances).sort().forEach(function (instance) {
+                $select.append($('<calcite-combobox-item></calcite-combobox-item>').attr({
+                    value: instance,
+                    heading: instance,
+                    label: instance
+                }));
+            });
+
+            $select.appendTo(actionBar);
+            $select.on('calciteComboboxChange', function () {
+                var v = this.value;
+                var selected = Array.isArray(v) ? v : (v ? [v] : []);
+                applyInstanceFilter(selected);
             });
         },
 
