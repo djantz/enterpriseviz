@@ -98,8 +98,8 @@ class ServiceTable(ColumnVisibilityTableMixin, tables.Table):
     class Meta:
         model = Service
         fields = ("service_name", "service_mxd_server", "service_mxd",
-                  "service_owner",
-                  "service_access", "service_usage_trend")
+                  "service_owner", "service_created", "service_modified",
+                  "service_access", "service_view", "service_usage_trend")
         order_by = "service_name"
         sequence = ("details", "service_name", "grouped_layers", "URL")
         attrs = {
@@ -208,7 +208,7 @@ class LayerTable(ColumnVisibilityTableMixin, tables.Table):
 
 class AppTable(ColumnVisibilityTableMixin, tables.Table):
     DEFAULT_VISIBLE_COLUMNS = ("title_link", "app_type", "app_owner", "app_created",
-                               "app_modified", "app_access", "depends_on_count")
+                               "app_modified", "app_access", "app_views", "depends_on_count")
 
     title_link = tables.Column(verbose_name="Title", orderable=True, accessor="app_title")
     depends_on_count = tables.Column(verbose_name="Depends On", orderable=True, empty_values=())
@@ -217,7 +217,7 @@ class AppTable(ColumnVisibilityTableMixin, tables.Table):
         model = App
         fields = (
             "app_owner", "app_type", "app_created", "app_modified",
-            "app_access")
+            "app_access", "app_views")
         order_by = "title_link"
         sequence = ("title_link", "app_type")
         attrs = {
@@ -236,7 +236,8 @@ class UserTable(ColumnVisibilityTableMixin, tables.Table):
     class Meta:
         model = User
         fields = ("user_username", "user_first_name", "user_last_name", "user_email", "user_created",
-                  "user_last_login", "user_role", "user_pro_license", "user_pro_last", "user_items")
+                  "user_last_login", "user_role", "user_pro_license", "user_pro_last", "user_items",
+                  "user_provider", "user_disabled")
         order_by = 'user_username'
         attrs = {
             "class": "table table-striped"
