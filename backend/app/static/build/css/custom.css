@@ -756,11 +756,6 @@ canvas#line-chart {
   padding-right: 16px;
 }
 
-.graph-filter {
-  float: right;
-  padding-right: 16px;
-}
-
 ul, pre {
   /*color: var(--calcite-color-text-1);*/
   padding-left: 1rem;
