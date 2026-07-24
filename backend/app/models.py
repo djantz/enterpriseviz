@@ -203,6 +203,12 @@ class Layer(models.Model):
     layer_name = models.TextField(verbose_name="Name", blank=False, null=True)
     updated_date = models.DateTimeField(blank=True, null=True)
     layer_last_viewed = models.DateTimeField(verbose_name="Last Viewed", blank=True, null=True)
+    # Dependency counts, grouped by layer_name.
+    # Stored because per-row aggregation over the name joins is too slow to sort on.
+    layer_used_by_services = models.IntegerField(default=0, editable=False)
+    layer_used_by_maps = models.IntegerField(default=0, editable=False)
+    layer_used_by_apps = models.IntegerField(default=0, editable=False)
+    layer_used_by_count = models.IntegerField(verbose_name="Used By", default=0, editable=False, db_index=True)
     services = models.ManyToManyField(Service, through="Layer_Service")
 
     def __str__(self):

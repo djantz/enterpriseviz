@@ -1,0 +1,29 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+{% if config %}
+  {# Calcite 5.1: the dropdown `trigger` slot is deprecated (removal in v7); migrate this button to the `referenceElement` property when convenient. #}
+  <calcite-dropdown id="{{ table_name }}-column-dropdown"
+                    data-column-visibility="{{ table_name }}"
+                    close-on-select-disabled width="s"
+                    {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name=table_name %}"
+                    {% else %}hx-get="{% url 'enterpriseviz:table' name=table_name %}"{% endif %}
+                    hx-trigger="columns:changed delay:200ms"
+                    hx-target="#{{ table_name }}-table"
+                    hx-swap="innerHTML"
+                    hx-include="#{{ table_name }}-visible-cols-input, #{{ table_name }}-table-search"
+                    hx-indicator="#{{ table_name }}-table-progress">
+    <calcite-button slot="trigger" appearance="outline" icon-end="chevron-down" scale="s"
+                    kind="inverse" label="Column visibility for {{ table_name }} table">
+      Columns
+    </calcite-button>
+    <calcite-dropdown-group selection-mode="multiple" group-title="Visible Columns">
+      {% for col in config.columns %}
+        <calcite-dropdown-item value="{{ col.name }}" {% if col.selected %}selected{% endif %}
+                               label="{{ col.label }}">
+          {{ col.label }}
+        </calcite-dropdown-item>
+      {% endfor %}
+    </calcite-dropdown-group>
+  </calcite-dropdown>
+  <input type="hidden" name="visible_cols" value="{{ config.default_csv }}"
+         id="{{ table_name }}-visible-cols-input" aria-hidden="true">
+{% endif %}
