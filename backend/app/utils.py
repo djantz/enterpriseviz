@@ -2638,8 +2638,8 @@ def get_portal_instance(portal_url):
     return portal_qs.first()
 
 
-def update_layer_dependency_counts():
-    """Recompute and store denormalized "used by" counts on all Layer rows.
+def update_layer_dependency_counts(layer_names=None):
+    """Recompute and store denormalized "used by" counts on Layer rows.
 
     Counts are grouped by ``layer_name``: the same feature class may exist in
     multiple server/database/version locations and is treated as one item,
@@ -2651,37 +2651,65 @@ def update_layer_dependency_counts():
       * maps      — distinct webmaps via ``Map_Service`` on those services
       * apps      — distinct apps using those services directly (``App_Service``) or via a webmap (``App_Map``)
 
-    Runs at the end of every content scan (full/incremental) and webhook so the
-    stored counts stay current.
-
+    :param layer_names: Optional iterable of ``layer_name`` values to restrict
+        the recomputation to. When ``None`` (the default), every Layer row is
+        recomputed — used by full/incremental content scans that touch the whole
+        portal. When provided, all relationship aggregations, Layer loading and
+        the bulk update are scoped to those names, so webhook handlers that touch
+        a single item can pass just the names it affects and avoid a portal-wide
+        scan. Names in the set that no longer have any relationships are still
+        updated (to zero), clearing stale counts. An empty set is a no-op.
+    :type layer_names: collections.abc.Iterable[str] | None
     :return: Number of Layer rows updated.
     :rtype: int
     """
     try:
+        names = None
+        if layer_names is not None:
+            names = {n for n in layer_names if n is not None}
+            if not names:
+                logger.debug("update_layer_dependency_counts: empty scope, nothing to recompute.")
+                return 0
+
+        layer_service_qs = Layer_Service.objects.all()
+        map_service_qs = Map_Service.objects.all()
+        app_service_qs = App_Service.objects.all()
+        app_map_qs = App_Map.objects.all()
+        if names is not None:
+            layer_service_qs = layer_service_qs.filter(layer_id__layer_name__in=names)
+            map_service_qs = map_service_qs.filter(service_id__layer__layer_name__in=names)
+            app_service_qs = app_service_qs.filter(service_id__layer__layer_name__in=names)
+            app_map_qs = app_map_qs.filter(
+                webmap_id__map_service__service_id__layer__layer_name__in=names
+            )
+
         services = {
             r["name"]: r["c"]
-            for r in Layer_Service.objects.values(name=F("layer_id__layer_name"))
+            for r in layer_service_qs.values(name=F("layer_id__layer_name"))
             .annotate(c=Count("service_id", distinct=True))
         }
         maps = {
             r["name"]: r["c"]
-            for r in Map_Service.objects.values(name=F("service_id__layer__layer_name"))
+            for r in map_service_qs.values(name=F("service_id__layer__layer_name"))
             .annotate(c=Count("webmap_id", distinct=True))
         }
         direct = set(
-            App_Service.objects.values_list("service_id__layer__layer_name", "app_id").distinct()
+            app_service_qs.values_list("service_id__layer__layer_name", "app_id").distinct()
         )
         via_maps = set(
-            App_Map.objects.values_list(
+            app_map_qs.values_list(
                 "webmap_id__map_service__service_id__layer__layer_name", "app_id"
             ).distinct()
         )
         apps = Counter(name for name, _ in (direct | via_maps) if name is not None)
 
-        layers = list(Layer.objects.only(
+        layer_qs = Layer.objects.only(
             "id", "layer_name", "layer_used_by_services", "layer_used_by_maps",
             "layer_used_by_apps", "layer_used_by_count",
-        ))
+        )
+        if names is not None:
+            layer_qs = layer_qs.filter(layer_name__in=names)
+        layers = list(layer_qs)
         changed = []
         for layer in layers:
             svc = services.get(layer.layer_name, 0)
@@ -2703,8 +2731,10 @@ def update_layer_dependency_counts():
                  "layer_used_by_apps", "layer_used_by_count"],
                 batch_size=1000,
             )
+        scope_desc = "all" if names is None else f"{len(names)} scoped"
         logger.info(
-            f"Recomputed layer dependency counts: {len(changed)} of {len(layers)} rows updated.")
+            f"Recomputed layer dependency counts ({scope_desc} names): "
+            f"{len(changed)} of {len(layers)} rows updated.")
         return len(changed)
     except Exception as e:
         logger.error(f"Failed to recompute layer dependency counts: {e}", exc_info=True)

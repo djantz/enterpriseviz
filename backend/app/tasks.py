@@ -3691,13 +3691,24 @@ def process_webmap(self, instance_alias, item_id, operation):
 
         service_count = len(webmap_data["webmap_services"])
         logger.debug(f"Linking {service_count} services to web map: {item_id}")
+        # Capture the layer names this web map touches before and after relinking:
+        # link_services_to_webmap deletes stale Map_Service rows, so the "before"
+        # snapshot preserves names whose map count drops to zero.
+        affected_layers = set(
+            Map_Service.objects.filter(webmap_id=obj)
+            .values_list("service_id__layer__layer_name", flat=True)
+        )
         link_services_to_webmap(instance_item, obj, webmap_data["webmap_services"])
+        affected_layers.update(
+            Map_Service.objects.filter(webmap_id=obj)
+            .values_list("service_id__layer__layer_name", flat=True)
+        )
         logger.debug(f"Successfully linked {service_count} services to web map: {item_id}")
 
         instance_item.webmap_updated = update_time
         instance_item.save()
 
-        utils.update_layer_dependency_counts()
+        utils.update_layer_dependency_counts(affected_layers)
 
         logger.info(f"Web map {item_id} processing completed successfully")
         return
@@ -3788,11 +3799,19 @@ def process_service(self, instance_alias, item, operation):
         base_url = utils.resolve_server_public_url(server_admin, server_map)
 
         service_result = process_single_service(target, instance_item, service_admin, base_url, folder_name, update_time, regex_patterns, result)
+        affected_layers = set()
         if service_result is not None:
             service_list.append(service_result)
             s_obj = Service.objects.get(portal_instance=instance_item,
                                         service_name__icontains=service_name,
                                         service_url__overlap=[service.url])
+
+            # Capture every layer currently linked to this service, including
+            # orphaned links removed below, so all affected counts are recomputed.
+            affected_layers.update(
+                Layer_Service.objects.filter(service_id=s_obj)
+                .values_list("layer_id__layer_name", flat=True)
+            )
 
             if django_settings.USE_SERVICE_USAGE_REPORT:
                 logger.debug(f"Processing usage reports for {len(service_list)} services")
@@ -3817,7 +3836,7 @@ def process_service(self, instance_alias, item, operation):
         instance_item.service_updated = update_time
         instance_item.save()
 
-        utils.update_layer_dependency_counts()
+        utils.update_layer_dependency_counts(affected_layers)
         return
     except Exception as e:
         logger.exception(f"Unable to update service {item} for {instance_alias}: {e}")
@@ -3855,10 +3874,23 @@ def process_webapp(self, instance_alias, item_id, operation):
         logger.debug(f"Processing web application details for: {item_id}")
         process_single_app(item, target, instance_item, update_time)
 
+        # Recompute counts only for the layers this app depends on, directly via
+        # its services or via its web maps, instead of scanning every layer.
+        # process_single_app only adds/updates the app's relationships (it never
+        # removes them), so the post-processing snapshot covers all affected names.
+        affected_layers = set(
+            App_Service.objects.filter(portal_instance=instance_item, app_id__app_id=item_id)
+            .values_list("service_id__layer__layer_name", flat=True)
+        )
+        affected_layers.update(
+            App_Map.objects.filter(portal_instance=instance_item, app_id__app_id=item_id)
+            .values_list("webmap_id__map_service__service_id__layer__layer_name", flat=True)
+        )
+
         instance_item.webapp_updated = update_time
         instance_item.save()
 
-        utils.update_layer_dependency_counts()
+        utils.update_layer_dependency_counts(affected_layers)
 
         logger.info(f"Web application {item_id} processing completed successfully")
         return

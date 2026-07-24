@@ -648,8 +648,8 @@ def index_view(request, instance=None):
             tc = cfg["table_class"]
             defaults = list(tc.default_visible_columns())
             table_columns[name] = {
-                "columns": [{"name": n, "label": l, "selected": n in defaults}
-                            for n, l in tc.get_column_labels()],
+                "columns": [{"name": n, "label": label, "selected": n in defaults}
+                            for n, label in tc.get_column_labels()],
                 "default_csv": ",".join(defaults),
             }
 
