@@ -2161,6 +2161,7 @@ def process_single_app(item, target, instance_item, update_time, result=None):
             result.add_update()
 
         logger.debug(f"Retrieving detailed data for application: {app_id}")
+        data_retrieved = True
         try:
             data = item.get_data()
             logger.debug(f"Successfully retrieved detailed data for application: {app_id}")
@@ -2168,6 +2169,7 @@ def process_single_app(item, target, instance_item, update_time, result=None):
             logger.warning(f"Error retrieving detailed data for application {app_id}: {e}")
             result.add_error(f"Error retrieving detailed data for application {app_id}")
             data = {}
+            data_retrieved = False
 
         logger.debug(f"Application type: {item.type}")
 
@@ -3171,6 +3173,23 @@ def process_single_app(item, target, instance_item, update_time, result=None):
 
     logger.info(f"Successfully processed application '{app_id}' - '{app_title}'")
 
+    # Reconcile relationships: remove App_Service/App_Map rows not refreshed this
+    # run (dependencies the app no longer references). Every relationship written
+    # above stamps updated_date=update_time, so anything older is stale. Skipped
+    # when the app's data could not be retrieved, so a transient fetch failure
+    # never wipes still-valid relationships.
+    if data_retrieved:
+        removed_services = App_Service.objects.filter(
+            portal_instance=instance_item, app_id=app_obj, updated_date__lt=update_time
+        ).delete()[0]
+        removed_maps = App_Map.objects.filter(
+            portal_instance=instance_item, app_id=app_obj, updated_date__lt=update_time
+        ).delete()[0]
+        if removed_services or removed_maps:
+            logger.info(
+                f"Removed stale relationships for application '{app_id}': "
+                f"{removed_services} service(s), {removed_maps} map(s)")
+
 
 @shared_task(bind=True, name="Update users", time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
@@ -3872,13 +3891,22 @@ def process_webapp(self, instance_alias, item_id, operation):
         logger.debug(f"Web application type: {item.type}, Owner: {item.owner}")
 
         logger.debug(f"Processing web application details for: {item_id}")
-        process_single_app(item, target, instance_item, update_time)
-
-        # Recompute counts only for the layers this app depends on, directly via
-        # its services or via its web maps, instead of scanning every layer.
-        # process_single_app only adds/updates the app's relationships (it never
-        # removes them), so the post-processing snapshot covers all affected names.
+        # Recompute counts only for the layers this app depends on (directly via
+        # its services or via its web maps) instead of scanning every layer.
+        # Capture the dependency layers BEFORE reconciliation and union with the
+        # AFTER set: process_single_app removes relationships the app no longer
+        # references, so the "before" snapshot ensures dropped layers still get
+        # their counts recomputed.
         affected_layers = set(
+            App_Service.objects.filter(portal_instance=instance_item, app_id__app_id=item_id)
+            .values_list("service_id__layer__layer_name", flat=True)
+        )
+        affected_layers.update(
+            App_Map.objects.filter(portal_instance=instance_item, app_id__app_id=item_id)
+            .values_list("webmap_id__map_service__service_id__layer__layer_name", flat=True)
+        )
+        process_single_app(item, target, instance_item, update_time)
+        affected_layers.update(
             App_Service.objects.filter(portal_instance=instance_item, app_id__app_id=item_id)
             .values_list("service_id__layer__layer_name", flat=True)
         )
