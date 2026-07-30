@@ -95,7 +95,10 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
         target = utils.connect(instance_item, credential_token)
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        result.add_error(f"Unable to connect to {instance_alias}")
+        result.add_error(f"Unable to connect to {instance_alias}: {e}")
+        return result.to_json()
+
+    if not _verify_update_privileges(target, instance_alias, result, CONTENT_VIEW_PRIVILEGES):
         return result.to_json()
 
     try:
@@ -251,7 +254,7 @@ def process_batch_maps(self, instance_alias, credential_token, batch, batch_size
         target = utils.connect(instance_item, credential_token)
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        result.add_error(f"Unable to connect to {instance_alias}")
+        result.add_error(f"Unable to connect to {instance_alias}: {e}")
         return result.to_json()
 
     try:
@@ -1074,7 +1077,13 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
         target = utils.connect(instance_item, credential_token)
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        result.add_error(f"Unable to connect to {instance_alias}")
+        result.add_error(f"Unable to connect to {instance_alias}: {e}")
+        return result.to_json()
+
+    service_privileges = CONTENT_VIEW_PRIVILEGES
+    if instance_item.portal_type != "agol":
+        service_privileges += SERVER_ADMIN_PRIVILEGES
+    if not _verify_update_privileges(target, instance_alias, result, service_privileges):
         return result.to_json()
 
     if instance_item.portal_type == "agol":
@@ -1867,7 +1876,10 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        result.add_error(f"Unable to connect to {instance_alias}")
+        result.add_error(f"Unable to connect to {instance_alias}: {e}")
+        return result.to_json()
+
+    if not _verify_update_privileges(target, instance_alias, result, CONTENT_VIEW_PRIVILEGES):
         return result.to_json()
 
     try:
@@ -2030,7 +2042,7 @@ def process_batch_apps(self, instance_alias, credential_token, batch, batch_size
 
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-            result.add_error(f"Unable to connect to {instance_alias}")
+            result.add_error(f"Unable to connect to {instance_alias}: {e}")
             return result.to_json()
 
         # Retrieve web applications for this batch
@@ -3202,7 +3214,11 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        result.add_error(f"Unable to connect to {instance_alias}")
+        result.add_error(f"Unable to connect to {instance_alias}: {e}")
+        return result.to_json()
+
+    if not _verify_update_privileges(target, instance_alias, result,
+                                     USER_VIEW_PRIVILEGES, recommended=LICENSE_PRIVILEGES):
         return result.to_json()
 
     try:
@@ -3433,7 +3449,7 @@ def process_batch_users(self, instance_alias, credential_token, batch, batch_siz
 
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-            result.add_error(f"Unable to connect to {instance_alias}")
+            result.add_error(f"Unable to connect to {instance_alias}: {e}")
             return result.to_json()
 
         logger.debug(f"Retrieving users for batch {batch} to {batch + batch_size}")
@@ -3956,13 +3972,101 @@ USER_ADMIN_PRIVILEGES = ("portal:admin:viewUsers", "portal:admin:deleteUsers",
 # Privileges needed to view and update other members' items (Replace Service)
 CONTENT_ADMIN_PRIVILEGES = ("portal:admin:viewItems", "portal:admin:updateItems")
 
+# Inventory privileges. These are what the scheduled content updates need: the ability
+# to see every member's items and every member account, rather than the
+# privileges the tools require.
+CONTENT_VIEW_PRIVILEGES = ("portal:admin:viewItems",)
+USER_VIEW_PRIVILEGES = ("portal:admin:viewUsers",)
+
+# Reading service manifests and usage goes through the federated servers' admin API.
+# Enterprise only; ArcGIS Online has no federated servers to administer.
+SERVER_ADMIN_PRIVILEGES = ("portal:admin:manageServers",)
+
+LICENSE_PRIVILEGES = ("portal:admin:manageLicenses",)
+
+
+def missing_privileges(user, required):
+    """
+    Return the required privileges the user does not hold.
+
+    :param user: arcgis.gis.User, normally gis.users.me
+    :param required: Iterable of privilege strings
+    :return: List of missing privilege strings
+    :rtype: list
+    """
+    held = set(getattr(user, "privileges", None) or [])
+    return [privilege for privilege in required if privilege not in held]
+
+
+def portal_update_privileges(portal_type):
+    """
+    Privileges needed to run every content update against a portal.
+
+    Used when validating credentials as a portal is added or updated, so the account is
+    checked once up front instead of failing at the first scheduled refresh.
+
+    :param portal_type: 'agol' or 'portal'
+    :return: Tuple of required privilege strings
+    :rtype: tuple
+    """
+    required = CONTENT_VIEW_PRIVILEGES + USER_VIEW_PRIVILEGES
+    if portal_type != "agol":
+        required += SERVER_ADMIN_PRIVILEGES
+    return required
+
 
 def _verify_privileges(user, required=USER_ADMIN_PRIVILEGES):
     """Verify user has the required admin privileges."""
-    missing = [priv for priv in required if priv not in user.privileges]
+    missing = missing_privileges(user, required)
     if missing:
         logger.error(f"User '{user.username}' is missing privilege(s): {', '.join(missing)}")
     return not missing
+
+
+def _verify_update_privileges(target, instance_alias, result, required, recommended=()):
+    """
+    Check the connected account can carry out an update before any work is done.
+
+    Missing required privileges fail the update, because the resulting inventory would be
+    silently incomplete — the portal returns only the signed-in user's items rather than
+    an error. Missing recommended privileges are recorded as warnings.
+
+    :param target: Authenticated arcgis.gis.GIS connection
+    :param instance_alias: Portal alias, for messages
+    :param result: utils.UpdateResult to record errors against
+    :param required: Privileges without which the update cannot be trusted
+    :param recommended: Privileges that only affect optional enrichments
+    :return: True when the update may proceed
+    :rtype: bool
+    """
+    try:
+        me = target.users.me
+    except Exception as e:
+        logger.error(f"Unable to read the signed-in account for '{instance_alias}': {e}", exc_info=True)
+        result.add_error(f"Unable to verify privileges for {instance_alias}: {e}")
+        return False
+
+    if me is None:
+        logger.error(f"Anonymous connection to '{instance_alias}'; privileges cannot be verified.")
+        result.add_error(f"Unable to verify privileges for {instance_alias}: not signed in")
+        return False
+
+    username = getattr(me, "username", "unknown")
+
+    absent = missing_privileges(me, required)
+    if absent:
+        logger.error(f"User '{username}' cannot update '{instance_alias}'; "
+                     f"missing privilege(s): {', '.join(absent)}")
+        result.add_error(f"'{username}' is missing required privilege(s) for {instance_alias}: "
+                         f"{', '.join(absent)}")
+        return False
+
+    for privilege in missing_privileges(me, recommended):
+        logger.warning(f"User '{username}' is missing optional privilege '{privilege}' "
+                       f"for '{instance_alias}'; related data will be incomplete.")
+
+    logger.debug(f"User '{username}' holds the privileges required to update '{instance_alias}'.")
+    return True
 
 
 def _connect_portal_task(portal_alias, tool_result, credential_token=None,
