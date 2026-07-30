@@ -148,6 +148,15 @@
     <div id="tool_settings_modal" hx-target="this"></div>
     <div id="webhook_settings_modal"></div>
     <div id="alert-container" hx-target="this" role="alert" aria-live="polite" aria-atomic="true"></div>
+    {% if messages %}
+      {# Alerts queued before a full-page redirect (e.g. returning from ArcGIS OAuth),
+         where HX-Trigger headers cannot fire. custom.js replays these as Calcite alerts. #}
+      <div id="pending-alerts" hidden>
+        {% for message in messages %}
+          <div class="pending-alert" data-level="{{ message.level_tag }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
     <calcite-popover label="User navigation menu" reference-element="nav-user" placement="bottom" pointer-disabled
                      scale="s" auto-close>
       <p class="padding-1-6-0 margin-0"></p>

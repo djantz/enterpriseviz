@@ -1300,6 +1300,32 @@ htmx.on("showWarningAlert", (e) => {
     showAlert("warning", "Warning", e.detail.value, true).catch(console.error);
 });
 
+// Django message level -> [alert kind, alert label, auto-close]
+const PENDING_ALERT_LEVELS = {
+    error: ["danger", "Error", false],
+    warning: ["warning", "Warning", true],
+    success: ["success", "Success", true],
+    info: ["info", "Information", true],
+    debug: ["info", "Information", true],
+};
+
+// Alerts queued server-side before a full-page redirect (e.g. returning from the
+// ArcGIS OAuth flow). HX-Trigger headers only fire on htmx responses, so these are
+// rendered into the page and replayed here on load.
+function showPendingAlerts() {
+    document.querySelectorAll("#pending-alerts .pending-alert").forEach((el) => {
+        const [kind, label, autoClose] = PENDING_ALERT_LEVELS[el.dataset.level] || PENDING_ALERT_LEVELS.info;
+        // innerHTML keeps Django's escaping intact; showAlert interpolates into innerHTML.
+        showAlert(kind, label, el.innerHTML.trim(), autoClose).catch(console.error);
+    });
+}
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", showPendingAlerts);
+} else {
+    showPendingAlerts();
+}
+
 document.addEventListener('DOMContentLoaded', function () {
     refreshActivePortal();
 });
