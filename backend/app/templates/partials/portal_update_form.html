@@ -9,7 +9,7 @@
                  status="{% if form.alias.errors %}invalid{% else %}idle{% endif %}"
                  validation-message="{{ form.alias.errors|join:' ' }}"
                  validation-icon="{% if form.alias.errors %}exclamation-mark-triangle{% endif %}">
-    <calcite-icon slot="label-content" id="portal-alias-tooltip" icon="information" scale="s"></calcite-icon>
+    <calcite-icon slot="label-content" id="update-portal-alias-tooltip" icon="information" scale="s"></calcite-icon>
   </calcite-input>
 
   <calcite-input name="{{ form.url.name }}" placeholder="Enter a Portal URL" required type="url"
@@ -17,11 +17,11 @@
                  status="{% if form.url.errors %}invalid{% else %}idle{% endif %}"
                  validation-message="{{ form.url.errors|join:' ' }}"
                  validation-icon="{% if form.url.errors %}exclamation-mark-triangle{% endif %}">
-    <calcite-icon slot="label-content" id="portal-url-tooltip" icon="information" scale="s"></calcite-icon>
+    <calcite-icon slot="label-content" id="update-portal-url-tooltip" icon="information" scale="s"></calcite-icon>
   </calcite-input>
 
   <calcite-segmented-control id="portal-type" name="{{ form.portal_type.name }}" label-text="Portal Type" required>
-    <calcite-icon slot="label-content" id="portal-type-tooltip" icon="information" scale="s"></calcite-icon>
+    <calcite-icon slot="label-content" id="update-portal-type-tooltip" icon="information" scale="s"></calcite-icon>
     <calcite-segmented-control-item value="portal" icon-start="portal"
                                     {% if form.portal_type.value == 'portal' %}checked{% endif %}>Portal
     </calcite-segmented-control-item>
@@ -30,11 +30,17 @@
     </calcite-segmented-control-item>
   </calcite-segmented-control>
 
-  <calcite-segmented-control id="store-password" name="{{ form.store_password.name }}" label-text="Store Credentials" required>
-    <calcite-icon slot="label-content" id="store-password-tooltip" icon="information" scale="s"></calcite-icon>
-    <calcite-segmented-control-item value="False" {% if form.store_password.value == False %}checked{% endif %}>No
+  <calcite-segmented-control id="auth-method" name="{{ form.auth_method.name }}" label-text="Authentication" required>
+    <calcite-icon slot="label-content" id="update-auth-method-tooltip" icon="information" scale="s"></calcite-icon>
+    <calcite-segmented-control-item value="prompt"
+                                    {% if form.auth_method.value == 'prompt' or not form.auth_method.value %}checked{% endif %}>
+      Prompt
     </calcite-segmented-control-item>
-    <calcite-segmented-control-item value="True" {% if form.store_password.value == True %}checked{% endif %}>Yes
+    <calcite-segmented-control-item value="password" {% if form.auth_method.value == 'password' %}checked{% endif %}>
+      Stored
+    </calcite-segmented-control-item>
+    <calcite-segmented-control-item value="oauth" {% if form.auth_method.value == 'oauth' %}checked{% endif %}>
+      OAuth
     </calcite-segmented-control-item>
   </calcite-segmented-control>
 
@@ -46,7 +52,7 @@
                    status="{% if form.username.errors %}invalid{% else %}idle{% endif %}"
                    validation-message="{{ form.username.errors|join:' ' }}"
                    validation-icon="{% if form.username.errors %}exclamation-mark-triangle{% endif %}">
-      <calcite-icon slot="label-content" id="username-tooltip" icon="information" scale="s"></calcite-icon>
+      <calcite-icon slot="label-content" id="update-username-tooltip" icon="information" scale="s"></calcite-icon>
     </calcite-input>
 
     <calcite-input id="{{ form.password.name }}" name="{{ form.password.name }}" disabled
@@ -59,9 +65,54 @@
     </calcite-input>
   </div>
 
+  <div id="oauth-container" hidden aria-hidden="true">
+    <calcite-input id="{{ form.oauth_client_id.name }}" name="{{ form.oauth_client_id.name }}" disabled
+                   placeholder="Enter the registered application's Client ID"
+                   type="text" value="{{ form.oauth_client_id.value|default:'' }}"
+                   autocomplete="off" label-text="OAuth Client ID"
+                   status="{% if form.oauth_client_id.errors %}invalid{% else %}idle{% endif %}"
+                   validation-message="{{ form.oauth_client_id.errors|join:' ' }}"
+                   validation-icon="{% if form.oauth_client_id.errors %}exclamation-mark-triangle{% endif %}">
+      <calcite-icon slot="label-content" id="update-oauth-client-id-tooltip" icon="information" scale="s"></calcite-icon>
+    </calcite-input>
+
+    <calcite-input id="{{ form.oauth_client_secret.name }}" name="{{ form.oauth_client_secret.name }}" disabled
+                   placeholder="Leave blank to keep current secret"
+                   type="password" value="" autocomplete="new-password" label-text="OAuth Client Secret"
+                   status="{% if form.oauth_client_secret.errors %}invalid{% else %}idle{% endif %}"
+                   validation-message="{{ form.oauth_client_secret.errors|join:' ' }}"
+                   validation-icon="{% if form.oauth_client_secret.errors %}exclamation-mark-triangle{% endif %}">
+    </calcite-input>
+
+    <calcite-notice open scale="s" kind="info" icon="information">
+      <div slot="title">Redirect URI</div>
+      <div slot="message">Add this exact URL to the registered application in this portal as a redirect
+        URI. Authorization fails if it does not match.
+        <br><strong>{{ oauth_redirect_uri }}</strong>
+      </div>
+    </calcite-notice>
+
+    {% if portal.oauth_is_configured and not portal.oauth_needs_reconsent %}
+    <calcite-notice open scale="s" kind="success" icon="check-circle">
+      <div slot="message">Authorized{% if portal.oauth_refresh_expiration %} until
+        {{ portal.oauth_refresh_expiration }}{% endif %}.
+      </div>
+    </calcite-notice>
+    {% elif portal.auth_method == 'oauth' %}
+    <calcite-notice open scale="s" kind="warning" icon="exclamation-mark-triangle">
+      <div slot="message">Not authorized yet. Save your changes, then connect with ArcGIS.</div>
+    </calcite-notice>
+    {% endif %}
+
+    <calcite-button id="oauth-connect-button" width="full" icon-start="sign-in" appearance="outline"
+                    href="{% url 'enterpriseviz:portal_oauth_connect' instance=instance %}">
+      Connect with ArcGIS
+    </calcite-button>
+  </div>
+
   <calcite-segmented-control id="enable-email" name="{{ form.enable_admin_notifications.name }}"
                              label-text="Enable Admin Email Notifications" required>
-    <calcite-icon slot="label-content" id="enable-email-tooltip" icon="information" scale="s"></calcite-icon>
+    <calcite-icon slot="label-content" id="update-enable-email-tooltip" icon="information" scale="s"></calcite-icon>
     <calcite-segmented-control-item value="False"
                                     {% if form.enable_admin_notifications.value == False %}checked{% endif %}>No
     </calcite-segmented-control-item>
@@ -89,21 +140,26 @@
 
 </form>
 
-<calcite-tooltip reference-element="portal-alias-tooltip" close-on-click placement="bottom-start">
+<calcite-tooltip reference-element="update-portal-alias-tooltip" close-on-click placement="bottom-start">
   <span>A short name for this portal instance</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="portal-url-tooltip" close-on-click placement="bottom-start">
+<calcite-tooltip reference-element="update-portal-url-tooltip" close-on-click placement="bottom-start">
   <span>The full URL of the Portal or ArcGIS Online instance</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="portal-type-tooltip" close-on-click placement="bottom-start">
+<calcite-tooltip reference-element="update-portal-type-tooltip" close-on-click placement="bottom-start">
   <span>Select whether this is an on-premises Portal or ArcGIS Online (AGOL)</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="store-password-tooltip" close-on-click placement="bottom-start">
-  <span>If enabled, admin credentials will be encrypted and stored to enable automatic data refreshes and scheduling. If disabled, you'll be prompted for credentials on each refresh.</span>
+<calcite-tooltip reference-element="update-auth-method-tooltip" close-on-click placement="bottom-start">
+  <span>Prompt asks for credentials on each refresh. Stored encrypts an admin username and password to allow
+    automatic refreshes and scheduling. OAuth signs in once through ArcGIS and stores a revocable refresh token
+    instead of a password.</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="username-tooltip" close-on-click placement="bottom-start">
+<calcite-tooltip reference-element="update-oauth-client-id-tooltip" close-on-click placement="bottom-start">
+  <span>The Client ID of an application registered in this portal, with the Redirect URI below added to it</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="update-username-tooltip" close-on-click placement="bottom-start">
   <span>An admin user account that has permission to view all portal items</span>
 </calcite-tooltip>
-<calcite-tooltip reference-element="enable-email-tooltip" close-on-click placement="bottom-start">
+<calcite-tooltip reference-element="update-enable-email-tooltip" close-on-click placement="bottom-start">
   <span>Enable email notifications for automated refresh results and tool execution reports</span>
 </calcite-tooltip>

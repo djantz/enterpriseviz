@@ -87,7 +87,7 @@
                               name="Get Portal Duplicates"
                               hx-vals='{"instance": "{{ instance }}", "items": "duplicates"}'
                               hx-post="{% url 'enterpriseviz:duplicate' instance=instance %}"
-                              {% if instance.store_password %}
+                              {% if not instance.requires_interactive_credentials %}
                               hx-target="#mainbodycontent"
                               hx-push-url="{% url 'enterpriseviz:duplicate' instance=instance %}"
                               hx-swap="show:window:top"
@@ -106,7 +106,7 @@
                               name="Get Metadata Report"
                               hx-vals='{"instance": "{{ instance }}", "items": "metadata"}'
                               hx-post="{% url 'enterpriseviz:metadata' instance=instance %}"
-                              {% if instance.store_password %}
+                              {% if not instance.requires_interactive_credentials %}
                               hx-target="#mainbodycontent"
                               hx-push-url="{% url 'enterpriseviz:metadata' instance=instance %}"
                               hx-swap="show:window:top"
