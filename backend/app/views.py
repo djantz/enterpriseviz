@@ -15,9 +15,12 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 # ----------------------------------------------------------------------
+import secrets
 from collections import defaultdict
+from urllib.parse import urlencode
 
 import cron_descriptor
+from arcgis import gis
 from celery import current_app as celery_app  # For signaling Celery
 from celery.result import AsyncResult
 from celery_progress.backend import Progress
@@ -38,6 +41,7 @@ from django.http import HttpResponse, JsonResponse, HttpResponseForbidden, HttpR
 from django.shortcuts import render, redirect, get_object_or_404
 from django.template import loader
 from django.utils import timezone
+from django.utils.crypto import constant_time_compare
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django_celery_results.models import TaskResult
@@ -498,30 +502,34 @@ def portal_create_view(request):
     if request.method == "POST":
         form = PortalCreateForm(request.POST)
         if form.is_valid():
-            store_password = form.cleaned_data["store_password"]
+            auth_method = form.cleaned_data["auth_method"]
             alias = form.cleaned_data["alias"]
             url = form.cleaned_data["url"]
             username = form.cleaned_data.get("username", "")
-            logger.debug(f"Form valid. alias={alias}, url={url}, store_password={store_password}")
+            logger.debug(f"Form valid. alias={alias}, url={url}, auth_method={auth_method}")
 
             try:
-                if store_password:
+                if auth_method == "password":
                     logger.debug(f"Attempting connection for {alias} with stored credentials.")
-                    connection_result = utils.try_connection(form.cleaned_data).get("authenticated", False)
-                    if connection_result:
+                    auth_result = utils.try_connection(form.cleaned_data)
+                    if auth_result.get("authenticated", False):
                         form.save()
                         logger.info(
                             f"Portal {alias} ({url}) created and authenticated as {username}.")
                         context = {"portal": Portal.objects.values_list("alias", "portal_type", "url")}
                         response = render(request, "partials/portal_updates.html", context)
-                        response["HX-Trigger-After-Settle"] = json.dumps(
-                            {"closeModal": True,
-                             "showSuccessAlert": f"Successfully added {url} as {alias} and authenticated."}
-                        )
+                        triggers = {"closeModal": True}
+                        absent = auth_result.get("missing_privileges") or []
+                        if absent:
+                            triggers["showWarningAlert"] = _privilege_warning(username, absent)
+                        else:
+                            triggers["showSuccessAlert"] = (
+                                f"Successfully added {url} as {alias} and authenticated.")
+                        response["HX-Trigger-After-Settle"] = json.dumps(triggers)
                         return response
                     else:
                         logger.warning(f"Authentication failed for {alias} ({url}) as {username}.")
-                        context = {"form": form}
+                        context = {"form": form, "oauth_redirect_uri": _oauth_redirect_uri(request)}
                         response = render(request, "partials/portal_add_form.html", context,
                                           status=401)
                         response["HX-Trigger-After-Settle"] = json.dumps(
@@ -530,19 +538,23 @@ def portal_create_view(request):
                         return response
                 else:
                     form.save()
-                    logger.info(f"Portal {alias} ({url}) created without stored credentials.")
+                    logger.info(f"Portal {alias} ({url}) created with auth method '{auth_method}'.")
+                    if auth_method == "oauth":
+                        next_step = "Connect it with ArcGIS to authorize unattended refreshes."
+                    else:
+                        next_step = "Authentication will be required when refreshing data."
                     context = {"portal": Portal.objects.values_list("alias", "portal_type", "url")}
                     response = render(request, "partials/portal_updates.html", context)
                     response["HX-Trigger-After-Settle"] = json.dumps(
                         {
-                            "showSuccessAlert": f"Successfully added {url} as {alias}. Authentication will be required when refreshing data.",
+                            "showSuccessAlert": f"Successfully added {url} as {alias}. {next_step}",
                             "closeModal": True}
                     )
                     return response
             except Exception as e:
                 logger.error(f"Unexpected error creating portal {alias}: {e}",
                              exc_info=True)
-                context = {"form": form}
+                context = {"form": form, "oauth_redirect_uri": _oauth_redirect_uri(request)}
                 response = render(request, "partials/portal_add_form.html", context, status=500)
                 response["HX-Trigger-After-Settle"] = json.dumps(
                     {"showDangerAlert": f"An unexpected error occurred"}
@@ -550,10 +562,15 @@ def portal_create_view(request):
                 return response
         else:
             logger.warning(f"Form invalid. Errors: {form.errors}")
-            return render(request, "partials/portal_add_form.html", {"form": form})
+            response = render(request, "partials/portal_add_form.html",
+                              {"form": form, "oauth_redirect_uri": _oauth_redirect_uri(request)})
+            response["HX-Trigger-After-Settle"] = json.dumps(
+                {"showDangerAlert": _form_error_alert(form)})
+            return response
 
     logger.debug("Rendering initial form.")
-    return render(request, "portals/portal_add.html", {"form": PortalCreateForm()})
+    return render(request, "portals/portal_add.html",
+                  {"form": PortalCreateForm(), "oauth_redirect_uri": _oauth_redirect_uri(request)})
 
 
 @login_required
@@ -613,6 +630,188 @@ def index_view(request, instance=None):
             "portal": Portal.objects.values_list("alias", "portal_type", "url")
         }
         return render(request, template, context, status=500)
+
+
+def _oauth_redirect_uri(request):
+    """Build the absolute callback URL registered with each portal's OAuth application."""
+    return request.build_absolute_uri(reverse("enterpriseviz:portal_oauth_callback"))
+
+
+def _privilege_warning(username, absent):
+    """
+    Build the warning shown when a validated account lacks update privileges.
+
+    The credentials are saved anyway: they authenticate, and the account may be intended
+    for partial use. The content updates enforce the same privileges and fail with the
+    specifics, so this is a heads-up rather than a block.
+
+    :param username: The account that was validated
+    :param absent: Privilege strings the account lacks
+    :return: Warning text
+    :rtype: str
+    """
+    return (f"Saved, but '{username}' is missing privilege(s) needed for updates: "
+            f"{', '.join(absent)}. Content updates will fail until the account's role grants them.")
+
+
+def _needs_oauth_connect(portal):
+    """True when a portal is set to OAuth but has no usable authorization."""
+    return portal.auth_method == "oauth" and portal.oauth_needs_reconsent
+
+
+def _render_oauth_connect_prompt(request, portal, reason=None):
+    """
+    Prompt the user to authorize an OAuth portal instead of failing the operation.
+
+    OAuth cannot be completed from a form the way a username and password can; it needs
+    a round trip to the portal. So the prompt offers to start that flow.
+
+    :param request: The HTTP request object
+    :param portal: Portal model instance needing authorization
+    :param reason: Optional explanation shown in place of the default text
+    :return: Rendered connect prompt
+    :rtype: HttpResponse
+    """
+    logger.info(f"Portal '{portal.alias}' needs OAuth authorization; prompting to connect.")
+    return render(request, "portals/portal_connect.html",
+                  {"instance": portal, "reason": reason})
+
+
+def _form_error_alert(form):
+    """
+    Summarize a form's validation errors for a danger alert.
+
+    The alert complements the inline field errors, which sit in collapsed sections
+    the user may not have open.
+
+    :param form: A bound form that failed validation
+    :return: Alert text
+    :rtype: str
+    """
+    messages_found = [error for errors in form.errors.values() for error in errors]
+    if not messages_found:
+        return "Please correct the errors below."
+    if len(messages_found) == 1:
+        return messages_found[0]
+    return f"{messages_found[0]} (and {len(messages_found) - 1} more)"
+
+
+@staff_member_required
+def portal_oauth_connect_view(request, instance):
+    """
+    Start the OAuth 2.0 authorization code flow for a portal.
+
+    Redirects the administrator to the portal's sign in page. The resulting refresh token
+    is stored by :func:`portal_oauth_callback_view` and used for unattended connections.
+
+    :param request: The HTTP request object
+    :type request: HttpRequest
+    :param instance: The portal alias
+    :type instance: str
+    :return: Redirect to the portal authorization endpoint, or back with an error
+    :rtype: HttpResponse
+    """
+    portal = get_object_or_404(Portal, alias=instance)
+
+    if not portal.oauth_client_id:
+        logger.warning(f"OAuth connect attempted for '{portal.alias}' without a client ID.")
+        messages.error(request, f"Set an OAuth Client ID for {portal.alias} before connecting.")
+        return redirect("enterpriseviz:viz", instance=portal.alias)
+
+    state = secrets.token_urlsafe(32)
+    request.session["portal_oauth_state"] = state
+    request.session["portal_oauth_alias"] = portal.alias
+
+    params = urlencode({
+        "client_id": portal.oauth_client_id,
+        "response_type": "code",
+        "redirect_uri": _oauth_redirect_uri(request),
+        "state": state,
+        "expiration": -1,
+    })
+    logger.info(f"Starting OAuth authorization for portal '{portal.alias}'.")
+    return redirect(f"{utils.oauth_authorize_url(portal.url)}?{params}")
+
+
+@staff_member_required
+def portal_oauth_callback_view(request):
+    """
+    Complete the OAuth 2.0 authorization code flow and store the refresh token.
+
+    Verifies the anti-forgery state, exchanges the authorization code, and confirms the
+    consenting user holds the administrative privileges the application requires before
+    persisting any tokens.
+
+    :param request: The HTTP request object
+    :type request: HttpRequest
+    :return: Redirect to the portal page with a success or error message
+    :rtype: HttpResponse
+    """
+    expected_state = request.session.pop("portal_oauth_state", None)
+    alias = request.session.pop("portal_oauth_alias", None)
+    returned_state = request.GET.get("state")
+
+    if not expected_state or not alias:
+        logger.warning("OAuth callback received without an active authorization session.")
+        messages.error(request, "Authorization session expired. Please try connecting again.")
+        return redirect("enterpriseviz:index")
+
+    if not returned_state or not constant_time_compare(expected_state, returned_state):
+        logger.warning(f"OAuth callback state mismatch for portal '{alias}'.")
+        messages.error(request, "Authorization failed a security check. Please try connecting again.")
+        return redirect("enterpriseviz:index")
+
+    portal = get_object_or_404(Portal, alias=alias)
+
+    if request.GET.get("error"):
+        description = request.GET.get("error_description", request.GET["error"])
+        logger.warning(f"OAuth authorization denied for '{portal.alias}': {description}")
+        messages.error(request, f"Authorization was denied for {portal.alias}.")
+        return redirect("enterpriseviz:viz", instance=portal.alias)
+
+    code = request.GET.get("code")
+    if not code:
+        logger.warning(f"OAuth callback for '{portal.alias}' returned no authorization code.")
+        messages.error(request, "Authorization did not return a code. Please try connecting again.")
+        return redirect("enterpriseviz:viz", instance=portal.alias)
+
+    try:
+        token_data = utils.exchange_oauth_authorization_code(portal, code, _oauth_redirect_uri(request))
+    except ConnectionError as e:
+        logger.error(f"OAuth code exchange failed for '{portal.alias}': {e}")
+        messages.error(request, str(e))
+        return redirect("enterpriseviz:viz", instance=portal.alias)
+
+    # Confirm the consenting account can actually do the work before storing its token.
+    # Only the content-update privileges are required here; the tools enforce their own
+    # (destructive) privileges when they run, so lacking those must not block authorization.
+    try:
+        target = gis.GIS(portal.url, token=token_data["access_token"], verify_cert=False)
+        me = target.users.me
+        portal_type = portal.portal_type or ("portal" if target.properties.isPortal else "agol")
+        missing = missing_privileges(me, portal_update_privileges(portal_type))
+    except Exception as e:
+        logger.error(f"Unable to verify OAuth identity for '{portal.alias}': {e}", exc_info=True)
+        messages.error(request, f"Could not verify the signed in account for {portal.alias}.")
+        return redirect("enterpriseviz:viz", instance=portal.alias)
+
+    if missing:
+        logger.warning(f"OAuth user '{me.username}' lacks privileges for '{portal.alias}': {', '.join(missing)}")
+        messages.error(
+            request,
+            f"{me.username} is missing required administrator privileges: {', '.join(missing)}. "
+            f"Sign in with an administrator account.")
+        return redirect("enterpriseviz:viz", instance=portal.alias)
+
+    utils.store_oauth_tokens(portal, token_data)
+
+    if portal.portal_type is None:
+        portal.portal_type = "portal" if target.properties.isPortal else "agol"
+        portal.save(update_fields=['portal_type'])
+
+    logger.info(f"Portal '{portal.alias}' connected via OAuth as '{me.username}'.")
+    messages.success(request, f"Connected {portal.alias} as {me.username}.")
+    return redirect("enterpriseviz:viz", instance=portal.alias)
 
 
 @staff_member_required
@@ -692,7 +891,13 @@ def refresh_portal_view(request):
         return JsonResponse({"error": "Invalid task type selected"}, status=400)
 
     # Determine if credentials are needed
-    credentials_required = not portal.store_password
+    # An OAuth portal that has never been authorized (or whose authorization was
+    # rejected) can't be fixed with a credential form, so offer to connect instead
+    # of failing the task later.
+    if _needs_oauth_connect(portal):
+        return _render_oauth_connect_prompt(request, portal)
+
+    credentials_required = portal.requires_interactive_credentials
     credential_token = None
 
     # Check if this is a credential form submission
@@ -1080,18 +1285,23 @@ def update_portal_view(request, instance):
         form = PortalCreateForm(request.POST, instance=portal)
         if form.is_valid():
             logger.debug("Form valid.")
-            store_password = form.cleaned_data["store_password"]
-            requires_auth_check = store_password and form.cleaned_data.get("password")
+            # Only re-test credentials when a new password was actually submitted; a blank
+            # field keeps the stored one.
+            requires_auth_check = (form.cleaned_data["auth_method"] == "password"
+                                   and bool(request.POST.get("password")))
 
+            missing_update_privileges = []
             if requires_auth_check:
                 logger.debug(f"Checking connection for {portal.alias} with new credentials.")
-                connection_result = utils.try_connection(form.cleaned_data).get("authenticated", False)
-                if not connection_result:
+                auth_result = utils.try_connection(form.cleaned_data)
+                missing_update_privileges = auth_result.get("missing_privileges") or []
+                if not auth_result.get("authenticated", False):
                     username = form.cleaned_data.get("username", "N/A")
                     url = form.cleaned_data.get("url", portal.url)
                     logger.warning(f"Auth failed for {instance} ({url}) as {username}.")
                     response = render(request, "partials/portal_update_form.html",
-                                      {"form": form, "instance": instance}, status=401)
+                                      {"form": form, "instance": instance, "portal": portal,
+                                       "oauth_redirect_uri": _oauth_redirect_uri(request)}, status=401)
                     response["X-Error-Page"] = "true"
                     response["HX-Trigger-After-Settle"] = json.dumps(
                         {"showDangerAlert": f"Unable to connect to {url} as {username}."})
@@ -1105,20 +1315,32 @@ def update_portal_view(request, instance):
             updated_portals = Portal.objects.values_list("alias", "portal_type", "url")
             response = render(request, "partials/portal_updates.html",
                               context={"portal": updated_portals, "instance": new_alias})
-            success_message = f"Successfully updated portal '{new_alias}'."
-            if requires_auth_check: success_message += " Authentication updated."
+            if missing_update_privileges:
+                triggers = {
+                    "showWarningAlert": _privilege_warning(form.cleaned_data.get("username", "N/A"),
+                                                          missing_update_privileges),
+                    "closeModal": True}
+            else:
+                success_message = f"Successfully updated portal '{new_alias}'."
+                if requires_auth_check: success_message += " Authentication updated."
+                triggers = {"showSuccessAlert": success_message, "closeModal": True}
 
-            response["HX-Trigger-After-Settle"] = json.dumps({"showSuccessAlert": success_message, "closeModal": True})
+            response["HX-Trigger-After-Settle"] = json.dumps(triggers)
             return response
         else:
             logger.warning(f"Form invalid. Errors: {form.errors}")
             response = render(request, "partials/portal_update_form.html",
-                              {"form": form, "instance": instance}, status=400)
+                              {"form": form, "instance": instance, "portal": portal,
+                               "oauth_redirect_uri": _oauth_redirect_uri(request)}, status=400)
             response["X-Error-Page"] = "true"
+            response["HX-Trigger-After-Settle"] = json.dumps(
+                {"showDangerAlert": _form_error_alert(form)})
             return response
 
     form = PortalCreateForm(instance=portal)
-    return render(request, "portals/portal_update.html", {"form": form, "instance": instance})
+    return render(request, "portals/portal_update.html",
+                  {"form": form, "instance": instance, "portal": portal,
+                   "oauth_redirect_uri": _oauth_redirect_uri(request)})
 
 
 @staff_member_required
@@ -1158,7 +1380,7 @@ def schedule_task_view(request, instance):
                 logger.info(f"Deleted scheduled task for portal '{instance}'.")
                 form = ScheduleForm(initial={"instance": portal.alias})
                 response = render(request, "partials/portal_schedule_form.html",
-                                  {"form": form, "enable": portal.store_password, "description": ""})
+                                  {"form": form, "enable": utils.portal_has_credentials(portal), "description": ""})
                 response["HX-Trigger-After-Settle"] = json.dumps(
                     {"showSuccessAlert": "Scheduled task removed.", "closeModal": True})
                 return response
@@ -1168,7 +1390,7 @@ def schedule_task_view(request, instance):
             logger.error(f"Error deleting task for '{instance}': {e}", exc_info=True)
             form = ScheduleForm(initial={"instance": portal.alias})
             response = render(request, "partials/portal_schedule_form.html",
-                              {"form": form, "enable": portal.store_password,
+                              {"form": form, "enable": utils.portal_has_credentials(portal),
                                "description": ""})
             response["HX-Trigger-After-Settle"] = json.dumps({"showDangerAlert": "Failed to delete scheduled task."})
             return response
@@ -1220,7 +1442,7 @@ def schedule_task_view(request, instance):
             if error:
                 logger.warning(f"Error scheduling task for '{instance}': {error}")
                 response = render(request, "partials/portal_schedule_form.html",
-                                  {"form": form, "enable": portal.store_password, "description": description,
+                                  {"form": form, "enable": utils.portal_has_credentials(portal), "description": description,
                                    "results": results, "instance_alias": portal.alias})
                 response["HX-Trigger-After-Settle"] = json.dumps(
                     {"showDangerAlert": f"Error scheduling task: {error}"})
@@ -1236,7 +1458,7 @@ def schedule_task_view(request, instance):
 
             logger.info(f"Task scheduled for portal '{instance}': {description}")
             response = render(request, "partials/portal_schedule_form.html",
-                              {"form": form, "enable": portal.store_password, "description": description,
+                              {"form": form, "enable": utils.portal_has_credentials(portal), "description": description,
                                "results": results, "instance_alias": portal.alias})
             response["HX-Trigger-After-Settle"] = json.dumps(
                 {"showSuccessAlert": f"Updates scheduled for '{instance}': {description}", "closeModal": True}
@@ -1245,11 +1467,11 @@ def schedule_task_view(request, instance):
         else:
             logger.warning(f"schedule_task_view: Form invalid for '{instance}'. Errors: {form.errors}")
             response = render(request, "partials/portal_schedule_form.html",
-                              {"form": form, "enable": portal.store_password, "description": description,
+                              {"form": form, "enable": utils.portal_has_credentials(portal), "description": description,
                                "results": results, "instance_alias": portal.alias})
             return response
 
-    context = {"form": form, "description": description, "results": results, "enable": portal.store_password,
+    context = {"form": form, "description": description, "results": results, "enable": utils.portal_has_credentials(portal),
                "instance_alias": portal.alias}
     return render(request, "portals/portal_schedule.html", context)
 
@@ -1393,7 +1615,13 @@ def metadata_view(request, instance):
         return render_error(request, 404, "Portal instance not found.")
 
     # Determine if credentials are needed
-    credentials_required = not portal.store_password
+    # An OAuth portal that has never been authorized (or whose authorization was
+    # rejected) can't be fixed with a credential form, so offer to connect instead
+    # of failing the task later.
+    if _needs_oauth_connect(portal):
+        return _render_oauth_connect_prompt(request, portal)
+
+    credentials_required = portal.requires_interactive_credentials
     credential_token = None
 
     # Check if this is a credential form submission
@@ -2075,6 +2303,16 @@ def tool_run(request, instance, tool_name):
     logger.debug(f"Received request to run tool '{tool_name}' for instance '{instance}'.")
 
     portal = get_object_or_404(Portal, alias=instance)
+
+    if _needs_oauth_connect(portal):
+        logger.warning(f"Tool '{tool_name}' blocked: portal '{portal.alias}' is not authorized.")
+        return HttpResponse(status=200, headers={
+            "HX-Trigger-After-Settle": json.dumps({
+                "showDangerAlert": f"{portal.alias} is not authorized. Open the portal settings and "
+                                   f"use Connect with ArcGIS before running tools."
+            })
+        })
+
     tool_settings_obj, _ = PortalToolSettings.objects.get_or_create(portal=portal)
 
     form = ToolsForm(request.POST, instance=tool_settings_obj)
