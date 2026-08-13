@@ -85,7 +85,7 @@ class Portal(models.Model):
         # store_password is retained for one release; keep it derived from auth_method.
         self.store_password = self.auth_method == "password"
         update_fields = kwargs.get("update_fields")
-        if update_fields is not None and "auth_method" in update_fields:
+        if update_fields is not None and "store_password" not in update_fields:
             kwargs["update_fields"] = list(update_fields) + ["store_password"]
         super().save(*args, **kwargs)
 
@@ -101,10 +101,10 @@ class Portal(models.Model):
 
     @property
     def oauth_needs_reconsent(self):
-        """True when the stored refresh token is missing or past its expiration."""
+        """True when the authorization is incomplete, missing, or past its expiration."""
         if self.auth_method != "oauth":
             return False
-        if not self.oauth_refresh_token:
+        if not self.oauth_client_id or not self.oauth_refresh_token:
             return True
         return bool(self.oauth_refresh_expiration and self.oauth_refresh_expiration <= timezone.now())
 
@@ -292,14 +292,14 @@ class PortalCreateForm(forms.ModelForm):
     def clean_password(self):
         """Keep the stored password when the field is submitted blank."""
         password = self.cleaned_data.get("password")
-        if not password and self.instance.pk:
+        if not password and self._is_update:
             return self.instance.password
         return password
 
     def clean_oauth_client_secret(self):
         """Keep the stored client secret when the field is submitted blank."""
         secret = self.cleaned_data.get("oauth_client_secret")
-        if not secret and self.instance.pk:
+        if not secret and self._is_update:
             return self.instance.oauth_client_secret
         return secret
 
@@ -321,26 +321,47 @@ class PortalCreateForm(forms.ModelForm):
                 self.add_error("oauth_client_id", "Client ID is required for OAuth authentication.")
         return cleaned_data
 
+    def _clear_unused_credentials(self, portal):
+        """
+        Erase every credential the selected authentication method does not use.
+
+        A secret that nothing reads is pure liability, and this form is the only place an
+        operator can remove one short of the Django admin. So rather than clearing what
+        the previous method left behind, this states the invariant positively: a portal
+        stores credentials for its current method and nothing else. Applied on every save
+        it is self-healing, and it does not depend on the browser having disabled the
+        inputs that belong to the other method.
+
+        :param portal: The unsaved Portal instance carrying the pending changes
+        """
+        if portal.auth_method != "password":
+            portal.username = ""
+            portal.password = ""
+
+        if portal.auth_method != "oauth":
+            portal.oauth_client_id = ""
+            portal.oauth_client_secret = ""
+            portal.oauth_refresh_token = ""
+            portal.oauth_refresh_expiration = None
+
     def _drop_invalidated_credentials(self, portal):
         """
         Clear stored credentials that the pending changes make unusable.
 
         Tokens are issued by one portal to one application, so changing the URL or the
         client credentials invalidates them. Left in place they are retried and rejected
-        with a misleading error instead of prompting to reconnect. Switching
-        authentication method also strands the previous method's secrets.
+        with a misleading error instead of prompting to reconnect. Credentials stranded by
+        an authentication method change are handled by :meth:`_clear_unused_credentials`.
 
         :param portal: The unsaved Portal instance carrying the pending changes
         """
-        if not self._original_auth_method:
+        if not self._is_update:
             return  # New portal; there is nothing stored yet.
 
         portal_changed = portal.url != self._original_url
         method_changed = portal.auth_method != self._original_auth_method
         oauth_app_changed = (portal.oauth_client_id != self._original_oauth_client_id
                              or portal.oauth_client_secret != self._original_oauth_client_secret)
-        left_oauth = method_changed and self._original_auth_method == "oauth"
-        left_password = method_changed and self._original_auth_method == "password"
 
         # The cached access token is only valid for the portal and method that issued it.
         if portal_changed or method_changed:
@@ -348,17 +369,15 @@ class PortalCreateForm(forms.ModelForm):
             portal.token_expiration = None
 
         # The refresh token belongs to one application on one portal.
-        if portal_changed or oauth_app_changed or left_oauth:
+        if portal_changed or oauth_app_changed:
             portal.oauth_refresh_token = ""
             portal.oauth_refresh_expiration = None
-
-        # Don't retain a password nothing will use.
-        if left_password:
-            portal.password = ""
 
     def save(self, commit=True):
         user = super().save(commit=False)
         self._drop_invalidated_credentials(user)
+        # Last, so it also sweeps up anything the invalidation above chose to keep.
+        self._clear_unused_credentials(user)
         if commit:
             user.save()
         return user
@@ -371,8 +390,11 @@ class PortalCreateForm(forms.ModelForm):
         self.fields["oauth_client_secret"].required = False
         self.fields["oauth_client_secret"].widget.attrs["placeholder"] = "Leave blank to keep current secret"
         # Remember what the stored credentials were granted against, so save() can tell
-        # which of them the pending changes invalidate.
+        # which of them the pending changes invalidate. This has to be captured here:
+        # alias is the primary key, so once _post_clean() has run, instance.pk holds the
+        # submitted alias and no longer distinguishes an update from a new portal.
         stored = self.instance if self.instance.pk else None
+        self._is_update = stored is not None
         self._original_url = stored.url if stored else ""
         self._original_auth_method = stored.auth_method if stored else ""
         self._original_oauth_client_id = stored.oauth_client_id if stored else ""
