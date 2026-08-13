@@ -42,6 +42,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import get_connection, EmailMultiAlternatives, EmailMessage
 from django.core.validators import validate_email
+from django.db import transaction
 from django.db.models import Exists, F, OuterRef, Prefetch, QuerySet, Q
 from django.http import HttpResponse
 from django.utils import timezone
@@ -574,6 +575,20 @@ def oauth_authorize_url(portal_url):
     return f"{portal_url.rstrip('/')}/sharing/rest/oauth2/authorize"
 
 
+def oauth_verify_tls():
+    """
+    Whether to validate the portal's TLS certificate on OAuth token requests.
+
+    These requests carry the client secret and the refresh token, which is long lived and
+    grants unattended administrator access, so the certificate is verified by default.
+    Deployments whose portal uses a certificate the container cannot chain to a trusted
+    root can set OAUTH_VERIFY_TLS to False, or point it at a CA bundle path.
+
+    :return: True, False, or a path to a CA bundle, as accepted by requests' verify=
+    """
+    return getattr(settings, "OAUTH_VERIFY_TLS", True)
+
+
 def _flag_oauth_reconsent(portal_model_instance):
     """Mark a portal as needing re-consent so the UI can prompt for a new authorization."""
     portal_model_instance.oauth_refresh_expiration = timezone.now()
@@ -609,7 +624,7 @@ def exchange_oauth_refresh_token(portal_model_instance):
 
     try:
         response = requests.post(oauth_token_url(portal_model_instance.url), data=payload, timeout=15,
-                                 verify=False)
+                                 verify=oauth_verify_tls())
         response.raise_for_status()
         data = response.json()
     except Exception as e:
@@ -674,7 +689,7 @@ def exchange_oauth_authorization_code(portal_model_instance, code, redirect_uri)
 
     try:
         response = requests.post(oauth_token_url(portal_model_instance.url), data=payload, timeout=15,
-                                 verify=False)
+                                 verify=oauth_verify_tls())
         response.raise_for_status()
         data = response.json()
     except Exception as e:
@@ -716,17 +731,38 @@ def store_oauth_tokens(portal_model_instance, token_data):
     portal_model_instance.oauth_refresh_expiration = (
         timezone.now() + timedelta(seconds=int(refresh_lifetime)) if refresh_lifetime else None)
 
-    # Stored passwords are no longer needed once OAuth is in use.
+    portal_model_instance.username = ""
     portal_model_instance.password = ""
     portal_model_instance.save(update_fields=[
         'auth_method', 'token', 'token_expiration', 'oauth_refresh_token',
-        'oauth_refresh_expiration', 'password'])
+        'oauth_refresh_expiration', 'username', 'password'])
     logger.info(f"OAuth authorization stored for portal '{portal_model_instance.alias}'.")
+
+
+def _oauth_access_token_is_fresh(portal_model_instance, buffer_seconds):
+    """True when the cached access token is present and not about to expire."""
+    return bool(portal_model_instance.token and portal_model_instance.token_expiration
+                and portal_model_instance.token_expiration > timezone.now() + timedelta(seconds=buffer_seconds))
+
+
+def _copy_oauth_token_state(source, destination):
+    """Mirror the token columns from a freshly read Portal row onto a caller's instance."""
+    destination.token = source.token
+    destination.token_expiration = source.token_expiration
+    destination.oauth_refresh_token = source.oauth_refresh_token
+    destination.oauth_refresh_expiration = source.oauth_refresh_expiration
 
 
 def _ensure_oauth_access_token(portal_model_instance, buffer_seconds=120):
     """
     Return a valid OAuth access token, refreshing it when the cached one is missing or stale.
+
+    The portal rotates the refresh token on use, so two workers refreshing at once would
+    leave the loser holding a token the portal has already invalidated - which then reads
+    as a revoked authorization and locks the portal out of every later unattended refresh.
+    The batch tasks run as a celery group against one portal, so the refresh is serialized
+    on the portal row and re-checked under the lock: whoever waits usually finds the token
+    another worker just stored and makes no request at all.
 
     :param portal_model_instance: The Portal model instance configured for OAuth.
     :type portal_model_instance: enterpriseviz.models.Portal
@@ -736,12 +772,33 @@ def _ensure_oauth_access_token(portal_model_instance, buffer_seconds=120):
     :rtype: str
     :raises ConnectionError: If no valid token can be obtained.
     """
-    if portal_model_instance.token and portal_model_instance.token_expiration and \
-        portal_model_instance.token_expiration > timezone.now() + timedelta(seconds=buffer_seconds):
+    if _oauth_access_token_is_fresh(portal_model_instance, buffer_seconds):
         logger.debug(f"Using cached OAuth access token for {portal_model_instance.alias}.")
         return portal_model_instance.token
 
-    return exchange_oauth_refresh_token(portal_model_instance)
+    refresh_error = None
+    with transaction.atomic():
+        locked = Portal.objects.select_for_update().get(pk=portal_model_instance.pk)
+
+        if _oauth_access_token_is_fresh(locked, buffer_seconds):
+            logger.debug(f"Another worker refreshed the OAuth token for {locked.alias}; reusing it.")
+            _copy_oauth_token_state(locked, portal_model_instance)
+            return locked.token
+
+        try:
+            exchange_oauth_refresh_token(locked)
+        except ConnectionError as e:
+            # Let the atomic block commit: _flag_oauth_reconsent() records the revoked
+            # authorization inside it, and rolling that back would lose the only signal
+            # the UI has to prompt for a reconnect. Re-raised below, outside the block.
+            refresh_error = e
+
+        _copy_oauth_token_state(locked, portal_model_instance)
+
+    if refresh_error:
+        raise refresh_error
+
+    return portal_model_instance.token
 
 
 def _update_portal_token_info(portal_model_instance, target_gis_connection):
