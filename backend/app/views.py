@@ -42,6 +42,7 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.template import loader
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare
+from django.utils.html import escape
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django_celery_results.models import TaskResult
@@ -650,8 +651,8 @@ def _privilege_warning(username, absent):
     :return: Warning text
     :rtype: str
     """
-    return (f"Saved, but '{username}' is missing privilege(s) needed for updates: "
-            f"{', '.join(absent)}. Content updates will fail until the account's role grants them.")
+    return escape(f"Saved, but '{username}' is missing privilege(s) needed for updates: "
+                  f"{', '.join(absent)}. Content updates will fail until the account's role grants them.")
 
 
 def _needs_oauth_connect(portal):
@@ -673,8 +674,12 @@ def _render_oauth_connect_prompt(request, portal, reason=None):
     :rtype: HttpResponse
     """
     logger.info(f"Portal '{portal.alias}' needs OAuth authorization; prompting to connect.")
-    return render(request, "portals/portal_connect.html",
-                  {"instance": portal, "reason": reason})
+    response = render(request, "portals/portal_connect.html",
+                      {"instance": portal, "reason": reason})
+    response["HX-Retarget"] = "body"
+    response["HX-Reswap"] = "beforeend"
+    response["HX-Push-Url"] = "false"
+    return response
 
 
 def _form_error_alert(form):
@@ -688,7 +693,7 @@ def _form_error_alert(form):
     :return: Alert text
     :rtype: str
     """
-    messages_found = [error for errors in form.errors.values() for error in errors]
+    messages_found = [escape(error) for errors in form.errors.values() for error in errors]
     if not messages_found:
         return "Please correct the errors below."
     if len(messages_found) == 1:
@@ -782,12 +787,13 @@ def portal_oauth_callback_view(request):
         messages.error(request, str(e))
         return redirect("enterpriseviz:viz", instance=portal.alias)
 
-    # Confirm the consenting account can actually do the work before storing its token.
-    # Only the content-update privileges are required here; the tools enforce their own
-    # (destructive) privileges when they run, so lacking those must not block authorization.
+    # Confirm the account can actually do the work before storing its token.
+    # Only the content-update privileges are required here; the tools enforce their own privileges
     try:
         target = gis.GIS(portal.url, token=token_data["access_token"], verify_cert=False)
         me = target.users.me
+        if me is None:
+            raise ValueError("the session is not signed in")
         portal_type = portal.portal_type or ("portal" if target.properties.isPortal else "agol")
         missing = missing_privileges(me, portal_update_privileges(portal_type))
     except Exception as e:
@@ -805,8 +811,8 @@ def portal_oauth_callback_view(request):
 
     utils.store_oauth_tokens(portal, token_data)
 
-    if portal.portal_type is None:
-        portal.portal_type = "portal" if target.properties.isPortal else "agol"
+    if portal.portal_type != portal_type:
+        portal.portal_type = portal_type
         portal.save(update_fields=['portal_type'])
 
     logger.info(f"Portal '{portal.alias}' connected via OAuth as '{me.username}'.")
@@ -2308,8 +2314,8 @@ def tool_run(request, instance, tool_name):
         logger.warning(f"Tool '{tool_name}' blocked: portal '{portal.alias}' is not authorized.")
         return HttpResponse(status=200, headers={
             "HX-Trigger-After-Settle": json.dumps({
-                "showDangerAlert": f"{portal.alias} is not authorized. Open the portal settings and "
-                                   f"use Connect with ArcGIS before running tools."
+                "showDangerAlert": f"{escape(portal.alias)} is not authorized. Open the portal settings "
+                                   f"and use Connect with ArcGIS before running tools."
             })
         })
 
