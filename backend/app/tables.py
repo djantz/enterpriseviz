@@ -8,7 +8,29 @@ import json
 from .models import Webmap, Service, Layer, App, User, LogEntry
 
 
-class WebmapTable(tables.Table):
+class ColumnVisibilityTableMixin:
+    """Column metadata for tables supporting show/hide columns."""
+    DEFAULT_VISIBLE_COLUMNS = ()  # empty => all columns visible by default
+
+    @classmethod
+    def default_visible_columns(cls):
+        return tuple(cls.DEFAULT_VISIBLE_COLUMNS) or tuple(cls.base_columns)
+
+    @classmethod
+    def get_column_labels(cls):
+        """Return (field_name, label) tuples: Meta.sequence order first, remaining base_columns after."""
+        meta = getattr(cls, "Meta", None)
+        sequence = tuple(getattr(meta, "sequence", ()) or ())
+        ordered = [n for n in sequence if n != "..." and n in cls.base_columns]
+        ordered += [n for n in cls.base_columns if n not in ordered]
+        return [(n, cls.base_columns[n].header or n.replace("_", " ").title()) for n in ordered]
+
+
+class WebmapTable(ColumnVisibilityTableMixin, tables.Table):
+    DEFAULT_VISIBLE_COLUMNS = ("details", "title_link", "webmap_owner", "webmap_created",
+                               "webmap_modified", "webmap_access", "webmap_views",
+                               "depends_on_count", "used_by_count")
+
     details = tables.TemplateColumn(
         """<calcite-button
           href="{% url 'enterpriseviz:map' instance=record.portal_instance id=record.webmap_id %}"
@@ -20,8 +42,10 @@ class WebmapTable(tables.Table):
           label="View details for {{ record.webmap_title }}">
           Details
         </calcite-button>""",
-        orderable=False, attrs={"td": {"class": "table-cell-details"}})
-    title_link = tables.Column(orderable=True, accessor="webmap_title")
+        orderable=False, exclude_from_export=True, attrs={"td": {"class": "table-cell-details"}})
+    title_link = tables.Column(verbose_name="Title", orderable=True, accessor="webmap_title")
+    depends_on_count = tables.Column(verbose_name="Depends On", orderable=True, empty_values=())
+    used_by_count = tables.Column(verbose_name="Used By", orderable=True, empty_values=())
 
     class Meta:
         model = Webmap
@@ -39,7 +63,12 @@ class WebmapTable(tables.Table):
         return format_html('<calcite-link href="{}" target="_blank">{}</calcite-link>', record.webmap_url, value)
 
 
-class ServiceTable(tables.Table):
+class ServiceTable(ColumnVisibilityTableMixin, tables.Table):
+    DEFAULT_VISIBLE_COLUMNS = ("details", "service_name", "grouped_layers", "URL",
+                               "service_mxd_server", "service_mxd", "service_owner",
+                               "service_access", "service_usage_trend", "service_usage",
+                               "depends_on_count", "used_by_count")
+
     details = tables.TemplateColumn(
         """<calcite-button
         href="{% url 'enterpriseviz:service' instance=record.portal_instance url=record.service_name %}"
@@ -51,7 +80,7 @@ class ServiceTable(tables.Table):
         label="View details for {{ record.service_name }}">
         Details
         </calcite-button>""",
-        orderable=False, attrs={"td": {"class": "table-cell-details"}})
+        orderable=False, exclude_from_export=True, attrs={"td": {"class": "table-cell-details"}})
     URL = tables.TemplateColumn(
         '{% for url in record.service_url_as_list %} <calcite-link href="{{ url }}" target="_blank">{{ url }}</calcite-link>{% endfor %}',
         orderable=False)
@@ -63,12 +92,14 @@ class ServiceTable(tables.Table):
         empty_values=(),
         attrs={'td': {'class': 'sparkline-cell'}}
     )
+    depends_on_count = tables.Column(verbose_name="Depends On", orderable=True, empty_values=())
+    used_by_count = tables.Column(verbose_name="Used By", orderable=True, empty_values=())
 
     class Meta:
         model = Service
         fields = ("service_name", "service_mxd_server", "service_mxd",
-                  "service_owner",
-                  "service_access", "service_usage_trend")
+                  "service_owner", "service_created", "service_modified",
+                  "service_access", "service_view", "service_usage_trend")
         order_by = "service_name"
         sequence = ("details", "service_name", "grouped_layers", "URL")
         attrs = {
@@ -127,7 +158,10 @@ class ServiceTable(tables.Table):
             json.dumps(value)
         )
 
-class LayerTable(tables.Table):
+class LayerTable(ColumnVisibilityTableMixin, tables.Table):
+    DEFAULT_VISIBLE_COLUMNS = ("details", "layer_name", "layer_database", "layer_server",
+                               "layer_version", "used_by_count")
+
     details=tables.TemplateColumn(
         """<calcite-button
         href="{% url 'enterpriseviz:layer' name=record.layer_name %}{% if record.layer_server or record.layer_database or record.layer_version %}?{% endif %}{% if record.layer_server %}server={{ record.layer_server|urlencode }}{% if record.layer_database or record.layer_version %}&{% endif %}{% endif %}{% if record.layer_database %}database={{ record.layer_database|urlencode }}{% if record.layer_version %}&{% endif %}{% endif %}{% if record.layer_version %}version={{ record.layer_version|urlencode }}{% endif %}"
@@ -139,7 +173,9 @@ class LayerTable(tables.Table):
         label="View details for {{ record.layer_name }}">
         Details
         </calcite-button>""",
-        orderable=False, attrs={"td": {"class": "table-cell-details"}})
+        orderable=False, exclude_from_export=True, attrs={"td": {"class": "table-cell-details"}})
+    used_by_count = tables.Column(verbose_name="Used By", orderable=True,
+                                  accessor="layer_used_by_count", empty_values=())
 
     class Meta:
         model = Layer
@@ -150,16 +186,38 @@ class LayerTable(tables.Table):
             "class": "table table-striped"
         }
 
+    def render_used_by_count(self, value, record):
+        """Total distinct services + maps + apps using this feature class.
+
+        Reads the denormalized counts stored on the row by
+        utils.update_layer_dependency_counts (grouped by layer_name, since the
+        detail view treats one name across locations as a single item). The
+        title breaks the total down; the stored value keeps the column sortable.
+        """
+        return format_html(
+            '<span title="{} services, {} maps, {} apps">{}</span>',
+            record.layer_used_by_services, record.layer_used_by_maps,
+            record.layer_used_by_apps, value,
+        )
+
+    def value_used_by_count(self, value):
+        """Plain integer for CSV/Excel export (no tooltip markup)."""
+        return value
 
 
-class AppTable(tables.Table):
-    title_link = tables.Column(orderable=True, accessor="app_title")
+
+class AppTable(ColumnVisibilityTableMixin, tables.Table):
+    DEFAULT_VISIBLE_COLUMNS = ("title_link", "app_type", "app_owner", "app_created",
+                               "app_modified", "app_access", "app_views", "depends_on_count")
+
+    title_link = tables.Column(verbose_name="Title", orderable=True, accessor="app_title")
+    depends_on_count = tables.Column(verbose_name="Depends On", orderable=True, empty_values=())
 
     class Meta:
         model = App
         fields = (
             "app_owner", "app_type", "app_created", "app_modified",
-            "app_access")
+            "app_access", "app_views")
         order_by = "title_link"
         sequence = ("title_link", "app_type")
         attrs = {
@@ -170,18 +228,23 @@ class AppTable(tables.Table):
         return format_html('<calcite-link href="{}" target="_blank">{}</calcite-link>', record.app_url, value)
 
 
-class UserTable(tables.Table):
+class UserTable(ColumnVisibilityTableMixin, tables.Table):
+    DEFAULT_VISIBLE_COLUMNS = ("user_username", "user_first_name", "user_last_name", "user_email",
+                               "user_created", "user_last_login", "user_role", "user_pro_license",
+                               "user_pro_last", "user_items")
+
     class Meta:
         model = User
         fields = ("user_username", "user_first_name", "user_last_name", "user_email", "user_created",
-                  "user_last_login", "user_role", "user_pro_license", "user_pro_last", "user_items")
+                  "user_last_login", "user_role", "user_pro_license", "user_pro_last", "user_items",
+                  "user_provider", "user_disabled")
         order_by = 'user_username'
         attrs = {
             "class": "table table-striped"
         }
 
 
-class LogEntryTable(tables.Table):
+class LogEntryTable(ColumnVisibilityTableMixin, tables.Table):
     DEFAULT_VISIBLE_COLUMNS = ("timestamp", "level", "logger_name", "message", "traceback")
 
     timestamp = tables.DateTimeColumn(format="Y-m-d H:i:s T", verbose_name="Timestamp")
@@ -218,15 +281,3 @@ class LogEntryTable(tables.Table):
         attrs = {
             "class": "table table-striped"
         }
-
-    @classmethod
-    def get_column_labels(cls):
-        """Return a list of tuples (field_name, field_label) for columns in Meta.sequence or Meta.fields."""
-        column_source_list = cls.Meta.sequence if hasattr(cls.Meta,
-                                                          'sequence') and cls.Meta.sequence else cls.Meta.fields
-        labels = []
-        if column_source_list:
-            for field_name in column_source_list:
-                if field_name in cls.base_columns:
-                    labels.append((field_name, cls.base_columns[field_name].verbose_name))
-        return labels
