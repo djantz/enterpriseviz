@@ -376,12 +376,23 @@ table.dataTable {
   border-color: var(--calcite-color-surface-3) !important
 }
 
-.table_filter {
-  width: 50%;
-  float: right;
-  text-align: right;
-  display: inline;
-  margin-bottom: 16px;
+/* Target all filter containers whose ID ends with "_filter" */
+div[id$="_filter"] {
+  display: flex !important;
+  width: 50% !important;
+  gap: 10px;
+  align-items: center;
+  float: right; /* Keeps the container on the right side of the table header */
+}
+
+/* Ensure the dropdown only takes the space it needs */
+div[id$="_filter"] > calcite-dropdown {
+  flex: 0 0 auto !important;
+}
+
+/* Ensure the search input expands to fill all remaining space */
+div[id$="_filter"] > calcite-input {
+  flex: 1 1 auto !important;
 }
 
 table.dataTable th.focus,

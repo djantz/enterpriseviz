@@ -218,6 +218,8 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
         instance_item.webmap_updated = timezone.now()
         instance_item.save()
 
+        utils.update_layer_dependency_counts()
+
         if not result.error_messages:
             result.set_success()
         logger.info(f"Web maps update for portal '{instance_alias}' completed.")
@@ -1469,6 +1471,8 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
             instance_item.service_updated = update_time
             instance_item.save()
 
+            utils.update_layer_dependency_counts()
+
             result.set_success()
             logger.info(f"Services update for portal '{instance_alias}' completed successfully")
             logger.debug(f"Final result: {result.to_json()}")
@@ -1997,6 +2001,8 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
         instance_item.webapp_updated = timezone.now()
         instance_item.save()
 
+        utils.update_layer_dependency_counts()
+
         result.set_success()
         logger.info(f"Web applications update for portal '{instance_alias}' completed successfully")
         logger.debug(f"Final result: {result.to_json()}")
@@ -2155,6 +2161,7 @@ def process_single_app(item, target, instance_item, update_time, result=None):
             result.add_update()
 
         logger.debug(f"Retrieving detailed data for application: {app_id}")
+        data_retrieved = True
         try:
             data = item.get_data()
             logger.debug(f"Successfully retrieved detailed data for application: {app_id}")
@@ -2162,6 +2169,7 @@ def process_single_app(item, target, instance_item, update_time, result=None):
             logger.warning(f"Error retrieving detailed data for application {app_id}: {e}")
             result.add_error(f"Error retrieving detailed data for application {app_id}")
             data = {}
+            data_retrieved = False
 
         logger.debug(f"Application type: {item.type}")
 
@@ -3165,6 +3173,23 @@ def process_single_app(item, target, instance_item, update_time, result=None):
 
     logger.info(f"Successfully processed application '{app_id}' - '{app_title}'")
 
+    # Reconcile relationships: remove App_Service/App_Map rows not refreshed this
+    # run (dependencies the app no longer references). Every relationship written
+    # above stamps updated_date=update_time, so anything older is stale. Skipped
+    # when the app's data could not be retrieved, so a transient fetch failure
+    # never wipes still-valid relationships.
+    if data_retrieved:
+        removed_services = App_Service.objects.filter(
+            portal_instance=instance_item, app_id=app_obj, updated_date__lt=update_time
+        ).delete()[0]
+        removed_maps = App_Map.objects.filter(
+            portal_instance=instance_item, app_id=app_obj, updated_date__lt=update_time
+        ).delete()[0]
+        if removed_services or removed_maps:
+            logger.info(
+                f"Removed stale relationships for application '{app_id}': "
+                f"{removed_services} service(s), {removed_maps} map(s)")
+
 
 @shared_task(bind=True, name="Update users", time_limit=6000, soft_time_limit=3000)
 @celery_logging_context
@@ -3685,11 +3710,24 @@ def process_webmap(self, instance_alias, item_id, operation):
 
         service_count = len(webmap_data["webmap_services"])
         logger.debug(f"Linking {service_count} services to web map: {item_id}")
+        # Capture the layer names this web map touches before and after relinking:
+        # link_services_to_webmap deletes stale Map_Service rows, so the "before"
+        # snapshot preserves names whose map count drops to zero.
+        affected_layers = set(
+            Map_Service.objects.filter(webmap_id=obj)
+            .values_list("service_id__layer__layer_name", flat=True)
+        )
         link_services_to_webmap(instance_item, obj, webmap_data["webmap_services"])
+        affected_layers.update(
+            Map_Service.objects.filter(webmap_id=obj)
+            .values_list("service_id__layer__layer_name", flat=True)
+        )
         logger.debug(f"Successfully linked {service_count} services to web map: {item_id}")
 
         instance_item.webmap_updated = update_time
         instance_item.save()
+
+        utils.update_layer_dependency_counts(affected_layers)
 
         logger.info(f"Web map {item_id} processing completed successfully")
         return
@@ -3780,11 +3818,19 @@ def process_service(self, instance_alias, item, operation):
         base_url = utils.resolve_server_public_url(server_admin, server_map)
 
         service_result = process_single_service(target, instance_item, service_admin, base_url, folder_name, update_time, regex_patterns, result)
+        affected_layers = set()
         if service_result is not None:
             service_list.append(service_result)
             s_obj = Service.objects.get(portal_instance=instance_item,
                                         service_name__icontains=service_name,
                                         service_url__overlap=[service.url])
+
+            # Capture every layer currently linked to this service, including
+            # orphaned links removed below, so all affected counts are recomputed.
+            affected_layers.update(
+                Layer_Service.objects.filter(service_id=s_obj)
+                .values_list("layer_id__layer_name", flat=True)
+            )
 
             if django_settings.USE_SERVICE_USAGE_REPORT:
                 logger.debug(f"Processing usage reports for {len(service_list)} services")
@@ -3808,6 +3854,8 @@ def process_service(self, instance_alias, item, operation):
                 logger.debug(f"No orphaned Layer_Service relationships found for service: {service_name}")
         instance_item.service_updated = update_time
         instance_item.save()
+
+        utils.update_layer_dependency_counts(affected_layers)
         return
     except Exception as e:
         logger.exception(f"Unable to update service {item} for {instance_alias}: {e}")
@@ -3843,10 +3891,34 @@ def process_webapp(self, instance_alias, item_id, operation):
         logger.debug(f"Web application type: {item.type}, Owner: {item.owner}")
 
         logger.debug(f"Processing web application details for: {item_id}")
+        # Recompute counts only for the layers this app depends on (directly via
+        # its services or via its web maps) instead of scanning every layer.
+        # Capture the dependency layers BEFORE reconciliation and union with the
+        # AFTER set: process_single_app removes relationships the app no longer
+        # references, so the "before" snapshot ensures dropped layers still get
+        # their counts recomputed.
+        affected_layers = set(
+            App_Service.objects.filter(portal_instance=instance_item, app_id__app_id=item_id)
+            .values_list("service_id__layer__layer_name", flat=True)
+        )
+        affected_layers.update(
+            App_Map.objects.filter(portal_instance=instance_item, app_id__app_id=item_id)
+            .values_list("webmap_id__map_service__service_id__layer__layer_name", flat=True)
+        )
         process_single_app(item, target, instance_item, update_time)
+        affected_layers.update(
+            App_Service.objects.filter(portal_instance=instance_item, app_id__app_id=item_id)
+            .values_list("service_id__layer__layer_name", flat=True)
+        )
+        affected_layers.update(
+            App_Map.objects.filter(portal_instance=instance_item, app_id__app_id=item_id)
+            .values_list("webmap_id__map_service__service_id__layer__layer_name", flat=True)
+        )
 
         instance_item.webapp_updated = update_time
         instance_item.save()
+
+        utils.update_layer_dependency_counts(affected_layers)
 
         logger.info(f"Web application {item_id} processing completed successfully")
         return
