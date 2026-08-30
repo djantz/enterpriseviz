@@ -40,6 +40,14 @@ class Portal(models.Model):
     alias = models.CharField(verbose_name="Alias", primary_key=True, unique=True, max_length=20)
     url = models.TextField(verbose_name="URL", blank=False, null=False)
     store_password = models.BooleanField(default=False)
+    auth_methods = (
+        ("prompt", "Prompt for credentials"),
+        ("password", "Stored username and password"),
+        ("oauth", "OAuth 2.0 (ArcGIS sign in)"),
+    )
+    auth_method = models.CharField(
+        verbose_name="Authentication method", max_length=16, choices=auth_methods, default="prompt"
+    )
     types = (
         ("agol", "ArcGIS Online"),
         ("portal", "Enterprise Portal"),
@@ -49,6 +57,10 @@ class Portal(models.Model):
     password = encrypt(models.TextField(blank=True, null=False))
     token = encrypt(models.TextField(blank=True))
     token_expiration = models.DateTimeField(blank=True, null=True)
+    oauth_client_id = models.CharField(verbose_name="Client ID", max_length=128, blank=True)
+    oauth_client_secret = encrypt(models.TextField(verbose_name="Client Secret", blank=True))
+    oauth_refresh_token = encrypt(models.TextField(blank=True))
+    oauth_refresh_expiration = models.DateTimeField(blank=True, null=True)
     webmap_updated = models.DateTimeField(blank=True, null=True)
     service_updated = models.DateTimeField(blank=True, null=True)
     webapp_updated = models.DateTimeField(blank=True, null=True)
@@ -68,6 +80,33 @@ class Portal(models.Model):
 
     def __str__(self):
         return self.alias
+
+    def save(self, *args, **kwargs):
+        # store_password is retained for one release; keep it derived from auth_method.
+        self.store_password = self.auth_method == "password"
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and "store_password" not in update_fields:
+            kwargs["update_fields"] = list(update_fields) + ["store_password"]
+        super().save(*args, **kwargs)
+
+    @property
+    def requires_interactive_credentials(self):
+        """True when an operator must supply credentials for each connection."""
+        return self.auth_method == "prompt"
+
+    @property
+    def oauth_is_configured(self):
+        """True when this portal has a usable OAuth refresh token."""
+        return bool(self.auth_method == "oauth" and self.oauth_client_id and self.oauth_refresh_token)
+
+    @property
+    def oauth_needs_reconsent(self):
+        """True when the authorization is incomplete, missing, or past its expiration."""
+        if self.auth_method != "oauth":
+            return False
+        if not self.oauth_client_id or not self.oauth_refresh_token:
+            return True
+        return bool(self.oauth_refresh_expiration and self.oauth_refresh_expiration <= timezone.now())
 
 
 class User(models.Model):
@@ -218,9 +257,10 @@ class Layer(models.Model):
 class PortalCreateForm(forms.ModelForm):
     class Meta:
         model = Portal
-        fields = ("alias", "url", "portal_type", "store_password", "username", "password", "admin_emails",
-                  "enable_admin_notifications")
-        widgets = {"password": forms.PasswordInput(render_value=False), }
+        fields = ("alias", "url", "portal_type", "auth_method", "username", "password", "oauth_client_id",
+                  "oauth_client_secret", "admin_emails", "enable_admin_notifications")
+        widgets = {"password": forms.PasswordInput(render_value=False),
+                   "oauth_client_secret": forms.PasswordInput(render_value=False), }
 
     def clean_url(self):
         """Ensure the URL is valid."""
@@ -255,24 +295,95 @@ class PortalCreateForm(forms.ModelForm):
         # Return cleaned emails (comma-separated, no extra whitespace)
         return ', '.join(email_list)
 
+    def clean_password(self):
+        """Keep the stored password when the field is submitted blank."""
+        password = self.cleaned_data.get("password")
+        if not password and self._is_update:
+            return self.instance.password
+        return password
+
+    def clean_oauth_client_secret(self):
+        """Keep the stored client secret when the field is submitted blank."""
+        secret = self.cleaned_data.get("oauth_client_secret")
+        if not secret and self._is_update:
+            return self.instance.oauth_client_secret
+        return secret
+
     def clean(self):
-        """Ensure store_password requires username and password."""
+        """Ensure the selected authentication method has the fields it needs."""
         cleaned_data = super(PortalCreateForm, self).clean()
-        store_password = cleaned_data.get("store_password")
+        auth_method = cleaned_data.get("auth_method")
         username = cleaned_data.get("username")
         password = cleaned_data.get("password")
-        if store_password:
+        client_id = cleaned_data.get("oauth_client_id")
+
+        if auth_method == "password":
             if not username:
                 self.add_error("username", "Username is required when storing credentials.")
             if not password:
                 self.add_error("password", "Password is required when storing credentials.")
+        elif auth_method == "oauth":
+            if not client_id:
+                self.add_error("oauth_client_id", "Client ID is required for OAuth authentication.")
         return cleaned_data
+
+    def _clear_unused_credentials(self, portal):
+        """
+        Erase every credential the selected authentication method does not use.
+
+        A secret that nothing reads is pure liability, and this form is the only place an
+        operator can remove one short of the Django admin. So rather than clearing what
+        the previous method left behind, this states the invariant positively: a portal
+        stores credentials for its current method and nothing else. Applied on every save
+        it is self-healing, and it does not depend on the browser having disabled the
+        inputs that belong to the other method.
+
+        :param portal: The unsaved Portal instance carrying the pending changes
+        """
+        if portal.auth_method != "password":
+            portal.username = ""
+            portal.password = ""
+
+        if portal.auth_method != "oauth":
+            portal.oauth_client_id = ""
+            portal.oauth_client_secret = ""
+            portal.oauth_refresh_token = ""
+            portal.oauth_refresh_expiration = None
+
+    def _drop_invalidated_credentials(self, portal):
+        """
+        Clear stored credentials that the pending changes make unusable.
+
+        Tokens are issued by one portal to one application, so changing the URL or the
+        client credentials invalidates them. Left in place they are retried and rejected
+        with a misleading error instead of prompting to reconnect. Credentials stranded by
+        an authentication method change are handled by :meth:`_clear_unused_credentials`.
+
+        :param portal: The unsaved Portal instance carrying the pending changes
+        """
+        if not self._is_update:
+            return  # New portal; there is nothing stored yet.
+
+        portal_changed = portal.url != self._original_url
+        method_changed = portal.auth_method != self._original_auth_method
+        oauth_app_changed = (portal.oauth_client_id != self._original_oauth_client_id
+                             or portal.oauth_client_secret != self._original_oauth_client_secret)
+
+        # The cached access token is only valid for the portal and method that issued it.
+        if portal_changed or method_changed:
+            portal.token = ""
+            portal.token_expiration = None
+
+        # The refresh token belongs to one application on one portal.
+        if portal_changed or oauth_app_changed:
+            portal.oauth_refresh_token = ""
+            portal.oauth_refresh_expiration = None
 
     def save(self, commit=True):
         user = super().save(commit=False)
-        new_password = self.cleaned_data.get("password")
-        if new_password:
-            user.password = new_password
+        self._drop_invalidated_credentials(user)
+        # Last, so it also sweeps up anything the invalidation above chose to keep.
+        self._clear_unused_credentials(user)
         if commit:
             user.save()
         return user
@@ -281,6 +392,19 @@ class PortalCreateForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields["password"].required = False  # Make password optional
         self.fields["password"].widget.attrs["placeholder"] = "Leave blank to keep current password"
+        self.fields["oauth_client_id"].required = False
+        self.fields["oauth_client_secret"].required = False
+        self.fields["oauth_client_secret"].widget.attrs["placeholder"] = "Leave blank to keep current secret"
+        # Remember what the stored credentials were granted against, so save() can tell
+        # which of them the pending changes invalidate. This has to be captured here:
+        # alias is the primary key, so once _post_clean() has run, instance.pk holds the
+        # submitted alias and no longer distinguishes an update from a new portal.
+        stored = self.instance if self.instance.pk else None
+        self._is_update = stored is not None
+        self._original_url = stored.url if stored else ""
+        self._original_auth_method = stored.auth_method if stored else ""
+        self._original_oauth_client_id = stored.oauth_client_id if stored else ""
+        self._original_oauth_client_secret = stored.oauth_client_secret if stored else ""
 
 
 class PortalScheduleForm(forms.ModelForm):

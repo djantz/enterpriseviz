@@ -911,7 +911,7 @@ htmx.on("htmx:load", async (e) => {
     // Form container update (validation errors, form refresh)
     const setupHandler = FORM_SETUP_HANDLERS[parent];
     if (setupHandler) {
-        const modal = e.detail.target.closest("calcite-dialog");
+        const modal = target.closest("calcite-dialog");
         if (modal) {
             await ensureCalciteComponentsInitialized(modal);
             await setupHandler(modal);
@@ -1137,44 +1137,64 @@ async function ensureCalciteComponentsInitialized(modal) {
 }
 
 async function setupPortalFormLogic(modal) {
-    const storePasswordControl = modal.querySelector("#store-password");
-    if (!storePasswordControl) {
+    const authMethodControl = modal.querySelector("#auth-method");
+    if (!authMethodControl) {
         return;
     }
 
-    await storePasswordControl.componentOnReady();
+    await authMethodControl.componentOnReady();
 
     const storePasswordSection = modal.querySelector("#store-password-container");
     if (!storePasswordSection) {
         return;
     }
 
+    const oauthSection = modal.querySelector("#oauth-container");
     const usernameInput = modal.querySelector("calcite-input[name='username']");
     const passwordInput = modal.querySelector("calcite-input[name='password']");
+    const clientIdInput = modal.querySelector("calcite-input[name='oauth_client_id']");
+    const clientSecretInput = modal.querySelector("calcite-input[name='oauth_client_secret']");
 
-    function toggleCredentials() {
-        const storePasswordItem = storePasswordControl.querySelector("calcite-segmented-control-item[value='False']");
-        if (!storePasswordItem) {
+    function applySectionState(section, inputs, visible, requiredInputs) {
+        if (!section) {
             return;
         }
-        const shouldHide = storePasswordItem.checked;
-
-        storePasswordSection.hidden = shouldHide;
-        storePasswordSection.setAttribute('aria-hidden', shouldHide);
-        usernameInput.disabled = shouldHide;
-        passwordInput.disabled = shouldHide;
-
-        // Update required state based on visibility
-        if (shouldHide) {
-            usernameInput.removeAttribute('required');
-            passwordInput.removeAttribute('required');
-        } else {
-            usernameInput.setAttribute('required', '');
-            passwordInput.setAttribute('required', '');
-        }
+        section.hidden = !visible;
+        section.setAttribute('aria-hidden', String(!visible));
+        inputs.forEach(input => {
+            if (!input) {
+                return;
+            }
+            input.disabled = !visible;
+            if (visible && requiredInputs.includes(input)) {
+                input.setAttribute('required', '');
+            } else {
+                input.removeAttribute('required');
+            }
+        });
     }
 
-    storePasswordControl.addEventListener("calciteSegmentedControlChange", toggleCredentials);
+    function selectedAuthMethod() {
+        if (authMethodControl.value) {
+            return authMethodControl.value;
+        }
+        const items = Array.from(authMethodControl.querySelectorAll("calcite-segmented-control-item"));
+        const checked = items.find(item => item.checked) || items.find(item => item.hasAttribute("checked"));
+        return checked ? checked.value : "prompt";
+    }
+
+    function toggleCredentials() {
+        const method = selectedAuthMethod();
+
+        applySectionState(storePasswordSection, [usernameInput, passwordInput],
+            method === "password", [usernameInput, passwordInput]);
+
+        // The client secret may be left blank on update to keep the stored value.
+        applySectionState(oauthSection, [clientIdInput, clientSecretInput],
+            method === "oauth", [clientIdInput]);
+    }
+
+    authMethodControl.addEventListener("calciteSegmentedControlChange", toggleCredentials);
     toggleCredentials();
 
     const enableEmailControl = modal.querySelector("#enable-email");
@@ -1323,6 +1343,32 @@ htmx.on("showInfoAlert", (e) => {
 htmx.on("showWarningAlert", (e) => {
     showAlert("warning", "Warning", e.detail.value, true).catch(console.error);
 });
+
+// Django message level -> [alert kind, alert label, auto-close]
+const PENDING_ALERT_LEVELS = {
+    error: ["danger", "Error", false],
+    warning: ["warning", "Warning", true],
+    success: ["success", "Success", true],
+    info: ["info", "Information", true],
+    debug: ["info", "Information", true],
+};
+
+// Alerts queued server-side before a full-page redirect (e.g. returning from the
+// ArcGIS OAuth flow). HX-Trigger headers only fire on htmx responses, so these are
+// rendered into the page and replayed here on load.
+function showPendingAlerts() {
+    document.querySelectorAll("#pending-alerts .pending-alert").forEach((el) => {
+        const [kind, label, autoClose] = PENDING_ALERT_LEVELS[el.dataset.level] || PENDING_ALERT_LEVELS.info;
+        // innerHTML keeps Django's escaping intact; showAlert interpolates into innerHTML.
+        showAlert(kind, label, el.innerHTML.trim(), autoClose).catch(console.error);
+    });
+}
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", showPendingAlerts);
+} else {
+    showPendingAlerts();
+}
 
 document.addEventListener('DOMContentLoaded', function () {
     refreshActivePortal();

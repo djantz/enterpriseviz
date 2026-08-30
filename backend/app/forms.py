@@ -664,7 +664,7 @@ class PortalCredentialsForm(forms.Form):
     Form for handling portal credential updates with context-aware validation.
 
     The form adapts its validation based on whether credentials are actually required
-    for the portal (i.e., portal.store_password is False).
+    for the portal (i.e., portal.requires_interactive_credentials is True).
     """
 
     ITEM_CHOICES = [

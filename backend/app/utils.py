@@ -42,6 +42,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import get_connection, EmailMultiAlternatives, EmailMessage
 from django.core.validators import validate_email
+from django.db import transaction
 from django.db.models import Count, Exists, F, OuterRef, Prefetch, QuerySet, Q
 from django.http import HttpResponse
 from django.utils import timezone
@@ -333,6 +334,38 @@ Statistics:
         return asdict(self)
 
 
+def check_update_privileges(target_gis, is_agol):
+    """
+    Report which content-update privileges the connected account is missing.
+
+    Kept here rather than in tasks so credential validation can use it without importing
+    the task module (tasks already imports utils). The privilege names are resolved from
+    tasks lazily to keep a single definition.
+
+    :param target_gis: Authenticated arcgis.gis.GIS connection
+    :param is_agol: True for ArcGIS Online, which has no federated servers
+    :type is_agol: bool
+    :return: Privilege strings the account lacks, empty when fully privileged or unknown
+    :rtype: list
+    """
+    from . import tasks
+
+    try:
+        me = target_gis.users.me
+        if me is None:
+            return []
+        required = tasks.portal_update_privileges("agol" if is_agol else "portal")
+        absent = tasks.missing_privileges(me, required)
+        if absent:
+            logger.warning(f"User '{getattr(me, 'username', 'unknown')}' is missing update "
+                           f"privilege(s): {', '.join(absent)}")
+        return absent
+    except Exception as e:
+        # Never block a working connection because the privilege probe failed.
+        logger.warning(f"Could not determine privileges for the connected account: {e}")
+        return []
+
+
 def try_connection(connection_details):
     """
     Attempts to connect to an ArcGIS instance using provided credentials.
@@ -340,6 +373,7 @@ def try_connection(connection_details):
     :param connection_details: Dictionary with 'url', 'username', and 'password'.
     :type connection_details: dict
     :return: Dictionary with 'authenticated' (bool), 'is_agol' (bool or None),
+             'missing_privileges' (list of privilege strings the account lacks),
              and optionally 'error' (str).
     :rtype: dict
     """
@@ -349,7 +383,8 @@ def try_connection(connection_details):
 
     if not all([url, username, password]):
         logger.warning("Missing required connection details (url, username, or password).")
-        return {"authenticated": False, "is_agol": None, "error": "Missing connection details."}
+        return {"authenticated": False, "is_agol": None, "missing_privileges": [],
+                "error": "Missing connection details."}
 
     logger.debug(f"Attempting connection to {url} with user {username}.")
     try:
@@ -359,19 +394,23 @@ def try_connection(connection_details):
         # Verify successful authentication by checking if user property is accessible
         if hasattr(target_gis.properties, 'user') and target_gis.properties.user.username.lower() == username.lower():
             logger.info(f"Successfully connected to {url} as {username} (AGOL: {is_agol}).")
-            return {"authenticated": True, "is_agol": is_agol}
+            return {"authenticated": True, "is_agol": is_agol,
+                    "missing_privileges": check_update_privileges(target_gis, is_agol)}
         else:
             logger.warning(f"Authentication to {url} as {username} appears to have failed or user mismatch.")
-            return {"authenticated": False, "is_agol": None, "error": "Authentication failed or username mismatch."}
+            return {"authenticated": False, "is_agol": None, "missing_privileges": [],
+                    "error": "Authentication failed or username mismatch."}
 
     except requests.exceptions.SSLError as ssl_e:
         logger.error(
             f"SSL Error connecting to {url}. Ensure certs are valid or try verify_cert=False if appropriate. Error: {ssl_e}",
             exc_info=True)
-        return {"authenticated": False, "is_agol": None, "error": f"SSL Error connecting to {url}."}
+        return {"authenticated": False, "is_agol": None, "missing_privileges": [],
+                "error": f"SSL Error connecting to {url}."}
     except Exception as e:
         logger.error(f"Connection attempt to {url} with user {username} failed: {e}", exc_info=True)
-        return {"authenticated": False, "is_agol": None, "error": f"Connection to {url} failed."}
+        return {"authenticated": False, "is_agol": None, "missing_privileges": [],
+                "error": f"Connection to {url} failed."}
 
 
 def connect(portal_model_instance, credential_token=None):
@@ -414,13 +453,18 @@ def connect(portal_model_instance, credential_token=None):
             logger.info(f"Using temporary credentials for portal {portal_model_instance.alias}")
             target_gis = gis.GIS(url, username, password, **gis_kwargs)
 
+        elif portal_model_instance.auth_method == "oauth":
+            logger.debug(f"Using OAuth credentials for {url}.")
+            access_token = _ensure_oauth_access_token(portal_model_instance)
+            target_gis = gis.GIS(url, token=access_token, **gis_kwargs)
+
         elif portal_model_instance.token and portal_model_instance.token_expiration and portal_model_instance.token_expiration > timezone.now():
             logger.debug(f"Using valid stored token for {url}.")
             target_gis = gis.GIS(url, token=portal_model_instance.token, **gis_kwargs)
             if target_gis.properties.isPortal:
                 _update_portal_token_info(portal_model_instance, target_gis)
 
-        elif portal_model_instance.store_password and portal_model_instance.username and portal_model_instance.password:
+        elif portal_model_instance.auth_method == "password" and portal_model_instance.username and portal_model_instance.password:
             logger.debug(f"Using stored credentials for {url}.")
             target_gis = gis.GIS(url, portal_model_instance.username, portal_model_instance.password, **gis_kwargs)
 
@@ -428,6 +472,8 @@ def connect(portal_model_instance, credential_token=None):
             logger.warning(f"No valid credentials or token for {url}. Authentication may fail or be anonymous.")
             raise ConnectionError(f"No valid credentials or token for {url}.")
 
+    except ConnectionError:
+        raise
     except Exception as e:
         logger.error(f"Failed to establish an authenticated session for {url}: {e}", exc_info=True)
         raise ConnectionError(f"Failed to establish an authenticated session for {url}.")
@@ -437,7 +483,7 @@ def connect(portal_model_instance, credential_token=None):
 
     # Ensure connection is actually established (GIS() can sometimes not raise error on init)
     if not target_gis._con.is_logged_in and (
-        credential_token or portal_model_instance.store_password):
+        credential_token or not portal_model_instance.requires_interactive_credentials):
         logger.error(f"Failed to establish an authenticated session for {url}.")
         raise ConnectionError(f"Failed to establish an authenticated session for {url}.")
 
@@ -520,6 +566,242 @@ def resolve_server_public_url(server, server_map):
     logger.warning(f"Unable to resolve public URL for server {server_url} via federation map, "
                    f"deriving from its own URL: {derived}")
     return derived
+
+
+def oauth_token_url(portal_url):
+    """Build the OAuth 2.0 token endpoint for a portal or ArcGIS Online org URL."""
+    return f"{portal_url.rstrip('/')}/sharing/rest/oauth2/token"
+
+
+def oauth_authorize_url(portal_url):
+    """Build the OAuth 2.0 authorization endpoint for a portal or ArcGIS Online org URL."""
+    return f"{portal_url.rstrip('/')}/sharing/rest/oauth2/authorize"
+
+
+def oauth_verify_tls():
+    """
+    Whether to validate the portal's TLS certificate on OAuth token requests.
+
+    These requests carry the client secret and the refresh token, which is long lived and
+    grants unattended administrator access, so the certificate is verified by default.
+    Deployments whose portal uses a certificate the container cannot chain to a trusted
+    root can set OAUTH_VERIFY_TLS to False, or point it at a CA bundle path.
+
+    :return: True, False, or a path to a CA bundle, as accepted by requests' verify=
+    """
+    return getattr(settings, "OAUTH_VERIFY_TLS", True)
+
+
+def _flag_oauth_reconsent(portal_model_instance):
+    """Mark a portal as needing re-consent so the UI can prompt for a new authorization."""
+    portal_model_instance.oauth_refresh_expiration = timezone.now()
+    portal_model_instance.save(update_fields=['oauth_refresh_expiration'])
+
+
+def exchange_oauth_refresh_token(portal_model_instance):
+    """
+    Exchange the stored refresh token for a new access token.
+
+    On success the new access token and its expiration are saved to the Portal instance,
+    along with a rotated refresh token if the portal issued one.
+
+    :param portal_model_instance: The Portal model instance configured for OAuth.
+    :type portal_model_instance: enterpriseviz.models.Portal
+    :return: A valid access token.
+    :rtype: str
+    :raises ConnectionError: If the refresh token is missing, rejected, or the request fails.
+    """
+    if not portal_model_instance.oauth_refresh_token or not portal_model_instance.oauth_client_id:
+        _flag_oauth_reconsent(portal_model_instance)
+        raise ConnectionError(
+            f"Portal '{portal_model_instance.alias}' is not authorized. Please connect it with ArcGIS.")
+
+    payload = {
+        "grant_type": "refresh_token",
+        "client_id": portal_model_instance.oauth_client_id,
+        "refresh_token": portal_model_instance.oauth_refresh_token,
+        "f": "json",
+    }
+    if portal_model_instance.oauth_client_secret:
+        payload["client_secret"] = portal_model_instance.oauth_client_secret
+
+    try:
+        response = requests.post(oauth_token_url(portal_model_instance.url), data=payload, timeout=15,
+                                 verify=oauth_verify_tls())
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        logger.error(f"OAuth token request failed for {portal_model_instance.alias}: {e}", exc_info=True)
+        raise ConnectionError(f"OAuth token request failed for portal '{portal_model_instance.alias}'.")
+
+    # ArcGIS reports OAuth failures in the body with an HTTP 200 response.
+    if "error" in data or "access_token" not in data:
+        error = data.get("error", {})
+        description = error.get("error_description") if isinstance(error, dict) else str(error)
+        logger.error(f"OAuth refresh rejected for {portal_model_instance.alias}: {description}")
+        _flag_oauth_reconsent(portal_model_instance)
+        reason = f" ({description})" if description else ""
+        raise ConnectionError(
+            f"OAuth authorization for portal '{portal_model_instance.alias}' was rejected{reason}. "
+            f"Reconnect it with ArcGIS.")
+
+    update_fields = ['token', 'token_expiration']
+    portal_model_instance.token = data["access_token"]
+    portal_model_instance.token_expiration = timezone.now() + timedelta(seconds=int(data.get("expires_in", 1800)))
+
+    # Portals may rotate the refresh token on use.
+    if data.get("refresh_token"):
+        portal_model_instance.oauth_refresh_token = data["refresh_token"]
+        update_fields.append('oauth_refresh_token')
+    if data.get("refresh_token_expires_in"):
+        portal_model_instance.oauth_refresh_expiration = timezone.now() + timedelta(
+            seconds=int(data["refresh_token_expires_in"]))
+        update_fields.append('oauth_refresh_expiration')
+
+    portal_model_instance.save(update_fields=update_fields)
+    logger.debug(f"OAuth access token refreshed for {portal_model_instance.alias}.")
+    return portal_model_instance.token
+
+
+def exchange_oauth_authorization_code(portal_model_instance, code, redirect_uri):
+    """
+    Exchange an OAuth authorization code for access and refresh tokens.
+
+    Does not persist anything; the caller is responsible for verifying the resulting
+    identity before storing the tokens.
+
+    :param portal_model_instance: The Portal model instance being authorized.
+    :type portal_model_instance: enterpriseviz.models.Portal
+    :param code: The authorization code returned by the portal.
+    :type code: str
+    :param redirect_uri: The redirect URI used in the authorization request.
+    :type redirect_uri: str
+    :return: The parsed token response.
+    :rtype: dict
+    :raises ConnectionError: If the exchange fails or is rejected.
+    """
+    payload = {
+        "grant_type": "authorization_code",
+        "client_id": portal_model_instance.oauth_client_id,
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "f": "json",
+    }
+    if portal_model_instance.oauth_client_secret:
+        payload["client_secret"] = portal_model_instance.oauth_client_secret
+
+    try:
+        response = requests.post(oauth_token_url(portal_model_instance.url), data=payload, timeout=15,
+                                 verify=oauth_verify_tls())
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        logger.error(f"OAuth code exchange failed for {portal_model_instance.alias}: {e}", exc_info=True)
+        raise ConnectionError(f"OAuth token request failed for portal '{portal_model_instance.alias}'.")
+
+    if "error" in data or "access_token" not in data:
+        error = data.get("error", {})
+        description = error.get("error_description") if isinstance(error, dict) else str(error)
+        logger.error(f"OAuth code exchange rejected for {portal_model_instance.alias}: {description}")
+        raise ConnectionError(f"Authorization was rejected by portal '{portal_model_instance.alias}'.")
+
+    if not data.get("refresh_token"):
+        logger.error(f"No refresh token returned for {portal_model_instance.alias}.")
+        raise ConnectionError(
+            f"Portal '{portal_model_instance.alias}' did not return a refresh token. "
+            f"Verify the registered application is configured for offline access.")
+
+    return data
+
+
+def store_oauth_tokens(portal_model_instance, token_data):
+    """
+    Persist the tokens from a successful OAuth exchange and enable OAuth for the portal.
+
+    :param portal_model_instance: The Portal model instance being authorized.
+    :type portal_model_instance: enterpriseviz.models.Portal
+    :param token_data: The token response from :func:`exchange_oauth_authorization_code`.
+    :type token_data: dict
+    """
+    portal_model_instance.auth_method = "oauth"
+    portal_model_instance.token = token_data["access_token"]
+    portal_model_instance.token_expiration = timezone.now() + timedelta(
+        seconds=int(token_data.get("expires_in", 1800)))
+    portal_model_instance.oauth_refresh_token = token_data["refresh_token"]
+
+    # ArcGIS Online caps refresh tokens at 90 days; Enterprise apps may be configured longer.
+    refresh_lifetime = token_data.get("refresh_token_expires_in")
+    portal_model_instance.oauth_refresh_expiration = (
+        timezone.now() + timedelta(seconds=int(refresh_lifetime)) if refresh_lifetime else None)
+
+    portal_model_instance.username = ""
+    portal_model_instance.password = ""
+    portal_model_instance.save(update_fields=[
+        'auth_method', 'token', 'token_expiration', 'oauth_refresh_token',
+        'oauth_refresh_expiration', 'username', 'password'])
+    logger.info(f"OAuth authorization stored for portal '{portal_model_instance.alias}'.")
+
+
+def _oauth_access_token_is_fresh(portal_model_instance, buffer_seconds):
+    """True when the cached access token is present and not about to expire."""
+    return bool(portal_model_instance.token and portal_model_instance.token_expiration
+                and portal_model_instance.token_expiration > timezone.now() + timedelta(seconds=buffer_seconds))
+
+
+def _copy_oauth_token_state(source, destination):
+    """Mirror the token columns from a freshly read Portal row onto a caller's instance."""
+    destination.token = source.token
+    destination.token_expiration = source.token_expiration
+    destination.oauth_refresh_token = source.oauth_refresh_token
+    destination.oauth_refresh_expiration = source.oauth_refresh_expiration
+
+
+def _ensure_oauth_access_token(portal_model_instance, buffer_seconds=120):
+    """
+    Return a valid OAuth access token, refreshing it when the cached one is missing or stale.
+
+    The portal rotates the refresh token on use, so two workers refreshing at once would
+    leave the loser holding a token the portal has already invalidated - which then reads
+    as a revoked authorization and locks the portal out of every later unattended refresh.
+    The batch tasks run as a celery group against one portal, so the refresh is serialized
+    on the portal row and re-checked under the lock: whoever waits usually finds the token
+    another worker just stored and makes no request at all.
+
+    :param portal_model_instance: The Portal model instance configured for OAuth.
+    :type portal_model_instance: enterpriseviz.models.Portal
+    :param buffer_seconds: Refresh early by this many seconds to avoid mid-task expiry.
+    :type buffer_seconds: int
+    :return: A valid access token.
+    :rtype: str
+    :raises ConnectionError: If no valid token can be obtained.
+    """
+    if _oauth_access_token_is_fresh(portal_model_instance, buffer_seconds):
+        logger.debug(f"Using cached OAuth access token for {portal_model_instance.alias}.")
+        return portal_model_instance.token
+
+    refresh_error = None
+    with transaction.atomic():
+        locked = Portal.objects.select_for_update().get(pk=portal_model_instance.pk)
+
+        if _oauth_access_token_is_fresh(locked, buffer_seconds):
+            logger.debug(f"Another worker refreshed the OAuth token for {locked.alias}; reusing it.")
+            _copy_oauth_token_state(locked, portal_model_instance)
+            return locked.token
+
+        try:
+            exchange_oauth_refresh_token(locked)
+        except ConnectionError as e:
+            # Let the atomic block commit: _flag_oauth_reconsent() records the revoked
+            # authorization inside it, and rolling that back would lose the only signal
+            # the UI has to prompt for a reconnect. Re-raised below, outside the block.
+            refresh_error = e
+
+        _copy_oauth_token_state(locked, portal_model_instance)
+
+    if refresh_error:
+        raise refresh_error
+
+    return portal_model_instance.token
 
 
 def _update_portal_token_info(portal_model_instance, target_gis_connection):
@@ -1056,8 +1338,8 @@ def get_usage_report(service_queryset):
         if not portal_instance or portal_instance.alias in processed_portals:
             continue
 
-        if not portal_instance.store_password:
-            logger.debug(f"Skipping portal {portal_instance.alias}, no stored password.")
+        if portal_instance.requires_interactive_credentials:
+            logger.debug(f"Skipping portal {portal_instance.alias}, no unattended credentials.")
             processed_portals.add(portal_instance.alias)
             continue
 
@@ -4432,8 +4714,10 @@ def portal_has_credentials(portal):
     :return: True if a connection can be made from stored auth
     :rtype: bool
     """
-    if portal.store_password:
+    if portal.auth_method == "password":
         return True
+    if portal.auth_method == "oauth":
+        return not portal.oauth_needs_reconsent
     return bool(portal.token and portal.token_expiration
                 and portal.token_expiration > timezone.now())
 
