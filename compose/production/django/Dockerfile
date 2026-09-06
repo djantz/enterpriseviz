@@ -44,9 +44,18 @@ FROM python as python-run-stage
 ARG BUILD_ENVIRONMENT=production
 ARG APP_HOME=/app
 
+# Azure App Service reaches a container's SSH shell over an internal tunnel and
+# requires the well-known root password "Docker!". That is only safe when port
+# 2222 is never published, so it is off unless a build explicitly asks for it:
+#   docker build --build-arg ENABLE_AZURE_SSH=1 ...
+# Leave it at 0 for every other target (Kubernetes, Compose, plain Docker),
+# where publishing 2222 would expose a root login with a documented password.
+ARG ENABLE_AZURE_SSH=0
+
 ENV PYTHONUNBUFFERED 1
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV BUILD_ENV ${BUILD_ENVIRONMENT}
+ENV ENABLE_AZURE_SSH ${ENABLE_AZURE_SSH}
 
 WORKDIR ${APP_HOME}
 
@@ -74,13 +83,16 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
   gcc \
   # Translations dependencies
   gettext \
-  # Enable SSH1
-  dialog \
-  openssh-server \
-  sudo \
   # cleaning up unused files
   && apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false \
   && rm -rf /var/lib/apt/lists/*
+
+# SSH server, only when the image is built for Azure App Service.
+RUN if [ "${ENABLE_AZURE_SSH}" = "1" ]; then \
+      apt-get update && apt-get install --no-install-recommends -y \
+        dialog openssh-server sudo \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # All absolute dir copies ignore workdir instruction. All relative dir copies are wrt to the workdir instruction
 # copy python dependency wheels from python-build-stage
@@ -91,27 +103,28 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels/ /wheels/* \
   && rm -rf /wheels/
 
 
-# Setting up SSH 
-# Copy sshd_config file
-COPY ./compose/production/django/sshd_config /etc/ssh/
-# The root password must be exactly Docker! as it is used by App Service to let you access the SSH session with the container
-RUN echo "root:Docker!" | chpasswd
-
 # Make non-root user
 RUN addgroup --system django \
-    && adduser --system --ingroup django django \
-    && adduser django sudo
+    && adduser --system --ingroup django django
 
-# Allow non-root user 'django' to run ssh srvice 
-RUN echo 'django ALL=(ALL) NOPASSWD: /usr/sbin/sshd -f /etc/ssh/sshd_config' >> /etc/sudoers
-# Allow non-root user 'django' to modify the profile file 
-RUN chown -R django:django /etc/profile
-# For better understanting why i did do that check this links
+# Setting up SSH, only for Azure App Service builds.
+# The root password must be exactly Docker! as it is used by App Service to let
+# you access the SSH session with the container. App Service exposes 2222 only
+# on its internal tunnel; never publish that port from a host or orchestrator.
 # https://learn.microsoft.com/en-us/azure/app-service/configure-custom-container?pivots=container-linux&tabs=debian#enable-ssh
-# https://stackoverflow.com/questions/69215797/docker-user-as-root-for-azure-app-service
-
-# Create the privilege separation directory for sshd
-RUN mkdir /run/sshd
+COPY ./compose/production/django/sshd_config /etc/ssh_config_azure/sshd_config
+RUN if [ "${ENABLE_AZURE_SSH}" = "1" ]; then \
+      cp /etc/ssh_config_azure/sshd_config /etc/ssh/sshd_config \
+      && echo "root:Docker!" | chpasswd \
+      && adduser django sudo \
+      # Allow the non-root user to start sshd, and nothing else.
+      && echo 'django ALL=(ALL) NOPASSWD: /usr/sbin/sshd -f /etc/ssh/sshd_config' >> /etc/sudoers \
+      # The entrypoint exports the environment into /etc/profile for the SSH session.
+      && chown django:django /etc/profile \
+      # Create the privilege separation directory for sshd
+      && mkdir /run/sshd; \
+    fi \
+    && rm -rf /etc/ssh_config_azure
 
 COPY --chown=django:django ./compose/production/django/entrypoint /entrypoint
 RUN sed -i 's/\r$//g' /entrypoint
@@ -121,14 +134,9 @@ RUN chmod +x /entrypoint
 COPY --chown=django:django ./compose/production/django/start /start
 RUN sed -i 's/\r$//g' /start
 RUN chmod +x /start
-COPY --chown=django:django ./compose/production/django/celery/worker/start /start-celeryworker
-RUN sed -i 's/\r$//g' /start-celeryworker
-RUN chmod +x /start-celeryworker
-
-
-COPY --chown=django:django ./compose/production/django/celery/beat/start /start-celerybeat
-RUN sed -i 's/\r$//g' /start-celerybeat
-RUN chmod +x /start-celerybeat
+COPY --chown=django:django ./compose/production/django/worker/start /start-worker
+RUN sed -i 's/\r$//g' /start-worker
+RUN chmod +x /start-worker
 
 # copy application code to WORKDIR
 COPY --chown=django:django backend/ ${APP_HOME}

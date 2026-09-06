@@ -36,6 +36,7 @@
       <calcite-table-header heading="URL" description="url property"></calcite-table-header>
       <calcite-table-header heading="Data" description="item JSON"></calcite-table-header>
       <calcite-table-header heading="Resources" description="config/story resources"></calcite-table-header>
+      <calcite-table-header heading="Sublayers" description="whole-service layer ids"></calcite-table-header>
       <calcite-table-header heading="Notes"></calcite-table-header>
     </calcite-table-row>
     {% for row in job.dry_run_summary.items %}
@@ -46,11 +47,12 @@
         <calcite-table-cell>{{ row.url_count }}</calcite-table-cell>
         <calcite-table-cell>{{ row.data_count }}</calcite-table-cell>
         <calcite-table-cell>{{ row.resource_count }}</calcite-table-cell>
+        <calcite-table-cell>{{ row.sublayer_count|default:0 }}</calcite-table-cell>
         <calcite-table-cell>{{ row.note }}</calcite-table-cell>
       </calcite-table-row>
     {% empty %}
       <calcite-table-row>
-        <calcite-table-cell col-span="7">
+        <calcite-table-cell col-span="8">
           <calcite-notice open kind="info" icon scale="s">
             <div slot="message">No items analyzed.</div>
           </calcite-notice>
@@ -64,7 +66,8 @@
       <div slot="message">
         {{ totals.items_affected|default:0 }} item(s) affected:
         {{ totals.url|default:0 }} URL, {{ totals.data|default:0 }} data,
-        {{ totals.resources|default:0 }} resource replacement(s).
+        {{ totals.resources|default:0 }} resource replacement(s){% if totals.sublayers %},
+        including {{ totals.sublayers }} whole-service sublayer id(s) renumbered{% endif %}.
       </div>
     </calcite-notice>
     {% if totals.items_affected %}

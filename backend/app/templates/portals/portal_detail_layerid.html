@@ -130,6 +130,15 @@
             </div>
           </div>
         </div>
+        {% if url_searched %}
+        <div class="x_panel">
+          <calcite-button download scale="s" kind="inverse" width="full"
+                          icon-start="file-excel"
+                          href="{% url 'enterpriseviz:layerid_report' instance=instance_alias %}?url={{ url_searched|urlencode }}"
+                          label="Download usage report for {{ url_searched }}">Download report
+          </calcite-button>
+        </div>
+        {% endif %}
       </div>
     </div>
     <div class="row">
@@ -167,7 +176,7 @@
                    aria-label="Web maps using this layer" hx-boost="true">
               <thead>
               <tr>
-                <th scope="col" class="details">Details</th>
+                <th scope="col" class="details no-export">Details</th>
                 <th scope="col">Webmap Title</th>
                 <th scope="col">Owner</th>
                 <th scope="col">Access</th>
@@ -253,7 +262,7 @@
                    aria-label="Apps using this layer">
               <thead>
               <tr>
-                <th scope="col" class="details">Details</th>
+                <th scope="col" class="details no-export">Details</th>
                 <th scope="col">Title</th>
                 <th scope="col">Type</th>
                 <th scope="col">Owner</th>
@@ -319,8 +328,6 @@
   </calcite-tooltip>
 {% endblock content %}
 {% block javascripts %}
-  <script id="graph-data" type="application/json">
-    {{ graph_data|safe }}
-  </script>
+  {% if graph_data %}{{ graph_data|json_script:"graph-data" }}{% endif %}
   {{ service_usage|json_script:"chartdata" }}
 {% endblock javascripts %}

@@ -56,8 +56,8 @@
     </calcite-input>
 
     <calcite-input id="{{ form.password.name }}" name="{{ form.password.name }}" disabled
-                   placeholder="Enter Portal admin password" required
-                   type="password" value="{{ form.password.value|default:'' }}" autocomplete="new-password"
+                   placeholder="Leave blank to keep current password"
+                   type="password" value="" autocomplete="new-password"
                    label-text="Password"
                    status="{% if form.password.errors %}invalid{% else %}idle{% endif %}"
                    validation-message="{{ form.password.errors|join:' ' }}"
@@ -95,7 +95,7 @@
     {% if portal.oauth_is_configured and not portal.oauth_needs_reconsent %}
     <calcite-notice open scale="s" kind="success" icon="check-circle">
       <div slot="message">Authorized{% if portal.oauth_refresh_expiration %} until
-        {{ portal.oauth_refresh_expiration }}{% endif %}.
+        {{ portal.oauth_refresh_expiration|date:'M j, Y h:i A' }}{% endif %}.
       </div>
     </calcite-notice>
     {% elif portal.auth_method == 'oauth' %}

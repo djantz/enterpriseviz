@@ -146,9 +146,7 @@
 
       <div hx-get="{% url 'enterpriseviz:table' instance=instance name='webmap' %}" hx-target="#webmap-table"
            hx-swap="innerHTML" hx-trigger="updateComplete from:next #progress-container"></div>
-      <div id="progress-container">
-        <div class="progress_bar" id="progress-bar"></div>
-      </div>
+      {% include "partials/progress_container.html" with items="webmaps" job=refresh_jobs.webmaps instance=instance %}
       <div class="x_panel">
         <div class="x_title">
           <h2>
@@ -174,42 +172,12 @@
           <div class="clearfix"></div>
         </div>
         <div class="x_content">
-          <p class="font-13 m-b-30">
-            {% if instance and instance.webmap_updated %}This list was last updated
-              {{ instance.webmap_updated }}{% endif %}
-          </p>
+          {% include "partials/panel_status.html" with items="webmaps" last_updated=instance.webmap_updated phase=refresh_jobs.webmaps.bar_description %}
           <div class="line">
 
             {% if request.path != '/enterpriseviz/' %}
               {% if user.is_superuser %}
-                <calcite-split-button primary-icon-start="refresh" dropdown-icon-type="chevron" kind="inverse"
-                                      scale="s" primary-text="Refresh" primary-label="Refresh webmaps"
-                                      placement="bottom-end" dropdown-label="More refresh options" width="auto"
-                                      hx-post="{% url 'enterpriseviz:refresh_portal' %}"
-                                      hx-vals='{"instance": "{{ instance }}", "items": "webmaps"}'
-                                      hx-target="previous #progress-container"
-                                      hx-trigger="calciteSplitButtonPrimaryClick"
-                                      hx-swap="innerHTML" class="calcite-dropdown-color">
-                  <calcite-dropdown-group selection-mode="none" scale="s">
-                    <calcite-dropdown-item
-                      hx-post="{% url 'enterpriseviz:refresh_portal' %}"
-                      hx-vals='{"instance": "{{ instance }}", "items": "webmaps", "full_refresh": "false"}'
-                      hx-target="previous #progress-container"
-                      hx-swap="innerHTML"
-                      label="Incremental Refresh" icon-start="clock-forward">
-                      Incremental Refresh
-                    </calcite-dropdown-item>
-                    <calcite-dropdown-item
-                      hx-post="{% url 'enterpriseviz:refresh_portal' %}"
-                      hx-vals='{"instance": "{{ instance }}", "items": "webmaps", "full_refresh": "true"}'
-                      hx-target="previous #progress-container"
-                      hx-swap="innerHTML"
-                      label="Full Refresh" icon-start="arrow-up-down">
-                      Full Refresh
-                    </calcite-dropdown-item>
-                  </calcite-dropdown-group>
-
-                </calcite-split-button>
+                {% include "partials/portal_refresh_control.html" with items="webmaps" instance=instance active_job=refresh_jobs.webmaps with_modes=True %}
               {% endif %}
             {% endif %}
           </div>
@@ -261,9 +229,7 @@
     <div class="col-md-12 col-sm-12 col-xs-12">
       <div hx-get="{% url 'enterpriseviz:table' instance=instance name='service' %}" hx-target="#service-table"
            hx-swap="innerHTML" hx-trigger="updateComplete from:next #progress-container"></div>
-      <div id="progress-container">
-        <div class="progress_bar" id="progress-bar"></div>
-      </div>
+      {% include "partials/progress_container.html" with items="services" job=refresh_jobs.services instance=instance %}
       <div class="x_panel">
         <div class="x_title">
           <h2>
@@ -289,40 +255,10 @@
           <div class="clearfix"></div>
         </div>
         <div class="x_content">
-          <p class="font-13 m-b-30">
-            {% if instance and instance.service_updated %}This list was last updated
-              {{ instance.service_updated }}{% endif %}
-          </p>
+          {% include "partials/panel_status.html" with items="services" last_updated=instance.service_updated phase=refresh_jobs.services.bar_description %}
           {% if request.path != '/enterpriseviz/' %}
             {% if user.is_superuser %}
-              <calcite-split-button primary-icon-start="refresh" dropdown-icon-type="chevron" kind="inverse"
-                                    scale="s" primary-text="Refresh" primary-label="Refresh services"
-                                    placement="bottom-end" dropdown-label="More refresh options" width="auto"
-                                    hx-post="{% url 'enterpriseviz:refresh_portal' %}"
-                                    hx-vals='{"instance": "{{ instance }}", "items": "services"}'
-                                    hx-target="previous #progress-container"
-                                    hx-trigger="calciteSplitButtonPrimaryClick"
-                                    hx-swap="innerHTML" class="calcite-dropdown-color">
-                <calcite-dropdown-group selection-mode="none" scale="s">
-                  <calcite-dropdown-item
-                    hx-post="{% url 'enterpriseviz:refresh_portal' %}"
-                    hx-vals='{"instance": "{{ instance }}", "items": "services", "full_refresh": "false"}'
-                    hx-target="previous #progress-container"
-                    hx-swap="innerHTML"
-                    label="Incremental Refresh" icon-start="clock-forward">
-                    Incremental Refresh
-                  </calcite-dropdown-item>
-                  <calcite-dropdown-item
-                    hx-post="{% url 'enterpriseviz:refresh_portal' %}"
-                    hx-vals='{"instance": "{{ instance }}", "items": "services", "full_refresh": "true"}'
-                    hx-target="previous #progress-container"
-                    hx-swap="innerHTML"
-                    label="Full Refresh" icon-start="arrow-up-down">
-                    Full Refresh
-                  </calcite-dropdown-item>
-                </calcite-dropdown-group>
-
-              </calcite-split-button>
+              {% include "partials/portal_refresh_control.html" with items="services" instance=instance active_job=refresh_jobs.services with_modes=True %}
             {% endif %}
           {% endif %}
           <div class="clearfix"></div>
@@ -370,6 +306,9 @@
   <div class="clearfix"></div>
   <div class="row">
     <div class="col-md-12 col-sm-12 col-xs-12">
+      <div {% if instance %}hx-get="{% url 'enterpriseviz:table' instance=instance name='layer' %}"
+           {% else %}hx-get="{% url 'enterpriseviz:table' name='layer' %}"{% endif %} hx-target="#layer-table"
+           hx-swap="innerHTML" hx-trigger="updateComplete from:.progress-slot-services"></div>
       <div class="x_panel">
         <div class="x_title">
           <h2>
@@ -395,10 +334,7 @@
           <div class="clearfix"></div>
         </div>
         <div class="x_content">
-          <p class="font-13 m-b-30">
-            {% if instance and instance.service_updated %}This list was last updated
-              {{ instance.service_updated }}{% endif %}
-          </p>
+          {% include "partials/panel_status.html" with items="layers" last_updated=instance.service_updated %}
           <div class="clearfix"></div>
           <div class="height-6px"></div>
           <calcite-button scale="s" kind="inverse" icon-start="file-csv"
@@ -448,9 +384,7 @@
     <div class="col-md-12 col-sm-12 col-xs-12">
       <div hx-get="{% url 'enterpriseviz:table' instance=instance name='app' %}" hx-target="#app-table"
            hx-swap="innerHTML" hx-trigger="updateComplete from:next #progress-container"></div>
-      <div id="progress-container">
-        <div class="progress_bar" id="progress-bar"></div>
-      </div>
+      {% include "partials/progress_container.html" with items="webapps" job=refresh_jobs.webapps instance=instance %}
       <div class="x_panel">
         <div class="x_title">
           <h2>
@@ -477,40 +411,10 @@
           <div class="clearfix"></div>
         </div>
         <div class="x_content">
-          <p class="font-13 m-b-30">
-            {% if instance and instance.webapp_updated %}This list was last updated
-              {{ instance.webapp_updated }}{% endif %}
-          </p>
+          {% include "partials/panel_status.html" with items="webapps" last_updated=instance.webapp_updated phase=refresh_jobs.webapps.bar_description %}
           {% if request.path != '/enterpriseviz/' %}
             {% if user.is_superuser %}
-              <calcite-split-button primary-icon-start="refresh" dropdown-icon-type="chevron" kind="inverse"
-                                    scale="s" primary-text="Refresh" primary-label="Refresh applications"
-                                    placement="bottom-end" dropdown-label="More refresh options" width="auto"
-                                    hx-post="{% url 'enterpriseviz:refresh_portal' %}"
-                                    hx-vals='{"instance": "{{ instance }}", "items": "webapps"}'
-                                    hx-target="previous #progress-container"
-                                    hx-trigger="calciteSplitButtonPrimaryClick"
-                                    hx-swap="innerHTML" class="calcite-dropdown-color">
-                <calcite-dropdown-group selection-mode="none" scale="s">
-                  <calcite-dropdown-item
-                    hx-post="{% url 'enterpriseviz:refresh_portal' %}"
-                    hx-vals='{"instance": "{{ instance }}", "items": "webapps", "full_refresh": "false"}'
-                    hx-target="previous #progress-container"
-                    hx-swap="innerHTML"
-                    label="Incremental Refresh" icon-start="clock-forward">
-                    Incremental Refresh
-                  </calcite-dropdown-item>
-                  <calcite-dropdown-item
-                    hx-post="{% url 'enterpriseviz:refresh_portal' %}"
-                    hx-vals='{"instance": "{{ instance }}", "items": "webapps", "full_refresh": "true"}'
-                    hx-target="previous #progress-container"
-                    hx-swap="innerHTML"
-                    label="Full Refresh" icon-start="arrow-up-down">
-                    Full Refresh
-                  </calcite-dropdown-item>
-                </calcite-dropdown-group>
-
-              </calcite-split-button>
+              {% include "partials/portal_refresh_control.html" with items="webapps" instance=instance active_job=refresh_jobs.webapps with_modes=True %}
             {% endif %}
           {% endif %}
           <div class="clearfix"></div>
@@ -561,9 +465,7 @@
     <div class="col-md-12 col-sm-12 col-xs-12">
       <div hx-get="{% url 'enterpriseviz:table' instance=instance name='user' %}" hx-target="#user-table"
            hx-swap="innerHTML" hx-trigger="updateComplete from:next #progress-container"></div>
-      <div id="progress-container">
-        <div class="progress_bar" id="progress-bar"></div>
-      </div>
+      {% include "partials/progress_container.html" with items="users" job=refresh_jobs.users instance=instance %}
       <div class="x_panel">
         <div class="x_title">
           <h2>
@@ -589,18 +491,10 @@
           <div class="clearfix"></div>
         </div>
         <div class="x_content">
-          <p class="font-13 m-b-30">
-            {% if instance and instance.user_updated %}This list was last updated
-              {{ instance.user_updated }}{% endif %}
-          </p>
+          {% include "partials/panel_status.html" with items="users" last_updated=instance.user_updated phase=refresh_jobs.users.bar_description %}
           {% if request.path != '/enterpriseviz/' %}
             {% if user.is_superuser %}
-              <calcite-button kind="inverse" scale="s" width="auto" icon-start="refresh"
-                              hx-post="{% url 'enterpriseviz:refresh_portal' %}"
-                              hx-vals='{"instance": "{{ instance }}", "items": "users"}'
-                              hx-target="previous #progress-container"
-                              hx-swap="innerHTML" label="Refresh users">Refresh
-              </calcite-button>
+              {% include "partials/portal_refresh_control.html" with items="users" instance=instance active_job=refresh_jobs.users with_modes=False %}
             {% endif %}
           {% endif %}
           <div class="clearfix"></div>

@@ -15,24 +15,26 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 # ----------------------------------------------------------------------
+import functools
+import io
 import secrets
 from collections import defaultdict
 from urllib.parse import urlencode
 
 import cron_descriptor
 from arcgis import gis
-from celery import current_app as celery_app  # For signaling Celery
-from celery.result import AsyncResult
-from celery_progress.backend import Progress
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.admin.utils import unquote
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import login, logout
-from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required, login_not_required
+from django.contrib.auth.mixins import LoginRequiredMixin
+from django.contrib.auth.views import redirect_to_login
 from django.urls import reverse
 from django.contrib.auth.forms import AuthenticationForm
-from django.core.exceptions import FieldError
+from django.core.cache import cache
+from django.core.exceptions import FieldError, ValidationError
 from django.core.mail import get_connection, EmailMessage
 from django.db import transaction, DatabaseError
 from django.db.models import Count, F, IntegerField, OuterRef, Q, Subquery, Value
@@ -43,23 +45,65 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.template import loader
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare
+from django.utils.decorators import method_decorator
 from django.utils.html import escape
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
-from django_celery_results.models import TaskResult
 from django_filters.views import FilterView
 from django_tables2 import SingleTableMixin, RequestConfig
 from django_tables2.export.views import ExportMixin
 
+from config.customArcGIS import arcgis_org_url
+from .export import SafeTableExport
+from . import reports
 from .filters import WebmapFilter, ServiceFilter, LayerFilter, AppFilter, UserFilter, LogEntryFilter
-from .forms import ScheduleForm, SiteSettingsForm, ToolsForm, WebhookSettingsForm, PortalCredentialsForm
+from .forms import (ArcGISSignInForm, LoggingAndRetentionForm, ScheduleForm,
+                    SiteSettingsForm, ToolsForm, WebhookSettingsForm,
+                    PortalCredentialsForm)
 from .models import Portal, User, Webmap, Service, Layer, App, PortalCreateForm, UserProfile, LogEntry, SiteSettings, \
-    PortalToolSettings, ReplacementJob, Map_Service, App_Map, App_Service, Layer_Service
+    PortalToolSettings, ReplacementJob, Map_Service, App_Map, App_Service, Layer_Service, Job
 from .request_context import get_django_request_context
 from .tables import WebmapTable, ServiceTable, LayerTable, AppTable, UserTable, LogEntryTable
+from .throttling import client_ip, login_limiter, webhook_limiter
 from .tasks import *
+from .jobs import request_cancel
 
 logger = logging.getLogger('enterpriseviz')
+
+
+def superuser_required(view_func):
+    """
+    Restrict a view to superusers.
+
+    For the pages that edit the SiteSettings row. SiteSettingsAdmin already
+    refuses everyone but a superuser, on the grounds that one row holds the SMTP
+    password, the webhook secret that authenticates every inbound webhook, and
+    the ArcGIS OAuth client secret — not something to hand out with a per-model
+    permission grant. Those pages edit the same row, so leaving them at
+    @staff_member_required made the admin's restriction decorative: a staff user
+    could read and rewrite through the application what the admin would not show
+    them.
+
+    Anonymous users are sent to sign in rather than refused, so a bookmarked
+    settings URL behaves the way every other protected page does.
+    """
+
+    @functools.wraps(view_func)
+    def wrapper(request, *args, **kwargs):
+        user = request.user
+        if not user.is_authenticated:
+            return redirect_to_login(request.get_full_path(), settings.LOGIN_URL)
+        if not user.is_superuser:
+            logger.warning(
+                f"User '{user.username}' was refused {request.path}: superuser only.")
+            return render_error(
+                request, 403,
+                "Only a superuser can change these settings. They hold credentials "
+                "shared by the whole deployment.")
+        return view_func(request, *args, **kwargs)
+
+    return wrapper
+
 
 def _related_count(through_model, owner_field, counted_field):
     """COUNT(DISTINCT counted_field) of through-table rows referencing the outer row."""
@@ -133,7 +177,8 @@ class ColumnVisibilityViewMixin:
 
     Accepts repeated params (?visible_cols=a&visible_cols=b) and/or CSV
     (?visible_cols=a,b). Absent param => table DEFAULT_VISIBLE_COLUMNS;
-    present-but-empty => hide all columns.
+    present-but-empty => hide all columns. Pinned columns (e.g. details) are
+    always kept, whatever the param says.
     """
     visible_cols_param = "visible_cols"
 
@@ -149,6 +194,7 @@ class ColumnVisibilityViewMixin:
         requested = self._requested_visible_columns()
         visible = (list(table_class.default_visible_columns())
                    if requested is None else requested)
+        visible += [c for c in table_class.pinned_columns() if c not in visible]
         kwargs["exclude"] = tuple(c for c in table_class.base_columns if c not in visible)
         return kwargs
 
@@ -160,13 +206,14 @@ class ColumnVisibilityViewMixin:
         context["query_params_urlencode"] = params.urlencode()
         context["all_columns"] = table_class.get_column_labels()
         requested = self._requested_visible_columns()
+        pinned = table_class.pinned_columns()
         context["current_visible_columns"] = (
-            list(table_class.default_visible_columns()) if requested is None else requested
+            list(table_class.selectable_default_columns()) if requested is None
+            else [c for c in requested if c not in pinned]
         )
         return context
 
-
-class Table(ColumnVisibilityViewMixin, ExportMixin, SingleTableMixin, FilterView):
+class Table(LoginRequiredMixin, ColumnVisibilityViewMixin, ExportMixin, SingleTableMixin, FilterView):
     """
     Dynamically renders tables, filters, and data based on a model type from URL.
 
@@ -187,6 +234,8 @@ class Table(ColumnVisibilityViewMixin, ExportMixin, SingleTableMixin, FilterView
     """
     template_name = "partials/table.html"
     paginate_by = 10
+    export_class = SafeTableExport
+    exclude_columns = ("details",)
 
     def _configure_for_model_type(self):
         """
@@ -277,11 +326,18 @@ class Table(ColumnVisibilityViewMixin, ExportMixin, SingleTableMixin, FilterView
         return context
 
 
+@method_decorator(staff_member_required, name="dispatch")
 class LogTable(ColumnVisibilityViewMixin, ExportMixin, SingleTableMixin, FilterView):
     """
     Displays a paginated and filterable table of LogEntry records.
 
     Supports dynamic column visibility based on 'visible_cols' GET parameter.
+
+    Staff only, and exported as well as rendered: a log row carries the client
+    IP, username, request path and full traceback of whoever generated it, so
+    this reads other people's activity rather than the viewer's own. Every other
+    view over this data is staff-gated — including log_settings_view, which only
+    changes the level — and this is the one that shows the data itself.
 
     :ivar model: The LogEntry Django model.
     :type model: enterpriseviz.models.LogEntry
@@ -299,6 +355,7 @@ class LogTable(ColumnVisibilityViewMixin, ExportMixin, SingleTableMixin, FilterV
     filterset_class = LogEntryFilter
     template_name = "partials/log_table.html"
     paginate_by = 15
+    export_class = SafeTableExport
 
     def get_queryset(self):
         """
@@ -328,12 +385,15 @@ class LogTable(ColumnVisibilityViewMixin, ExportMixin, SingleTableMixin, FilterV
         return context
 
 
-@login_required
+@staff_member_required
 def logs_view(request):
     """
     Renders the main application logs page or a partial for HTMX requests.
 
     Provides context for filtering logs and selecting visible columns.
+
+    Staff only, for the reason given on :class:`LogTable`: this is the page that
+    page's rows are rendered into.
 
     :param request: The HTTP request object.
     :type request: django.http.HttpRequest
@@ -347,14 +407,16 @@ def logs_view(request):
     # Use LogEntryTable's definition for all columns
     all_table_columns = LogEntryTable.get_column_labels()
 
-    default_cols = list(LogEntryTable.default_visible_columns())
+    default_cols = list(LogEntryTable.selectable_default_columns())
+    pinned_cols = LogEntryTable.pinned_columns()
 
     if 'visible_cols' in request.GET:
         visible_columns_param = request.GET.getlist('visible_cols')
         if len(visible_columns_param) == 1 and visible_columns_param[0] == '':  # User deselected all
             initial_visible_columns = []
         else:
-            initial_visible_columns = [col for col in visible_columns_param if col]
+            initial_visible_columns = [col for col in visible_columns_param
+                                       if col and col not in pinned_cols]
     else:
         initial_visible_columns = default_cols
 
@@ -510,6 +572,13 @@ def portal_layer_view(request, name=None):
 
         portal_data = list(Portal.objects.values_list("alias", "portal_type", "url"))
         details["portal"] = portal_data
+
+        query = urlencode([(key, value) for key, value in
+                           (("server", dbserver), ("database", database), ("version", version))
+                           if value])
+        details["report_url"] = (reverse("enterpriseviz:layer_report", kwargs={"name": name})
+                                 + (f"?{query}" if query else ""))
+        details["report_label"] = name
         details["service_usage"] = None
         services_for_usage = details.get("services", [])
 
@@ -529,6 +598,180 @@ def portal_layer_view(request, name=None):
     except Exception as e:
         logger.error(f"Unexpected error for layer {name}: {e}", exc_info=True)
         return render_error(request, 500, "An unexpected error occurred while retrieving layer details.")
+
+
+def _report_response(request, kind, details, filename_stem, fallback_label=None):
+    """
+    Turn a details dict into a downloadable workbook.
+
+    Every report view calls the same ``utils.*_details()`` its page calls and
+    hands the result straight here, so the workbook and the page always agree.
+    """
+    if isinstance(details, dict) and "error" in details:
+        logger.warning(f"Cannot build {kind} report: {details['error']}")
+        return render_error(request, 404, details["error"])
+
+    try:
+        workbook = reports.build_dependency_workbook(
+            kind, details, user=request.user, fallback_label=fallback_label)
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+    except Exception as e:
+        logger.error(f"Error building {kind} report: {e}", exc_info=True)
+        return render_error(request, 500, "An unexpected error occurred while building the report.")
+
+    payload = buffer.getvalue()
+    response = HttpResponse(payload, content_type=reports.XLSX_CONTENT_TYPE)
+    response["Content-Disposition"] = reports.content_disposition(filename_stem)
+    response["Content-Length"] = str(len(payload))
+    logger.debug(f"Built {kind} report ({len(payload)} bytes) for user={request.user.username}")
+    return response
+
+
+@login_required
+def map_report_view(request, instance=None, id=None):
+    """
+    Download the web map's dependencies as a formatted workbook: one sheet each
+    for services, layers and apps.
+
+    :param request: HTTP request object
+    :type request: HttpRequest
+    :param instance: Portal alias
+    :type instance: str
+    :param id: Item id of the map
+    :type id: str
+
+    :return: An .xlsx attachment, or an error response
+    :rtype: HttpResponse
+    """
+    logger.debug(f"instance={instance}, id={id}, user={request.user.username}")
+    if not id:
+        return render_error(request, 400, "Error building report: ID missing.")
+
+    details = utils.map_details(id)
+    title = getattr(details.get("item"), "webmap_title", None) or id
+    return _report_response(request, "map", details, f"webmap-{title}", fallback_label=id)
+
+
+@login_required
+def service_report_view(request, instance=None, url=None):
+    """
+    Download the service's dependencies as a formatted workbook: one sheet each
+    for web maps, layers and apps.
+
+    The Layers sheet has no counterpart on the page itself, which only shows
+    the layer count.
+
+    :param request: HTTP request object
+    :type request: HttpRequest
+    :param instance: Portal alias
+    :type instance: str
+    :param url: Service name
+    :type url: str
+
+    :return: An .xlsx attachment, or an error response
+    :rtype: HttpResponse
+    """
+    logger.debug(f"instance={instance}, url_provided={bool(url)}, user={request.user.username}")
+    if not instance or not url:
+        return render_error(request, 400, "Missing 'instance' or 'url' parameter.")
+
+    service_name = unquote(url)
+    details = utils.service_details(instance, service_name)
+    return _report_response(request, "service", details, f"service-{service_name}",
+                            fallback_label=service_name)
+
+
+@login_required
+def layer_report_view(request, name=None):
+    """
+    Download the layer's dependencies as a formatted workbook: one sheet each
+    for services, web maps and apps.
+
+    :param request: HTTP request object, optionally carrying ``server``,
+                    ``database`` and ``version`` query parameters
+    :type request: HttpRequest
+    :param name: The layer name
+    :type name: str
+
+    :return: An .xlsx attachment, or an error response
+    :rtype: HttpResponse
+    """
+    logger.debug(f"name={name}, user={request.user.username}")
+    if not name:
+        return render_error(request, 400, "Layer name is missing.")
+
+    details = utils.layer_details(request.GET.get("server"), request.GET.get("database"),
+                                  request.GET.get("version"), name)
+    return _report_response(request, "layer", details, f"layer-{name}", fallback_label=name)
+
+
+@login_required
+def layerid_report_view(request, instance):
+    """
+    Download the web maps and apps that use one service layer URL.
+
+    The page this mirrors is POST-only, but its results come from a plain
+    database query, so the search is simply re-run from the ``url`` query
+    parameter.
+
+    :param request: HTTP request object carrying a ``url`` query parameter
+    :type request: HttpRequest
+    :param instance: Portal alias
+    :type instance: str
+
+    :return: An .xlsx attachment, or an error response
+    :rtype: HttpResponse
+    """
+    logger.debug(f"instance={instance}, user={request.user.username}")
+    layer_url = unquote(request.GET.get("url", "").strip())
+    if not layer_url:
+        return render_error(request, 400, "Provide a layer URL.")
+
+    try:
+        portal = get_object_or_404(Portal, alias=instance)
+    except Http404:
+        logger.warning(f"Portal instance '{instance}' not found.")
+        return render_error(request, 404, f"Portal '{instance}' not found.")
+
+    details = utils.service_layer_details(portal, layer_url)
+    if isinstance(details, dict) and "error" not in details:
+        details["instance_alias"] = instance
+        details["url_searched"] = layer_url
+        details["item"] = None
+    return _report_response(request, "layerid", details, f"layer-usage-{instance}",
+                            fallback_label=layer_url)
+
+
+@login_required
+def metadata_report_view(request, instance):
+    """
+    Download the metadata completeness report the user last ran for this portal.
+
+    ``metadata_view`` is POST-only and its data comes from a live authenticated
+    crawl of the portal, so a GET link cannot re-derive it without re-prompting
+    for credentials and re-crawling. The page caches its result instead, and
+    this reads that back.
+
+    :param request: HTTP request object
+    :type request: HttpRequest
+    :param instance: Portal alias
+    :type instance: str
+
+    :return: An .xlsx attachment, or an error response
+    :rtype: HttpResponse
+    """
+    logger.debug(f"instance={instance}, user={request.user.username}")
+    metadata = cache.get(reports.metadata_cache_key(request.user.pk, instance))
+    if metadata is None:
+        logger.debug(f"No cached metadata report for '{instance}' and user {request.user.pk}.")
+        return render_error(request, 404,
+                            "This metadata report is no longer available. Run it again, "
+                            "then download it.")
+
+    details = {"metadata": metadata, "instance_alias": instance, "item": None}
+    return _report_response(request, "metadata", details, f"metadata-{instance}",
+                            fallback_label=instance)
 
 
 @staff_member_required
@@ -664,7 +907,8 @@ def index_view(request, instance=None):
         table_columns = {}
         for name, cfg in TABLE_VIEW_MODEL_CONFIG.items():
             tc = cfg["table_class"]
-            defaults = list(tc.default_visible_columns())
+            # Pinned columns are neither listed nor submitted; the view re-adds them.
+            defaults = list(tc.selectable_default_columns())
             table_columns[name] = {
                 "columns": [{"name": n, "label": label, "selected": n in defaults}
                             for n, label in tc.get_column_labels()],
@@ -679,7 +923,9 @@ def index_view(request, instance=None):
             "users": users_count,
             "portal": portals,
             "instance": instance_item,
-            "table_columns": table_columns
+            "table_columns": table_columns,
+            "refresh_jobs": {items: active_refresh_job(instance, items)
+                             for items in REFRESH_TASKS},
         }
         return render(request, template, context)
     except Exception as e:
@@ -709,8 +955,8 @@ def _privilege_warning(username, absent):
     :return: Warning text
     :rtype: str
     """
-    return escape(f"Saved, but '{username}' is missing privilege(s) needed for updates: "
-                  f"{', '.join(absent)}. Content updates will fail until the account's role grants them.")
+    return (f"Saved, but '{username}' is missing privilege(s) needed for updates: "
+            f"{', '.join(absent)}. Content updates will fail until the account's role grants them.")
 
 
 def _needs_oauth_connect(portal):
@@ -751,12 +997,31 @@ def _form_error_alert(form):
     :return: Alert text
     :rtype: str
     """
-    messages_found = [escape(error) for errors in form.errors.values() for error in errors]
+    messages_found = [error for errors in form.errors.values() for error in errors]
     if not messages_found:
         return "Please correct the errors below."
     if len(messages_found) == 1:
         return messages_found[0]
     return f"{messages_found[0]} (and {len(messages_found) - 1} more)"
+
+
+def _tag_job_portal(task, replacement_job):
+    """
+    Record which portal a queued replacement job acts on.
+
+    @task resolves portal_alias from a named task argument, and the two
+    replacement tasks take a ReplacementJob id rather than an alias - so their
+    Job rows were the only portal-scoped ones left blank, invisible to the run
+    history on the portal page and to JobAdmin's portal filter. That is the one
+    class of job where knowing which portal was modified matters most.
+
+    portal_instance_id is the alias itself; Portal's primary key is its alias.
+
+    :param task: The Job row returned by enqueue()
+    :param replacement_job: The ReplacementJob the task will act on
+    """
+    Job.objects.filter(pk=task.pk).update(
+        portal_alias=replacement_job.portal_instance_id)
 
 
 @staff_member_required
@@ -846,9 +1111,9 @@ def portal_oauth_callback_view(request):
         return redirect("enterpriseviz:viz", instance=portal.alias)
 
     # Confirm the account can actually do the work before storing its token.
-    # Only the content-update privileges are required here; the tools enforce their own privileges
     try:
-        target = gis.GIS(portal.url, token=token_data["access_token"], verify_cert=False)
+        target = gis.GIS(portal.url, token=token_data["access_token"],
+                         verify_cert=utils.portal_verify_tls())
         me = target.users.me
         if me is None:
             raise ValueError("the session is not signed in")
@@ -943,21 +1208,33 @@ def refresh_portal_view(request):
         })
 
     # Validate task type
-    task_map = {
-        "webmaps": update_webmaps,
-        "services": update_services,
-        "webapps": update_webapps,
-        "users": update_users
-    }
-    task_func = task_map.get(items_to_refresh)
+    task_func = REFRESH_TASKS.get(items_to_refresh)
     if not task_func:
         logger.warning(f"Invalid task type '{items_to_refresh}' for portal '{portal.alias}'.")
         return JsonResponse({"error": "Invalid task type selected"}, status=400)
 
+    running = active_refresh_job(portal.alias, items_to_refresh)
+    if running:
+        logger.info(f"Refresh of '{items_to_refresh}' already {running.status.lower()} "
+                    f"for '{portal.alias}' ({running.pk}); not queueing another.")
+        response_data = {
+            "instance": portal.alias,
+            "task_id": running.id,
+            "task_name": running.name,
+            "value": running.progress_percent,
+            "progress": running.progress_info,
+            "refresh_control": _refresh_control_context(
+                running, items=items_to_refresh, instance=portal.alias),
+            "panel_statuses": _panel_status_contexts(
+                running, items=items_to_refresh, instance=portal.alias),
+        }
+        response = render(request, "partials/progress_response.html", context=response_data)
+        response["HX-Trigger-After-Settle"] = json.dumps({
+            "showWarningAlert": f"A {items_to_refresh} refresh is already running for "
+                                f"{portal.alias}."})
+        return response
+
     # Determine if credentials are needed
-    # An OAuth portal that has never been authorized (or whose authorization was
-    # rejected) can't be fixed with a credential form, so offer to connect instead
-    # of failing the task later.
     if _needs_oauth_connect(portal):
         return _render_oauth_connect_prompt(request, portal)
 
@@ -1012,7 +1289,7 @@ def refresh_portal_view(request):
                     portal.portal_type = "agol" if auth_result["is_agol"] else "portal"
                     portal.save(update_fields=['portal_type'])
 
-                credential_token = utils.CredentialManager.store_credentials(username, password, ttl_seconds=300)
+                credential_token = utils.CredentialManager.store_credentials(username, password)
                 if not credential_token:
                     logger.error(f"Failed to store temporary credentials for {portal.alias}.")
                     form.add_error(None, "System error: Failed to secure credentials.")
@@ -1063,31 +1340,25 @@ def refresh_portal_view(request):
         # Portal has stored credentials, proceed directly
         logger.debug(f"Portal '{portal.alias}' has stored credentials. Proceeding to task.")
 
-    # Start the background task
-    logger.debug(f"Starting Celery task for '{portal.alias}', items: '{items_to_refresh}'")
-
-    django_ctx = get_django_request_context()
-    user_id = request.user if request.user.is_authenticated else None
-
-    task_args = [portal.alias, full_refresh, credential_token]
-    task_kwargs = {
-        '_request_id': str(django_ctx.get('request_id')),
-        '_user': user_id.username,
-        '_client_ip': django_ctx.get('client_ip'),
-        '_request_path': django_ctx.get('request_path'),
-    }
+    # Start the background job
+    logger.debug(f"Queueing job for '{portal.alias}', items: '{items_to_refresh}'")
 
     try:
-        task = task_func.apply_async(args=task_args, kwargs=task_kwargs)
-        logger.info(f"Started task '{task.id}' for '{items_to_refresh}' on portal '{portal.alias}'.")
+        task = task_func.enqueue(portal.alias, full_refresh, credential_token)
+        logger.info(f"Started job '{task.id}' for '{items_to_refresh}' on portal '{portal.alias}'.")
 
         response_data = {
             "instance": portal.alias,
             "task_id": task.id,
+            "task_name": task.name,
             "value": 0,
-            "progress": {"state": "PENDING", "complete": False}
+            "progress": task.progress_info,
+            "refresh_control": _refresh_control_context(
+                task, items=items_to_refresh, instance=portal.alias),
+            "panel_statuses": _panel_status_contexts(
+                task, items=items_to_refresh, instance=portal.alias),
         }
-        response = render(request, "partials/progress_bar.html", context=response_data)
+        response = render(request, "partials/progress_response.html", context=response_data)
         response["HX-Trigger"] = json.dumps({"closeModal": True})
         return response
 
@@ -1101,6 +1372,101 @@ def refresh_portal_view(request):
                 "showDangerAlert": "System error: Failed to start background refresh task."
             })
         })
+
+
+REFRESH_TASKS = {
+    "webmaps": update_webmaps,
+    "services": update_services,
+    "webapps": update_webapps,
+    "users": update_users,
+}
+
+REFRESH_PANEL_BY_TASK_NAME = {t.name: items for items, t in REFRESH_TASKS.items()}
+
+PANEL_TIMESTAMP_FIELDS = {
+    "webmaps": "webmap_updated",
+    "services": "service_updated",
+    "webapps": "webapp_updated",
+    "users": "user_updated",
+    "layers": "service_updated",
+}
+
+PANELS_ALSO_REFRESHED = {"services": ("layers",)}
+
+
+def active_refresh_job(portal_alias, items):
+    """
+    The queued or running refresh for one portal and one panel, if any.
+
+    This is what decides whether the panel offers Refresh or Cancel. Reading it
+    from the Job table rather than from whatever the browser last saw means a
+    reloaded page is right too — otherwise the tab that started a refresh shows
+    Cancel and every other view of the same portal offers to start a second one.
+    """
+    registered = REFRESH_TASKS.get(items)
+    if not portal_alias or registered is None:
+        return None
+    return (Job.objects
+            .filter(portal_alias=str(portal_alias), name=registered.name,
+                    status__in=(Job.QUEUED, Job.RUNNING))
+            .order_by("-queued_at")
+            .first())
+
+
+def _panel_status_contexts(job=None, items=None, instance=None):
+    """
+    Contexts for every panel_status line this job should update.
+
+    Usually one, its own. A services refresh returns two, because it rebuilds
+    the layers panel as well.
+
+    Timestamps are read fresh rather than taken from whatever the page was
+    rendered with: the refresh writes that column as its last act, so the poll
+    reporting the job finished is the one that can show the time it just wrote.
+    """
+    if items is None and job is not None:
+        items = REFRESH_PANEL_BY_TASK_NAME.get(job.name)
+    if items not in PANEL_TIMESTAMP_FIELDS:
+        return []
+
+    portal = Portal.objects.filter(alias=str(instance)).first()
+
+    def status(panel, phase):
+        return {
+            "items": panel,
+            "last_updated": getattr(portal, PANEL_TIMESTAMP_FIELDS[panel], None),
+            "phase": phase,
+            "oob": True,
+        }
+
+    # Empty phase once the job is terminal, so the line falls back to the
+    # timestamp instead of freezing on the phase it stopped in.
+    contexts = [status(items, job.bar_description if job is not None else "")]
+
+    for also in PANELS_ALSO_REFRESHED.get(items, ()):
+        contexts.append(status(also, ""))
+
+    return contexts
+
+
+def _refresh_control_context(job=None, items=None, instance=None):
+    """
+    Context for partials/portal_refresh_control.html, or None if there is none.
+
+    Returns None when the job belongs to no panel — "Update All" and the tools
+    have progress bars but no button of their own to flip.
+    """
+    if items is None and job is not None:
+        items = REFRESH_PANEL_BY_TASK_NAME.get(job.name)
+    if items is None:
+        return None
+    return {
+        "items": items,
+        "instance": instance if instance is not None else (job.portal_alias if job else ""),
+        "active_job": job if (job is not None and job.is_active) else None,
+        "with_modes": items != "users",
+        "oob": True,
+    }
 
 
 @staff_member_required
@@ -1122,41 +1488,42 @@ def progress_view(request, instance, task_id):
     """
     logger.debug(f"instance={instance}, task_id={task_id}")
     try:
-        result = AsyncResult(task_id)
-        progress_info = Progress(result).get_info()
-        task_name = result._get_task_meta().get('task_name')
+        try:
+            job = Job.objects.get(pk=task_id)
+        except (Job.DoesNotExist, ValueError, ValidationError):
+            logger.warning(f"No job found for '{task_id}'")
+            return HttpResponse(status=404, headers={"HX-Trigger-After-Settle": json.dumps(
+                {"showDangerAlert": "That background job is no longer available."})})
 
-        if not progress_info or "progress" not in progress_info:
-            logger.warning(
-                f"Invalid or missing progress data for task '{task_id}'. State: {result.state}")
-            progress_percentage = 100 if result.successful() or result.failed() else 0
-            task_state = result.state
-            response_data = {"instance": instance, "task_id": task_id, "task_name": task_name,
-                             "progress": {"percent": progress_percentage, "description": "Fetching status..."},
-                             "value": progress_percentage, "state": task_state}
-        else:
-            progress_percentage = progress_info["progress"].get("percent", 0)
-            task_state = progress_info.get("state", result.state)
-            response_data = {"instance": instance, "task_id": task_id, "task_name": task_name,
-                             "progress": progress_info,
-                             "value": progress_percentage}
+        task_name = job.name
+        progress_percentage = job.progress_percent
+        task_state = job.status
+
+        response_data = {
+            "instance": instance,
+            "task_id": task_id,
+            "task_name": task_name,
+            "value": progress_percentage,
+            "state": task_state,
+            "progress": job.progress_info,
+            "refresh_control": _refresh_control_context(job, instance=instance),
+            "panel_statuses": _panel_status_contexts(job, instance=instance),
+        }
 
         logger.debug(f"Task '{task_id}' state '{task_state}', progress {progress_percentage}%.")
 
         htmx_trigger = {}
-        if task_state == "SUCCESS":
-            task_result = result.info
-            has_errors = False
+        if task_state in (Job.SUCCESS, Job.WARNING):
+            task_result = job.result
+            has_errors = task_state == Job.WARNING
 
             logger.info(
-                f"Task '{task_id}' ({task_name}) for {instance} completed successfully.")
+                f"Task '{task_id}' ({task_name}) for {instance} completed.")
             success_details = "Completed."
             if isinstance(task_result, dict):
                 # Check if task has errors
                 if task_result.get('success') is False:
                     has_errors = True
-                    response_data["state"] = "WARNING"
-                    response_data["progress"]["state"] = "WARNING"
                     error_messages = task_result.get('error_messages', [])
                     if error_messages:
                         success_details = f"Errors: {', '.join(error_messages)}"
@@ -1199,22 +1566,28 @@ def progress_view(request, instance, task_id):
                     success_details = ", ".join(details_parts)
                 if 'errors' in task_result and task_result['errors'] > 0:
                     has_errors = True
+
             if has_errors:
                 htmx_trigger = {
-                    "showWarningAlert": f"{task_name} for {instance} completed with errors. <br> <b>{success_details}</b>",
+                    "showWarningAlert": f"{task_name} for {instance} completed with errors.\n{success_details}",
                     "updateComplete": "true"
                 }
             else:
                 htmx_trigger = {
-                    "showSuccessAlert": f"{task_name} for {instance} completed. <br> <b>{success_details}</b>",
+                    "showSuccessAlert": f"{task_name} for {instance} completed.\n{success_details}",
                     "updateComplete": "true"}
-        elif task_state == "FAILURE":
-            logger.warning(f"Task '{task_id}' ({task_name}) for {instance} failed with FAILURE state")
+        elif task_state == Job.FAILURE:
+            logger.warning(f"Task '{task_id}' ({task_name}) for {instance} failed")
             htmx_trigger = {
                 "showDangerAlert": f"{task_name} for {instance} failed. Please check logs or results table for details.",
                 "updateComplete": "true"}
+        elif task_state == Job.CANCELED:
+            logger.info(f"Task '{task_id}' ({task_name}) for {instance} was canceled")
+            htmx_trigger = {
+                "showWarningAlert": f"{task_name} for {instance} was canceled.",
+                "updateComplete": "true"}
 
-        response = render(request, "partials/progress_bar.html", context=response_data)
+        response = render(request, "partials/progress_response.html", context=response_data)
 
         if htmx_trigger:
             response["HX-Trigger"] = json.dumps(htmx_trigger)
@@ -1226,6 +1599,64 @@ def progress_view(request, instance, task_id):
             "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Failed to retrieve task progress."})})
 
 
+@staff_member_required
+@require_POST
+def cancel_refresh_view(request, instance, task_id):
+    """
+    Ask a running refresh to stop, and hand back the panel's control.
+
+    Only sets the flag. The job stops at its next checkpoint — between items or
+    between batches, where the database is consistent — rather than being
+    killed where it stands, so this returns "Cancelling…" and the progress bar's
+    own poll reports the job as CANCELED a moment later.
+
+    Nothing already written is undone. A refresh only ever writes what the
+    portal currently says, so a half-finished one leaves the database further
+    forward than it was, not inconsistent.
+
+    :param request: The HTTP request object
+    :type request: HttpRequest
+    :param instance: Portal instance alias
+    :type instance: str
+    :param task_id: ID of the job to stop
+    :type task_id: str
+    :return: The re-rendered refresh control
+    :rtype: HttpResponse
+    """
+    logger.debug(f"instance={instance}, task_id={task_id}, user={request.user.username}")
+    try:
+        job = Job.objects.get(pk=task_id)
+    except (Job.DoesNotExist, ValueError, ValidationError):
+        logger.warning(f"Cancel requested for unknown job '{task_id}'")
+        return HttpResponse(status=404, headers={"HX-Trigger-After-Settle": json.dumps(
+            {"showDangerAlert": "That background job is no longer available."})})
+
+    context = _refresh_control_context(job, instance=instance)
+    if context is None:
+        logger.warning(f"Job '{task_id}' ({job.name}) has no refresh panel to cancel from")
+        return HttpResponse(status=400, headers={"HX-Trigger-After-Settle": json.dumps(
+            {"showDangerAlert": "That job cannot be canceled from here."})})
+
+    # Rendered inline into the control's own slot, so no out-of-band swap.
+    context["oob"] = False
+
+    if request_cancel(job.pk):
+        logger.info(f"User '{request.user.username}' canceled job '{job.name}' ({job.pk})")
+        job.refresh_from_db()
+        context["active_job"] = job if job.is_active else None
+        trigger = {"showWarningAlert": f"Stopping {job.name} for {instance}. It will finish "
+                                       f"the item it is on and stop."}
+    else:
+        logger.info(f"Job '{job.name}' ({job.pk}) had already finished; nothing to cancel")
+        context["active_job"] = None
+        trigger = {"showInfoAlert": f"{job.name} for {instance} had already finished."}
+
+    response = render(request, "partials/portal_refresh_control.html", context=context)
+    response["HX-Trigger-After-Settle"] = json.dumps(trigger)
+    return response
+
+
+@login_not_required
 def login_view(request):
     """
     Handle user authentication.
@@ -1244,23 +1675,35 @@ def login_view(request):
 
     form = AuthenticationForm(request, data=request.POST if request.method == "POST" else None)
     if request.method == "POST":
-        time.sleep(0.5)
+        attempted_username = (request.POST.get("username") or "").strip().lower()
+        ip = client_ip(request)
+
+        if login_limiter.is_blocked(attempted_username, ip):
+            logger.warning(f"Login throttled for '{attempted_username}' from {ip}.")
+            messages.error(request, "Too many failed sign-in attempts. Please try again later.")
+            return render(request, "app/login.html",
+                          {"form": form, "login_url": arcgis_org_url()},
+                          status=429)
+
         if form.is_valid():
             username = form.cleaned_data["username"]
             user = form.get_user()
 
             if user is not None:
+                login_limiter.reset(attempted_username, ip)
                 login(request, user)
                 messages.success(request, f"Welcome back, {username}!")
                 logger.info(f"User '{username}' logged in successfully.")
                 return redirect("/enterpriseviz/")
         else:
+            login_limiter.record_failure(attempted_username, ip)
             logger.warning(f"Login form invalid: {form.errors.as_json()}")
             messages.error(request, "Invalid username or password.")
 
-    return render(request, "app/login.html", {"form": form, "login_url": settings.SOCIAL_AUTH_ARCGIS_URL})
+    return render(request, "app/login.html", {"form": form, "login_url": arcgis_org_url()})
 
 
+@login_not_required
 def logout_view(request):
     """
     Process user logout.
@@ -1345,14 +1788,11 @@ def update_portal_view(request, instance):
             "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Portal '{instance}' not found."})})
 
     if request.method == "POST":
-        time.sleep(0.5)
         form = PortalCreateForm(request.POST, instance=portal)
         if form.is_valid():
             logger.debug("Form valid.")
-            # Only re-test credentials when a new password was actually submitted; a blank
-            # field keeps the stored one.
-            requires_auth_check = (form.cleaned_data["auth_method"] == "password"
-                                   and bool(request.POST.get("password")))
+
+            requires_auth_check = form.stored_credentials_need_check()
 
             missing_update_privileges = []
             if requires_auth_check:
@@ -1431,8 +1871,7 @@ def schedule_task_view(request, instance):
         return HttpResponse(status=404, headers={"HX-Trigger-After-Settle": json.dumps(
             {"showDangerAlert": f"Portal '{instance}' not found.", "closeModal": True})})
 
-    results = TaskResult.objects.filter(task_args__icontains=f"'{instance}'").exclude(
-        task_name__icontains="batch").order_by('-date_done')[:10]
+    results = Job.objects.filter(portal_alias=instance).order_by('-queued_at')[:10]
 
     if request.method == "DELETE":
         logger.debug(f"Processing DELETE for portal '{instance}' task.")
@@ -1679,9 +2118,6 @@ def metadata_view(request, instance):
         return render_error(request, 404, "Portal instance not found.")
 
     # Determine if credentials are needed
-    # An OAuth portal that has never been authorized (or whose authorization was
-    # rejected) can't be fixed with a credential form, so offer to connect instead
-    # of failing the task later.
     if _needs_oauth_connect(portal):
         return _render_oauth_connect_prompt(request, portal)
 
@@ -1730,7 +2166,7 @@ def metadata_view(request, instance):
                     portal.portal_type = "agol" if auth_result["is_agol"] else "portal"
                     portal.save(update_fields=['portal_type'])
 
-                credential_token = utils.CredentialManager.store_credentials(username, password, ttl_seconds=300)
+                credential_token = utils.CredentialManager.store_credentials(username, password)
                 if not credential_token:
                     logger.error(f"Failed to store temporary credentials for {portal.alias}.")
                     form.add_error(None, "System error: Failed to secure credentials.")
@@ -1788,12 +2224,16 @@ def metadata_view(request, instance):
                 "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": error_msg})
             })
 
+        metadata_rows = metadata_report_data.get("metadata", [])
         context = {
             "portal_list": Portal.objects.values_list("alias", "portal_type", "url"),
             "current_portal": portal,
             "instance_alias": instance,
-            "metadata": metadata_report_data.get("metadata", []),
+            "metadata": metadata_rows,
         }
+
+        cache.set(reports.metadata_cache_key(request.user.pk, instance), metadata_rows,
+                  timeout=reports.METADATA_REPORT_TTL_SECONDS)
 
         logger.debug(f"Rendering metadata for '{instance}'.")
         response = render(request, template_name, context)
@@ -1868,12 +2308,14 @@ def usage_toggle_view(request):
 
 @require_POST
 @csrf_exempt
+@login_not_required
 def webhook_view(request):
     """
-    Handle incoming webhook requests by validating signatures and processing events.
+    Handle incoming organization webhook requests and process their events.
 
-    This view receives and verifies webhook payloads using ArcGIS configured secret. If the
-    signature is valid, it parses the JSON payload and processes relevant events.
+    Authenticates against the secret configured in SiteSettings, which
+    organization webhooks send in a request header — see
+    utils.validate_webhook_secret.
     https://enterprise.arcgis.com/en/portal/11.5/administer/windows/webhook-payloads.htm
 
     Expected Payload Structure:
@@ -1890,17 +2332,40 @@ def webhook_view(request):
         ]
     }
 
+    The events themselves are handled by the "Process webhook" job, not here.
+    Everything that talks to the portal — connecting, and the per-event lookup
+    that decides which item task to run — used to happen in this request, which
+    held one of the web server's threads and its transaction for as long as the
+    portal took to answer. This is the only endpoint reachable without a
+    session, so it is the worst place to do that.
+
+    A 200 therefore means the payload was authenticated and queued, not that
+    every event succeeded. Processing failures show up in the job history and
+    the logs.
+
+    Note that webhook_limiter counts *failed* attempts, so a caller holding the
+    secret is not rate limited.
+
     Returns:
-    - `200 OK` if the webhook is processed successfully.
-    - `403 Forbidden` if the signature is invalid.
+    - `200 OK` if the webhook is authenticated and queued.
+    - `403 Forbidden` if the secret header is missing or does not match.
     - `400 Bad Request` for malformed JSON payloads.
     - `404 Not Found` if the portal is unknown.
+    - `429 Too Many Requests` after repeated authentication failures.
     """
     logger.debug("Received webhook request.")
 
     # Validate webhook secret
+    ip = client_ip(request)
+    if webhook_limiter.is_blocked(ip):
+        logger.warning(f"Webhook rejected: too many failed attempts from {ip}.")
+        return HttpResponse(status=429)
+
     if not utils.validate_webhook_secret(request):
+        webhook_limiter.record_failure(ip)
         return HttpResponseForbidden()
+
+    webhook_limiter.reset(ip)
 
     # Parse and validate payload
     try:
@@ -1924,94 +2389,70 @@ def webhook_view(request):
         logger.warning(f"Unknown portal URL received: {portal_url}")
         return JsonResponse({"error": "Unknown portal"}, status=404)
 
-    # Connect to portal
-    try:
-        target = utils.connect(portal_instance)
-    except Exception as e:
-        logger.error(f"Connection failed for portal '{portal_instance.alias}': {e}", exc_info=True)
-        return JsonResponse({"error": "Failed to connect to portal"}, status=500)
-
-    # Process events
     events = payload.get("events", [])
-    logger.debug(f"Webhook: Processing {len(events)} events.")
+    if not events:
+        logger.debug(f"Webhook payload for {portal_url} carried no events.")
+        return JsonResponse({"message": "Webhook received successfully"}, status=200)
 
-    utils.process_webhook_events(events, target, portal_instance)
+    job = process_webhook.enqueue(portal_instance.alias, events)
 
-    logger.info(f"Successfully processed payload for {portal_url}.")
+    logger.info(f"Queued job {job.pk} for {len(events)} webhook event(s) from {portal_url}.")
     return JsonResponse({"message": "Webhook received successfully"}, status=200)
-
-
-VALID_LOG_LEVELS = {
-    "CRITICAL": logging.CRITICAL, "ERROR": logging.ERROR, "WARNING": logging.WARNING,
-    "INFO": logging.INFO, "DEBUG": logging.DEBUG
-}
-LOG_LEVEL_NAMES = list(VALID_LOG_LEVELS.keys())
 
 
 @staff_member_required
 def log_settings_view(request):
     """
-    Configures application-wide logging levels.
+    Configures the application-wide logging level and the retention windows
+    for log entries, finished background jobs and Replace Service backups.
 
-    On GET, displays the current logging level and a form to change it.
-    On POST, updates the logging level in SiteSettings, applies it to the
-    current Django process, and signals active Celery workers to update their
-    log levels as well.
-
-    Expected POST parameter:
-        - 'level': The desired logging level string (e.g., 'INFO', 'DEBUG').
+    On GET, displays the current values. On POST, saves them, applies the new
+    level to the current Django process, and queues a job so the worker
+    process picks it up too. The retention windows need no such signal — the
+    purges read them when they next run.
 
     :param request: The HTTP request object.
     :type request: django.http.HttpRequest
-    :return: Rendered HTML response (log settings form partial) or an error response.
+    :return: Rendered HTML response (log settings dialog) or an HX-Trigger response.
     :rtype: django.http.HttpResponse
     """
     logger.debug(f"Method={request.method}, user={request.user.username}")
-    site_settings, _ = SiteSettings.objects.get_or_create(pk=1)
+    site_settings = SiteSettings.load()
 
     if request.method == "POST":
-        new_level_str = request.POST.get("level", "").upper()
-        logger.debug(f"Requested log level: {new_level_str}")
+        form = LoggingAndRetentionForm(request.POST, instance=site_settings)
+        if not form.is_valid():
+            logger.warning(f"Invalid log settings submitted: {form.errors.as_json()}")
+            return render(request, 'partials/log_settings.html', {'form': form})
 
-        if new_level_str in VALID_LOG_LEVELS:
-            try:
-                site_settings.logging_level = new_level_str
-                site_settings.save(update_fields=['logging_level'])
-                logger.info(f"SiteSettings database updated to logging level: {new_level_str}.")
+        try:
+            form.save()
+            new_level_str = form.cleaned_data["logging_level"]
+            logger.info(f"SiteSettings updated: logging level {new_level_str}, "
+                        f"log retention {form.cleaned_data['log_retention_days']} day(s), "
+                        f"job retention {form.cleaned_data['job_retention_days']} day(s), "
+                        f"replacement backup retention "
+                        f"{form.cleaned_data['replacement_backup_retention_days']} day(s).")
 
-                utils.apply_global_log_level(level_name=new_level_str)
-                logger.info(f"Log level '{new_level_str}' applied to current Django process.")
+            utils.apply_global_log_level(level_name=new_level_str)
+            logger.info(f"Log level '{new_level_str}' applied to current Django process.")
 
-                active_workers = celery_app.control.inspect().active()
-                if active_workers:
-                    tasks_sent_count = 0
-                    for worker_name in active_workers.keys():
-                        # Task should fetch the level from SiteSettings when it runs in the worker
-                        apply_site_log_level_in_worker.delay()
-                        tasks_sent_count += 1
-                    logger.info(f"Task to update log levels sent to {tasks_sent_count} active Celery worker(s).")
-                else:
-                    logger.info("No active Celery workers found to send log level update task.")
+            apply_site_log_level_in_worker.enqueue()
+            logger.info("Queued a job to apply the new log level in the worker.")
 
-                return HttpResponse(headers={"HX-Trigger-After-Settle": json.dumps(
-                    {"showSuccessAlert": f"Log level updated to {new_level_str}.", "closeModal": True}
-                )})
-            except Exception as e:
-                logger.error(f"Error updating log levels: {e}", exc_info=True)
-                return HttpResponse(status=500, headers={
-                    "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Error: {str(e)}"})})
-        else:
-            logger.warning(f"Invalid log level '{new_level_str}' provided.")
-            return HttpResponse("Invalid log level.", status=400)
+            return HttpResponse(headers={"HX-Trigger-After-Settle": json.dumps(
+                {"showSuccessAlert": "Log settings saved.", "closeModal": True}
+            )})
+        except Exception as e:
+            logger.error(f"Error updating log settings: {e}", exc_info=True)
+            return HttpResponse(status=500, headers={
+                "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Error: {str(e)}"})})
 
-    context = {
-        'current_log_level': site_settings.logging_level,
-        'log_levels': LOG_LEVEL_NAMES,
-    }
-    return render(request, 'partials/log_settings.html', context)
+    return render(request, 'partials/log_settings.html',
+                  {'form': LoggingAndRetentionForm(instance=site_settings)})
 
 
-@staff_member_required
+@superuser_required
 def email_settings(request):
     """
     Manages application-wide email configuration settings.
@@ -2032,7 +2473,7 @@ def email_settings(request):
     :rtype: django.http.HttpResponse
     """
     logger.debug(f"Method={request.method}, user={request.user.username}")
-    settings_instance, _ = SiteSettings.objects.get_or_create(pk=1)
+    settings_instance = SiteSettings.load()
 
     if request.method == "POST":
         form = SiteSettingsForm(request.POST, instance=settings_instance)
@@ -2043,11 +2484,6 @@ def email_settings(request):
             logger.debug("Form valid.")
             if action == "save":
                 try:
-                    # Handle empty password - keep existing if not changed
-                    if not form.cleaned_data.get("email_password"):
-                        form.cleaned_data["email_password"] = settings_instance.email_password
-                        logger.debug("Password field empty - keeping existing password.")
-
                     form.save()
                     logger.info("Email configuration saved successfully.")
                     response = render(request, "partials/portal_email_form.html", {"form": form})
@@ -2074,8 +2510,8 @@ def email_settings(request):
                     return HttpResponse(status=200, headers={
                         "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Host and Port required."})})
 
-                # Use existing password if current submission is empty
-                email_password = config.get("email_password") or settings_instance.email_password
+                # Already resolved by clean_email_password when left blank.
+                email_password = config.get("email_password")
 
                 try:
                     logger.debug(
@@ -2146,8 +2582,8 @@ def notify_view(request):
     logger.debug(f"Change='{change_item_description}', Maps='{map_ids_str}', Apps='{app_ids_str}'")
 
     # Check email configuration
-    site_settings = SiteSettings.objects.first()
-    if not site_settings or not site_settings.email_host:
+    site_settings = SiteSettings.load()
+    if not site_settings.email_host:
         logger.error("Email settings not configured.")
         return HttpResponse(status=200, headers={
             "HX-Retarget": "#notification-form-container",
@@ -2279,12 +2715,13 @@ def tool_settings(request, instance):
             "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": "Error loading tool settings."})})
 
     # Check prerequisites
-    site_settings, _ = SiteSettings.objects.get_or_create(pk=1)
+    site_settings = SiteSettings.load()
     webhook_configured = bool(site_settings.webhook_secret)
     email_configured = bool(site_settings.email_host)
 
-    results = TaskResult.objects.filter(task_kwargs__icontains=f"'{instance}'", task_name__icontains="tool").order_by(
-        '-date_done')[:10]
+    results = Job.objects.filter(
+        portal_alias=instance, name__icontains="tool"
+    ).order_by('-queued_at')[:10]
 
     if request.method == "POST":
         # Block submission if email not configured (required for all tools)
@@ -2372,7 +2809,7 @@ def tool_run(request, instance, tool_name):
         logger.warning(f"Tool '{tool_name}' blocked: portal '{portal.alias}' is not authorized.")
         return HttpResponse(status=200, headers={
             "HX-Trigger-After-Settle": json.dumps({
-                "showDangerAlert": f"{escape(portal.alias)} is not authorized. Open the portal settings "
+                "showDangerAlert": f"{portal.alias} is not authorized. Open the portal settings "
                                    f"and use Connect with ArcGIS before running tools."
             })
         })
@@ -2387,7 +2824,7 @@ def tool_run(request, instance, tool_name):
             "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Invalid tool parameters: {error_msg}"})
         })
 
-    site_settings, _ = SiteSettings.objects.get_or_create(pk=1)
+    site_settings = SiteSettings.load()
 
     # Check email configuration
     if not bool(site_settings.email_host):
@@ -2440,18 +2877,18 @@ def tool_run(request, instance, tool_name):
 
     try:
         # Call the specific task for this tool
-        task = config['task'].delay(**task_params)
+        task = config['task'].enqueue(**task_params)
         logger.info(f"Successfully queued tool '{tool_display_name}' for instance '{instance}'. Task ID: {task.id}")
 
         response_data = {
             "instance": instance,
             "task_id": task.id,
-            "value": 0,
-            "progress": {"state": "PENDING", "complete": False},
+            "value": task.progress_percent,
+            "progress": task.progress_info,
             "task_name": tool_display_name,
         }
 
-        response = render(request, "partials/progress_bar.html", context=response_data)
+        response = render(request, "partials/progress_response.html", context=response_data)
         return response
 
     except Exception as e:
@@ -2462,10 +2899,57 @@ def tool_run(request, instance, tool_name):
         })
 
 
-@staff_member_required
+@superuser_required
+def arcgis_signin_settings(request):
+    """
+    Configures the ArcGIS OAuth application users sign in through.
+
+    On GET, renders the current configuration. On POST, saves it. Nothing has
+    to be signalled to a running process: config.customArcGIS reads the row
+    when a sign-in happens, and the login page reads it when it renders, so a
+    change applies to the next sign-in attempt.
+
+    :param request: The HTTP request object.
+    :type request: django.http.HttpRequest
+    :return: Rendered HTML response (dialog or form partial), or an HX-Trigger response.
+    :rtype: django.http.HttpResponse
+    """
+    logger.debug(f"Method={request.method}, user={request.user.username}")
+    site_settings = SiteSettings.load()
+
+    if request.method == "POST":
+        form = ArcGISSignInForm(request.POST, instance=site_settings)
+        if not form.is_valid():
+            logger.warning(f"Invalid ArcGIS sign-in settings submitted: {form.errors.as_json()}")
+            return render(request, 'partials/arcgis_signin_form.html', {'form': form})
+
+        try:
+            form.save()
+            configured = bool(form.cleaned_data["arcgis_org_url"])
+            logger.info(f"ArcGIS sign-in settings saved: organization "
+                        f"'{form.cleaned_data['arcgis_org_url'] or 'not set'}', "
+                        f"required role '{form.cleaned_data['arcgis_user_role'] or 'not set'}'.")
+
+            message = ("ArcGIS sign-in settings saved." if configured
+                       else "ArcGIS sign-in settings cleared. Only local accounts can sign in.")
+            return HttpResponse(headers={"HX-Trigger-After-Settle": json.dumps(
+                {"showSuccessAlert": message, "closeModal": True}
+            )})
+        except Exception as e:
+            logger.error(f"Error saving ArcGIS sign-in settings: {e}", exc_info=True)
+            return HttpResponse(status=500, headers={
+                "HX-Trigger-After-Settle": json.dumps({"showDangerAlert": f"Error: {str(e)}"})})
+
+    return render(request, 'portals/arcgis_signin.html', {
+        'form': ArcGISSignInForm(instance=site_settings),
+        'current_secret': bool(site_settings.arcgis_client_secret),
+    })
+
+
+@superuser_required
 def webhook_settings_view(request):
     """Configure webhook settings for the site."""
-    site_settings, _ = SiteSettings.objects.get_or_create(pk=1)
+    site_settings = SiteSettings.load()
 
     if request.method == "POST":
         action = request.POST.get("action")
@@ -2516,6 +3000,12 @@ def replace_modal_view(request, instance, service_pk):
     """
     Renders the Replace Service modal: replacement candidates, the source
     service's sublayer inventory, consuming maps/apps, and job history.
+
+    The inventory is read live from the service where the portal can
+    authenticate unattended, because layer ids reach the database only through
+    MSD parsing and the hosted sync; it falls back to the database otherwise,
+    so a portal that prompts for credentials still opens the dialog without
+    asking for them.
     """
     portal = get_object_or_404(Portal, alias=instance)
     service = get_object_or_404(Service, pk=service_pk, portal_instance=portal)
@@ -2534,7 +3024,7 @@ def replace_modal_view(request, instance, service_pk):
         "item": service,
         "instance_alias": instance,
         "candidates": candidates,
-        "source_layers": utils.get_source_layer_inventory(service),
+        "source_layers": utils.resolve_layer_inventory(service),
         "maps": maps,
         "apps": apps,
         "jobs": utils.get_service_replacement_jobs(service),
@@ -2578,6 +3068,16 @@ def replace_dry_run_view(request, instance, service_pk):
             return danger("Invalid layer mapping data.")
         if not layer_mappings:
             return danger("Add at least one layer mapping or switch to simple mode.")
+
+        try:
+            layer_mappings = [
+                dict(m, old_layer_id=int(m["old_layer_id"]),
+                     new_layer_id=int(m["new_layer_id"]),
+                     explicit=bool(m.get("explicit")))
+                for m in layer_mappings
+            ]
+        except (KeyError, TypeError, ValueError):
+            return danger("Layer mappings contain an invalid layer id.")
         target_pks = {m.get("target_service_id") for m in layer_mappings}
         valid_pks = set(Service.objects.filter(
             portal_instance=portal, pk__in=target_pks).values_list("pk", flat=True))
@@ -2595,14 +3095,16 @@ def replace_dry_run_view(request, instance, service_pk):
         config = {"mode": "simple", "target_service_id": target_pk}
 
     try:
-        rows, warnings, partial = utils.build_mapping_rows(service, config)
+        rows, warnings, partial, sublayer_renumber = utils.build_mapping_rows(service, config)
         pairs = utils.build_replacements(rows)
     except Exception as e:
         logger.error(f"Failed to build replacement mapping for service {service.pk}: {e}",
                      exc_info=True)
         return danger("Failed to build the replacement mapping. See logs for details.")
 
-    if not pairs:
+    # A renumber-only mapping is real work even when no string pair changes:
+    # whole-service web map layers carry their sublayer ids as bare integers
+    if not pairs and not sublayer_renumber:
         return danger("The configuration produces no replacements - the source and "
                       "replacement service URLs and item IDs are identical.")
 
@@ -2623,8 +3125,6 @@ def replace_dry_run_view(request, instance, service_pk):
         unreplaced_references = [u.rstrip("/") for u in (service.service_url or []) if u]
         unreplaced_references += [v for v in (service.portal_id or {}).values() if v]
 
-    # Lock the portal row so two racing requests cannot both pass the
-    # active-job check and create concurrent jobs
     with transaction.atomic():
         Portal.objects.select_for_update().get(pk=portal.pk)
         if utils.active_replacement_job_exists(portal):
@@ -2636,6 +3136,7 @@ def replace_dry_run_view(request, instance, service_pk):
             source_service_name=service.service_name or "",
             replacement_config=config,
             replacement_pairs=[list(p) for p in pairs],
+            sublayer_renumber=sublayer_renumber,
             selected_map_ids=selected_maps,
             selected_app_ids=selected_apps,
             status="analyzing",
@@ -2648,8 +3149,9 @@ def replace_dry_run_view(request, instance, service_pk):
         utils.cache_replacement_credentials(job.id, cred["token"], request.user.pk)
 
     try:
-        task = process_replacement_task.delay(job.id, "dry_run", credential_token=cred["token"])
-        job.celery_task_id = task.id
+        task = process_replacement_task.enqueue(job.id, "dry_run", credential_token=cred["token"])
+        _tag_job_portal(task, job)
+        job.celery_task_id = str(task.id)
         job.save(update_fields=["celery_task_id"])
     except Exception as e:
         logger.error(f"Failed to queue replacement dry run for job {job.id}: {e}", exc_info=True)
@@ -2662,7 +3164,7 @@ def replace_dry_run_view(request, instance, service_pk):
         "instance": instance,
         "task_id": task.id,
         "value": 0,
-        "progress": {"state": "PENDING", "complete": False},
+        "progress": task.progress_info,
         "task_name": "Replace Service Dry Run",
         "job_id": job.id,
         "phase": "dry_run",
@@ -2675,11 +3177,11 @@ def replace_dry_run_view(request, instance, service_pk):
 def replace_target_layers_view(request, instance, target_pk):
     """
     Returns the sublayer options of a candidate replacement service for the
-    advanced mapping table row selects.
+    advanced mapping table row selects, live from the service where possible.
     """
     target = get_object_or_404(Service, pk=target_pk, portal_instance__alias=instance)
     return render(request, "partials/replace_layer_options.html", {
-        "layers": utils.get_source_layer_inventory(target),
+        "layers": utils.resolve_layer_inventory(target),
     })
 
 
@@ -2743,21 +3245,22 @@ def replace_execute_view(request, instance, job_id):
         job.save(update_fields=["status"])
 
     try:
-        task = process_replacement_task.delay(job.id, "execute", credential_token=cred["token"])
+        task = process_replacement_task.enqueue(job.id, "execute", credential_token=cred["token"])
     except Exception as e:
         logger.error(f"Failed to queue replacement execution for job {job.id}: {e}", exc_info=True)
         job.status = "dry_run"
         job.save(update_fields=["status"])
         return danger("Failed to queue the replacement. See logs for details.")
 
-    job.celery_task_id = task.id
+    _tag_job_portal(task, job)
+    job.celery_task_id = str(task.id)
     job.save(update_fields=["celery_task_id"])
     logger.info(f"Queued replacement execution job {job.id} ({instance}). Task ID: {task.id}")
     return render(request, "partials/replace_progress.html", {
         "instance": instance,
         "task_id": task.id,
         "value": 0,
-        "progress": {"state": "PENDING", "complete": False},
+        "progress": task.progress_info,
         "task_name": "Replace Service",
         "job_id": job.id,
         "phase": "execute",
@@ -2810,7 +3313,7 @@ def replace_revert_view(request, instance, job_id):
         job.save(update_fields=["status"])
 
     try:
-        task = revert_replacement_task.delay(job.id, credential_token=cred["token"],
+        task = revert_replacement_task.enqueue(job.id, credential_token=cred["token"],
                                              prior_status=prior_status)
     except Exception as e:
         logger.error(f"Failed to queue revert for job {job.id}: {e}", exc_info=True)
@@ -2818,14 +3321,15 @@ def replace_revert_view(request, instance, job_id):
         job.save(update_fields=["status"])
         return danger("Failed to queue the revert. See logs for details.")
 
-    job.revert_task_id = task.id
+    _tag_job_portal(task, job)
+    job.revert_task_id = str(task.id)
     job.save(update_fields=["revert_task_id"])
     logger.info(f"Queued replacement revert job {job.id} ({instance}). Task ID: {task.id}")
     return render(request, "partials/replace_progress.html", {
         "instance": instance,
         "task_id": task.id,
         "value": 0,
-        "progress": {"state": "PENDING", "complete": False},
+        "progress": task.progress_info,
         "task_name": "Revert Replacement",
         "job_id": job.id,
         "phase": "revert",
@@ -2959,14 +3463,15 @@ def replace_revert_item_view(request, instance, backup_id):
             return danger("This item's revert is already in progress.")
 
     try:
-        task = revert_replacement_task.delay(job.id, credential_token=cred["token"],
+        task = revert_replacement_task.enqueue(job.id, credential_token=cred["token"],
                                              backup_ids=[backup.pk], force=force)
     except Exception as e:
         logger.error(f"Failed to queue item revert for backup {backup.pk}: {e}", exc_info=True)
         ReplacementItemBackup.objects.filter(pk=backup.pk).update(revert_claimed_at=None)
         return danger("Failed to queue the revert. See logs for details.")
 
-    job.revert_task_id = task.id
+    _tag_job_portal(task, job)
+    job.revert_task_id = str(task.id)
     job.save(update_fields=["revert_task_id"])
     logger.info(f"Queued item revert for '{backup.item_title}' (job {job.id}, {instance}). "
                 f"Task ID: {task.id}")
@@ -2974,13 +3479,10 @@ def replace_revert_item_view(request, instance, backup_id):
         "instance": instance,
         "task_id": task.id,
         "value": 0,
-        "progress": {"state": "PENDING", "complete": False},
+        "progress": task.progress_info,
         "task_name": f"Revert '{backup.item_title or backup.item_id}'",
     })
 
-
-# Error handlers, wired up via handler400/403/404/500 in config.urls.
-# Individual views also route their own error paths through render_error.
 
 ERROR_PAGE_CONFIG = {
     400: ("400.html", "Bad request"),
@@ -3028,8 +3530,6 @@ def error_404_view(request, exception=None):
 
 
 def error_500_view(request):
-    # Everything is wrapped: if rendering itself fails mid-500 (broken DB or
-    # context processors), fall back to a bare response rather than recursing.
     try:
         if getattr(request, "htmx", None):
             return render_error(request, 500, "An unexpected server error occurred.")

@@ -1,12 +1,29 @@
+# Only used when the image is built with --build-arg ENABLE_AZURE_SSH=1.
+#
+# Azure App Service requires root password authentication with the well-known
+# password "Docker!" and reaches port 2222 over its own internal tunnel, so
+# these two settings cannot be tightened without breaking the platform feature.
+# Everything else is locked down, and the port must never be published.
 Port 			2222
 ListenAddress 		0.0.0.0
-LoginGraceTime 		180
-X11Forwarding 		yes
-Ciphers aes128-cbc,3des-cbc,aes256-cbc,aes128-ctr,aes192-ctr,aes256-ctr
-MACs hmac-sha1,hmac-sha1-96
+PermitRootLogin 	yes
+PasswordAuthentication 	yes
+
+PermitEmptyPasswords 	no
+LoginGraceTime 		60
+MaxAuthTries 		3
 StrictModes 		yes
 SyslogFacility 		DAEMON
-PasswordAuthentication 	yes
-PermitEmptyPasswords 	no
-PermitRootLogin 	yes
+
+# Modern algorithms only; the previous list allowed 3DES/CBC and HMAC-SHA1.
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512
+
+# Nothing here needs to forward or tunnel.
+X11Forwarding 		no
+AllowAgentForwarding 	no
+AllowTcpForwarding 	no
+PermitTunnel 		no
+
 Subsystem sftp internal-sftp

@@ -24,47 +24,111 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 import arcgis.gis.server
 import requests
 from bs4 import BeautifulSoup
-from celery import shared_task, group, current_app
-from celery.exceptions import Ignore
-from celery_progress.backend import ProgressRecorder, Progress
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from django.conf import settings as django_settings
 from django.core.exceptions import MultipleObjectsReturned
 from django.db.models import Q
 from django.utils import timezone
 
 from . import utils
+from .jobs import JobCanceled, JobDeadlineExceeded, task, worker_thread
 from .models import Webmap, Service, Layer, App, User, Map_Service, Layer_Service, App_Map, App_Service, Portal, \
-    WebhookNotificationLog
-from .request_context import celery_logging_context
+    PortalToolSettings, WebhookNotificationLog
 
 logger = logging.getLogger('enterpriseviz.tasks')
 
 
-@shared_task(name="apply_site_log_level_in_worker")
-def apply_site_log_level_in_worker():
+def _batch_concurrency():
+    """
+    How many batch helpers one job may run at once.
+
+    Bounded because these threads each hold a database connection and the pool
+    is nested inside the worker's own — total connections are roughly
+    JOB_CONCURRENCY * JOB_BATCH_CONCURRENCY plus the web tier's, which is easy
+    to push past PostgreSQL's default max_connections without meaning to.
+    """
+    return getattr(django_settings, "JOB_BATCH_CONCURRENCY", 8)
+
+
+def run_batches(context, func, batch_args):
+    """
+    Run batch helpers on a thread pool, yielding each result as it completes.
+
+    This is a generator. It submits nothing until the caller iterates it, and
+    the ``finally`` that shuts the pool down runs only when the caller exhausts
+    or closes it. All four call sites consume it with a plain ``for``. It
+    submits every batch before the first result comes back, so
+    ``_batch_concurrency`` bounds the threads, not the queue.
+
+    Each batch gets a child context, so the helpers share the parent's job
+    without competing for its one progress bar. The parent's ``checkpoint()``
+    runs between results. A cancel or an expired deadline therefore raises in
+    this frame, and the ``finally`` can still drop the batches that have not
+    started. Shutdown then waits for the batches already running, which hand
+    back their database connections before the worker finalizes the job. They
+    stop within an item or two of being asked.
+
+    :param context: The JobContext of the task fanning out.
+    :param func: A @worker_thread batch helper taking a context as its first
+        argument.
+    :param batch_args: One argument tuple per batch.
+    :return: Each helper's return value, in completion order.
+    """
+    pool = ThreadPoolExecutor(max_workers=_batch_concurrency())
+    try:
+        futures = [pool.submit(func, context.child_context(), *args)
+                   for args in batch_args]
+        for future in as_completed(futures):
+            yield future.result()
+            context.checkpoint()
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+def _processed_label(done, total, noun):
+    """
+    The line under a refresh's progress bar: "1,300 of 8,942 web maps".
+
+    The refresh tasks used to report a bare fraction and no words, so the bar
+    moved for an hour with nothing saying what it was moving through or which
+    phase it had reached. The tools always described themselves; these now do
+    too, and the label is always present so the surrounding page does not jump
+    when it first appears.
+    """
+    if not total:
+        return f"Processing {noun}s..."
+    return f"{done:,} of {total:,} {noun}{'' if total == 1 else 's'}"
+
+
+@task(name="Apply log level")
+def apply_site_log_level_in_worker(self):
     utils.apply_global_log_level()
 
 
-@shared_task
-def purge_expired_replacement_backups_task():
+@task(name="Purge expired replacement backups")
+def purge_expired_replacement_backups_task(self):
     utils.purge_expired_replacement_backups()
 
 
-@shared_task(bind=True, name="Update All")
+@task(name="Purge old log entries")
+def purge_old_log_entries_task(self):
+    utils.purge_old_log_entries()
+
+
+@task(name="Update All", portal_arg="instance")
 def update_all(self, instance, items):
     for item in items:
         if item == "webmaps":
-            update_webmaps.delay(instance, False)
+            update_webmaps.enqueue(instance, False)
         if item == "services":
-            update_services.delay(instance, False)
+            update_services.enqueue(instance, False)
         if item == "webapps":
-            update_webapps.delay(instance, False)
+            update_webapps.enqueue(instance, False)
         if item == "users":
-            update_users.delay(instance, False)
+            update_users.enqueue(instance, False)
 
 
-@shared_task(bind=True, name="Update webmaps", time_limit=6000, soft_time_limit=3000)
-@celery_logging_context
+@task(name="Update webmaps", portal_arg="instance_alias", time_limit=6000)
 def update_webmaps(self, instance_alias, full_refresh=False, credential_token=None):
     """
     Update web maps for a given portal instance.
@@ -81,29 +145,31 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
     :type full_refresh: bool
     :param credential_token: Token for temporary credentials (optional)
     :type credential_token: str
-    :return: JSON-serialized update result containing counts of inserts, updates, deletions, and any error messages.
-    :rtype: str
+    :return: Update result as a dict: counts of inserts, updates, deletions, and any error messages.
+    :rtype: dict
     """
     logger.debug(f"Starting update_webmaps task for instance_alias={instance_alias}, full_refresh={full_refresh}")
 
     # Initialize progress recorder and result container for tracking task progress and outcome
-    progress_recorder = ProgressRecorder(self)
+    progress_recorder = self.progress
     result = utils.UpdateResult()
 
     try:
+        progress_recorder.set_progress(0, 0, f"Connecting to {instance_alias}...")
         instance_item = Portal.objects.get(alias=instance_alias)
         target = utils.connect(instance_item, credential_token)
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        result.add_error(f"Unable to connect to {instance_alias}: {e}")
-        return result.to_json()
+        result.add_error(f"Unable to connect to {instance_alias}")
+        return result.to_dict()
 
     if not _verify_update_privileges(target, instance_alias, result, CONTENT_VIEW_PRIVILEGES):
-        return result.to_json()
+        return result.to_dict()
 
     try:
         update_time = timezone.now()
         logger.debug(f"Update timestamp: {update_time}")
+        progress_recorder.set_progress(0, 0, "Searching for web maps...")
 
         # Build search query with optional date filter for incremental updates
         if instance_item.portal_type == "agol":
@@ -133,68 +199,31 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
 
 
         if full_refresh:
+            progress_recorder.set_progress(0, 0, "Clearing existing web maps...")
             deleted_count = Webmap.objects.filter(portal_instance=instance_item).count()
             Webmap.objects.filter(portal_instance=instance_item).delete()
             logger.info(f"Deleted {deleted_count} existing web maps for portal '{instance_alias}'")
 
         # Set up batch processing
         batch_size = 100
-        batch_tasks = []
-        logger.debug(f"Setting up batch processing with batch size: {batch_size}")
+        batch_args = [
+            (instance_alias, credential_token, batch, batch_size, update_time, query)
+            for batch in range(0, total_webmaps, batch_size)
+        ]
+        logger.info(f"Created {len(batch_args)} batches for processing {total_webmaps} web maps")
 
-        for batch in range(0, total_webmaps, batch_size):
-            logger.debug(f"Creating batch task for items {batch} to {min(batch+batch_size, total_webmaps)}")
-            batch_tasks.append(
-                process_batch_maps.s(
-                    instance_alias,
-                    credential_token,
-                    batch,
-                    batch_size,
-                    update_time,
-                    query
-                )
-            )
-
-        logger.info(f"Created {len(batch_tasks)} batch tasks for processing {total_webmaps} web maps")
-
-        # Execute parallel processing by batch
-        logger.debug("Starting parallel batch processing")
-        task_group = group(batch_tasks)
-        batch_results = task_group.apply_async()
-        logger.debug(f"Batch processing started with group ID: {batch_results.id}")
-
-        # Monitor progress
-        logger.debug("Monitoring batch processing progress")
-        while not batch_results.ready():
-            try:
-                completed_tasks = sum(
-                    task.result.get("current", 0) if "current" in task.result else batch_size
-                    for task in batch_results.children
-                    if task.result
-                )
-                progress_percentage = (completed_tasks / total_webmaps) * 100
-                logger.debug(f"Progress: {progress_percentage:.1f}% ({completed_tasks}/{total_webmaps} items)")
-                progress_recorder.set_progress(completed_tasks, total_webmaps)
-                time.sleep(1.5)
-            except Exception as e:
-                logger.warning(f"Error calculating progress: {e}")
-                time.sleep(1.5)
-                continue
-
-        # Aggregate results
-        logger.info(f"All batch tasks completed, aggregating results")
-        logger.debug(f"Batch results: {batch_results}")
-
+        # Run the batches on a thread pool inside this job.
         success_count = 0
         failure_count = 0
+        completed_items = 0
 
-        for batch in batch_results.get(disable_sync_subtasks=False):
+        for batch in run_batches(self, process_batch_maps, batch_args):
             batch_result = utils.UpdateResult(**batch)
 
             if batch_result.success is False:
                 failure_count += 1
                 result.success = False
-                logger.warning(f"Batch task reported failure: {batch_result.error_messages}")
+                logger.warning(f"Batch reported failure: {batch_result.error_messages}")
             else:
                 success_count += 1
 
@@ -205,59 +234,70 @@ def update_webmaps(self, instance_alias, full_refresh=False, credential_token=No
             result.num_errors += batch_result.num_errors
             result.error_messages.extend(batch_result.error_messages)
 
-        logger.info(f"Batch processing summary: {success_count} successful batches, {failure_count} failed batches")
+            completed_items = min(completed_items + batch_size, total_webmaps)
+            progress_recorder.set_progress(
+                completed_items, total_webmaps,
+                _processed_label(completed_items, total_webmaps, "web map"))
+
+        logger.info(f"Batch processing summary: {success_count} successful batches, "
+                    f"{failure_count} failed batches")
 
         # Check for deleted items if this was an incremental update
         if instance_item.webmap_updated and not full_refresh:
             logger.debug(f"Checking for deleted webmaps in portal '{instance_alias}'")
+            progress_recorder.set_progress(total_webmaps, total_webmaps,
+                                           "Checking for deleted web maps...")
             check_deleted_items(instance_alias, credential_token, 'webmap', update_time)
             # If check fails, exception is raised and delete_outdated_records won't run
 
         # Delete web maps not updated in this run (CASCADE deletes Map_Service automatically)
         logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
+        progress_recorder.set_progress(total_webmaps, total_webmaps,
+                                       "Removing outdated records...")
         delete_outdated_records(instance_item, update_time, [Webmap], result)
         logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
         instance_item.webmap_updated = timezone.now()
         instance_item.save()
 
+        progress_recorder.set_progress(total_webmaps, total_webmaps,
+                                       "Updating layer dependencies...")
         utils.update_layer_dependency_counts()
 
         if not result.error_messages:
             result.set_success()
         logger.info(f"Web maps update for portal '{instance_alias}' completed.")
-        logger.debug(f"Final result: {result.to_json()}")
-        return result.to_json()
+        logger.debug(f"Final result: {result.to_dict()}")
+        return result.to_dict()
 
+    except (JobCanceled, JobDeadlineExceeded):
+        raise
     except Exception as e:
         logger.critical(f"Webmaps update failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error("Webmaps update failed")
 
-        # Revoke child tasks if they exist
-        if batch_results and batch_results.children:
-            logger.warning(f"Revoking {len(batch_results.children)} child tasks due to failure")
-            for child in batch_results.children:
-                if child.id:
-                    logger.debug(f"Revoking child task: {child.id}")
-                    current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
-            logger.info("All child tasks revoked")
-
-        return result.to_json()
+        return result.to_dict()
 
 
-@shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
-@celery_logging_context
+@worker_thread
 def process_batch_maps(self, instance_alias, credential_token, batch, batch_size, update_time, query=None):
+    """
+    Process one batch of web maps. Runs on a pool thread under update_webmaps.
+
+    No longer a queued task: it was only ever fanned out by its parent, never
+    scheduled on its own. `self` is the parent's child context, so its progress
+    calls are absorbed rather than fighting the parent for the one bar.
+    """
     result = utils.UpdateResult()
-    progress_recorder = ProgressRecorder(self)
+    progress_recorder = self.progress
 
     try:
         instance_item = Portal.objects.get(alias=instance_alias)
         target = utils.connect(instance_item, credential_token)
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        result.add_error(f"Unable to connect to {instance_alias}: {e}")
-        return result.to_json()
+        result.add_error(f"Unable to connect to {instance_alias}")
+        return result.to_dict()
 
     try:
         logger.debug(f"Retrieving web maps for batch {batch} to {batch + batch_size}")
@@ -288,6 +328,7 @@ def process_batch_maps(self, instance_alias, credential_token, batch, batch_size
         logger.debug(f"Starting to process {total_webmaps} web maps")
 
         for counter, webmap_item in enumerate(results):
+            self.checkpoint()
             try:
                 webmap_id = webmap_item.id
                 webmap_title = webmap_item.title
@@ -326,12 +367,14 @@ def process_batch_maps(self, instance_alias, credential_token, batch, batch_size
         logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
 
         result.set_success()
-        return result.to_json()
+        return result.to_dict()
 
+    except (JobCanceled, JobDeadlineExceeded):
+        raise
     except Exception as e:
         logger.error(f"Webmaps in batch {batch} to {batch + batch_size}: {e}", exc_info=True)
         result.add_error(f"Error processing webmaps in batch {batch} to {batch + batch_size}")
-        return result.to_json()
+        return result.to_dict()
 
 
 def extract_webmap_data(item, instance_item, update_time):
@@ -629,7 +672,6 @@ def delete_outdated_records(instance_item, update_time, models, result=None):
             result.add_delete(deleted_count)
 
 
-@celery_logging_context
 def check_deleted_items(instance_alias, credential_token, item_type, update_time):
     """
     Check if items that weren't modified since last update still exist in the portal.
@@ -890,6 +932,7 @@ def process_databases(manifest, regex_patterns, instance_item, s_obj, update_tim
                 portal_instance=instance_item,
                 layer_id=layer_obj,
                 service_id=s_obj,
+                service_layer_id=None,
                 defaults={"updated_date": update_time}
             )
 
@@ -917,7 +960,8 @@ def get_map_name(service_url, token):
         params = {
             "f": "json"
         }
-        response = requests.get(service_url, headers=headers, params=params, timeout=10)
+        response = requests.get(service_url, headers=headers, params=params, timeout=10,
+                                verify=utils.portal_verify_tls())
         if response.status_code == 200:
             data = response.json()
             return data.get("mapName", None)
@@ -1016,8 +1060,81 @@ def fetch_usage_report(instance_item, server, service_list):
         s_obj.save()
 
 
-@shared_task(bind=True, time_limit=6000, soft_time_limit=3000, name="Update services")
-@celery_logging_context
+def _hosted_layer_id(layer):
+    """
+    The sublayer number of a hosted layer, from the REST layer definition the
+    arcgis API exposes as ``properties``, falling back to the trailing segment
+    of the layer URL (".../FeatureServer/3").
+
+    :param layer: arcgis layer object with ``properties`` and ``url``
+    :return: Sublayer id, or None when neither source yields one
+    :rtype: int or None
+    """
+    layer_id = getattr(getattr(layer, "properties", None), "id", None)
+    if isinstance(layer_id, int) and not isinstance(layer_id, bool):
+        return layer_id
+    tail = (getattr(layer, "url", "") or "").rstrip("/").rsplit("/", 1)[-1]
+    return int(tail) if tail.isdigit() else None
+
+
+def _record_hosted_layer(instance_item, s_obj, layer, update_time):
+    """
+    Records one hosted layer and its link to the service, with the sublayer
+    number and name.
+
+    Until now the hosted paths stored the layer name and dropped the number,
+    even though the sync had it in hand - so hosted services had no
+    ``service_layer_id`` anywhere, the advanced replacement mapping table was
+    empty for them, ``link_services_to_webmap`` could not expand a
+    whole-service web map link, and layer coverage checks could only say
+    "unknown". Only MSD parsing, which hosted services never go through,
+    populated the number.
+
+    The link's uniqueness key includes ``service_layer_id``, so a numbered row
+    is a different row from the legacy NULL one. The legacy row is retired
+    here explicitly rather than left for a stale-row sweep, because not every
+    path that reaches this has one.
+
+    :param instance_item: Portal model instance
+    :param s_obj: Service model instance the layer belongs to
+    :param layer: arcgis layer object with ``properties`` and ``url``
+    :param update_time: Sync timestamp stamped on the rows
+    :return: (Layer, layer_created, relationship_created)
+    :rtype: tuple
+    """
+    layer_name = getattr(layer.properties, "name", None) or "unknown"
+    layer_id = _hosted_layer_id(layer)
+
+    obj, layer_created = Layer.objects.update_or_create(
+        portal_instance=instance_item,
+        layer_server="Hosted",
+        layer_version=None,
+        layer_database=None,
+        layer_name=layer_name,
+        defaults={"updated_date": update_time}
+    )
+
+    _, rel_created = Layer_Service.objects.update_or_create(
+        portal_instance=instance_item,
+        layer_id=obj,
+        service_id=s_obj,
+        service_layer_id=layer_id,
+        defaults={"service_layer_name": layer_name, "updated_date": update_time}
+    )
+
+    if layer_id is not None:
+        retired, _ = Layer_Service.objects.filter(
+            portal_instance=instance_item, layer_id=obj, service_id=s_obj,
+            service_layer_id__isnull=True
+        ).delete()
+        if retired:
+            logger.debug(f"Retired {retired} unnumbered link(s) for hosted layer "
+                         f"'{layer_name}' now recorded as sublayer {layer_id}")
+
+    return obj, layer_created, rel_created
+
+
+@task(name="Update services", portal_arg="instance_alias", time_limit=6000)
 def update_services(self, instance_alias, full_refresh=False, credential_token=None):
     """
     Update service and layer records for a given portal instance.
@@ -1034,13 +1151,13 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
     :type full_refresh: bool
     :param credential_token: Token for temporary credentials (optional)
     :type credential_token: str
-    :return: JSON serialized result of the update process including counts of inserts, updates, deletions, and errors.
-    :rtype: str
+    :return: Update result as a dict: counts of inserts, updates, deletions, and errors.
+    :rtype: dict
     """
     logger.debug(f"Starting update_services task for instance_alias={instance_alias}, full_refresh={full_refresh}")
 
     result = utils.UpdateResult()
-    progress_recorder = ProgressRecorder(self)
+    progress_recorder = self.progress
     update_time = timezone.now()  # Timestamp for the current update cycle
 
     def process_views(view_list):
@@ -1075,25 +1192,27 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
                 logger.error(f"Error processing view for {view_item}", exc_info=True)
 
     try:
+        progress_recorder.set_progress(0, 0, f"Connecting to {instance_alias}...")
         instance_item = Portal.objects.get(alias=instance_alias)
         target = utils.connect(instance_item, credential_token)
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        result.add_error(f"Unable to connect to {instance_alias}: {e}")
-        return result.to_json()
+        result.add_error(f"Unable to connect to {instance_alias}")
+        return result.to_dict()
 
     service_privileges = CONTENT_VIEW_PRIVILEGES
     if instance_item.portal_type != "agol":
         service_privileges += SERVER_ADMIN_PRIVILEGES
     if not _verify_update_privileges(target, instance_alias, result, service_privileges):
-        return result.to_json()
+        return result.to_dict()
 
     if instance_item.portal_type == "agol":
         logger.debug(f"Processing AGOL portal type for '{instance_alias}'")
         try:
             # Get organization ID
             logger.debug("Retrieving organization ID from portal")
-            response = requests.get(f"{target.url}/sharing/rest/portals/self?culture=en&f=pjson", timeout=10)
+            response = requests.get(f"{target.url}/sharing/rest/portals/self?culture=en&f=pjson",
+                                    timeout=10, verify=utils.portal_verify_tls())
             if response.status_code == 200:
                 data = response.json()
                 org_id = data.get("id")
@@ -1104,10 +1223,11 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Unable to connect to {instance_alias}")
-            return result.to_json()
+            return result.to_dict()
 
         try:
             if full_refresh:
+                progress_recorder.set_progress(0, 0, "Clearing existing services...")
                 service_count = Service.objects.filter(portal_instance=instance_item).count()
                 layer_count = Layer.objects.filter(portal_instance=instance_item).count()
                 Service.objects.filter(portal_instance=instance_item).delete()
@@ -1117,6 +1237,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
                 logger.debug("Proceeding with incremental update")
 
             logger.debug("Searching for Map Image Layer and Feature Layer services")
+            progress_recorder.set_progress(0, 0, "Searching for services...")
 
             # Build search query with optional date filter for incremental updates
             search_query = "NOT owner:esri*"
@@ -1138,6 +1259,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
             # Process each service
             logger.debug(f"Starting to process {total_services} services")
             for counter, service in enumerate(services):
+                self.checkpoint()
                 service_id = getattr(service, 'id', 'unknown')
                 service_title = getattr(service, 'title', 'unknown')
                 logger.debug(f"Processing service {counter+1}/{total_services}: {service_id} - '{service_title}'")
@@ -1231,31 +1353,15 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
                                 logger.debug(f"Layer {layer_name} identified as hosted layer")
                                 service_layers[layer.properties.name] = "Hosted"
 
-                                # Create a new Layer record if one does not exist
+                                # Layer row plus its numbered link to the service
                                 logger.debug(f"Creating or updating layer record for: {layer_name}")
-                                obj, layer_created = Layer.objects.update_or_create(
-                                    portal_instance=instance_item,
-                                    layer_server="Hosted",
-                                    layer_version=None,
-                                    layer_database=None,
-                                    layer_name=layer.properties.name,
-                                    defaults={"updated_date": update_time}
-                                )
+                                _, layer_created, rel_created = _record_hosted_layer(
+                                    instance_item, s_obj, layer, update_time)
 
                                 if layer_created:
                                     logger.debug(f"Created new layer record: {layer_name}")
                                 else:
                                     logger.debug(f"Updated existing layer record: {layer_name}")
-
-                                # Create or update the relationship between the layer and service
-                                logger.debug(f"Creating or updating layer-service relationship for: {layer_name}")
-                                rel_obj, rel_created = Layer_Service.objects.update_or_create(
-                                    portal_instance=instance_item,
-                                    layer_id=obj,
-                                    service_id=s_obj,
-                                    defaults={"updated_date": update_time}
-                                )
-
                                 if rel_created:
                                     logger.debug(f"Created new layer-service relationship for: {layer_name}")
                                 else:
@@ -1266,7 +1372,9 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
                     # Update progress
                     progress_percentage = ((counter + 1) / total_services) * 100
                     logger.debug(f"Progress: {progress_percentage:.1f}% ({counter+1}/{total_services})")
-                    progress_recorder.set_progress(counter + 1, total_services)
+                    progress_recorder.set_progress(
+                        counter + 1, total_services,
+                        _processed_label(counter + 1, total_services, "service"))
 
                 except Exception as e:
                     logger.error(f"Unable to process service {service_id} - '{service_title}': {e}", exc_info=True)
@@ -1275,16 +1383,22 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
             # Check for deleted items if this was an incremental update
             if instance_item.service_updated and not full_refresh:
                 logger.debug(f"Checking for deleted services in portal '{instance_alias}'")
+                progress_recorder.set_progress(total_services, total_services,
+                                               "Checking for deleted services...")
                 check_deleted_items(instance_alias, credential_token, 'service', update_time)
                 # If check fails, exception is raised and delete_outdated_records won't run
 
             # Remove outdated Service and Layer records (CASCADE deletes Layer_Service automatically)
             logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
+            progress_recorder.set_progress(total_services, total_services,
+                                           "Removing outdated records...")
             delete_outdated_records(instance_item, update_time, [Service, Layer], result)
             logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
             # Search for view services and associate them with their parent services
             logger.debug("Searching for view services to associate with parent services")
+            progress_recorder.set_progress(total_services, total_services,
+                                           "Linking view services...")
             view_items = target.content.search("NOT owner:esri* AND typekeywords:View Service", "Feature Layer",
                                                max_items=2000)
             view_count = len(view_items)
@@ -1306,20 +1420,22 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
             # Mark the update process as successful
             result.set_success()
             logger.info(f"Services update for portal '{instance_alias}' completed successfully")
-            logger.debug(f"Final result: {result.to_json()}")
-            return result.to_json()
+            logger.debug(f"Final result: {result.to_dict()}")
+            return result.to_dict()
 
+        except (JobCanceled, JobDeadlineExceeded):
+            raise
         except Exception as e:
             logger.critical(f"Services update failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Services update failed")
-            return result.to_json()
+            return result.to_dict()
 
     else:
         logger.debug(f"Processing Enterprise portal type for '{instance_alias}'")
-        batch_results = None
 
         try:
             logger.debug("Retrieving GIS servers list")
+            progress_recorder.set_progress(0, 0, "Listing federated servers...")
             gis_servers = target.admin.servers.list()
             server_count = len(gis_servers)
             logger.info(f"Found {server_count} GIS servers in portal '{instance_alias}'")
@@ -1329,10 +1445,11 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Unable to connect to {instance_alias}")
-            return result.to_json()
+            return result.to_dict()
 
         try:
             if full_refresh:
+                progress_recorder.set_progress(0, 0, "Clearing existing services...")
                 service_count = Service.objects.filter(portal_instance=instance_item).count()
                 layer_count = Layer.objects.filter(portal_instance=instance_item).count()
                 Service.objects.filter(portal_instance=instance_item).delete()
@@ -1341,6 +1458,7 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
             else:
                 logger.debug("Proceeding with incremental update")
 
+            progress_recorder.set_progress(0, 0, "Listing service folders...")
             service_list = []
             batch_tasks = []
             total_folders = 0
@@ -1373,58 +1491,32 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
                 public_url = utils.resolve_server_public_url(gis_server, server_map)
                 server_by_id[server_id] = gis_server
 
-                # Create batch tasks for each folder
-                logger.debug(f"Creating batch tasks for {folder_count} folders")
+                # Create batch arguments for each folder
+                logger.debug(f"Creating batches for {folder_count} folders")
                 for folder_index, folder in enumerate(folders):
-                    logger.debug(f"Creating batch task for folder {folder_index+1}/{folder_count}: {folder}")
+                    logger.debug(f"Creating batch for folder {folder_index+1}/{folder_count}: {folder}")
                     batch_tasks.append(
-                        process_batch_services.s(instance_alias,
-                                                 credential_token,
-                                                 server_id,
-                                                 public_url,
-                                                 folder,
-                                                 update_time
-                                                 )
+                        (instance_alias, credential_token, server_id, public_url, folder, update_time)
                     )
 
-            logger.info(f"Created {len(batch_tasks)} batch tasks for processing {total_folders} folders")
+            logger.info(f"Created {len(batch_tasks)} batches for processing {total_folders} folders")
 
-            # Parallel processing by folder
+            # Parallel processing by folder, on a thread pool inside this job.
             if batch_tasks:
                 logger.debug("Starting parallel batch processing")
-                task_group = group(batch_tasks)
-                batch_results = task_group.apply_async()
-                logger.debug(f"Batch processing started with group ID: {batch_results.id}")
-
-                # Monitor group progress
-                logger.debug("Monitoring batch processing progress")
-                while not batch_results.ready():
-                    try:
-                        completed_tasks = sum(1 for task in batch_results.children if task.ready())
-                        progress_percentage = (completed_tasks / total_folders) * 100
-                        logger.debug(f"Progress: {progress_percentage:.1f}% ({completed_tasks}/{total_folders} folders)")
-                        progress_recorder.set_progress(completed_tasks, total_folders)
-                        time.sleep(1.5)
-                    except Exception as e:
-                        logger.warning(f"Error calculating progress: {e}")
-                        time.sleep(1.5)
-                        continue
-
-                # Aggregate results
-                logger.info(f"All batch tasks completed, aggregating results")
-                logger.debug(f"Batch results: {batch_results}")
 
                 success_count = 0
                 failure_count = 0
+                completed_folders = 0
                 usage_by_server = {}
 
-                for batch in batch_results.get(disable_sync_subtasks=False):
+                for batch in run_batches(self, process_batch_services, batch_tasks):
                     batch_result = utils.UpdateResult(**batch["result"])
 
                     if batch_result.success is False:
                         failure_count += 1
                         result.success = False
-                        logger.warning(f"Batch task reported failure: {batch_result.error_messages}")
+                        logger.warning(f"Batch reported failure: {batch_result.error_messages}")
                     else:
                         success_count += 1
 
@@ -1437,6 +1529,11 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
                     service_list.extend(batch["service_usage"])
                     usage_by_server.setdefault(batch.get("server_id"), []).extend(batch["service_usage"])
 
+                    completed_folders += 1
+                    progress_recorder.set_progress(
+                        completed_folders, total_folders,
+                        _processed_label(completed_folders, total_folders, "folder"))
+
                 logger.info(f"Batch processing summary: {success_count} successful batches, {failure_count} failed batches")
 
             else:
@@ -1445,7 +1542,10 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
 
             if django_settings.USE_SERVICE_USAGE_REPORT:
                 logger.debug(f"Processing usage reports for {len(service_list)} services")
+                progress_recorder.set_progress(total_folders, total_folders,
+                                               "Fetching usage reports...")
                 for sid, svc_list in usage_by_server.items():
+                    self.checkpoint()
                     server_obj = server_by_id.get(sid)
                     if server_obj and svc_list:
                         fetch_usage_report(instance_item, server_obj, svc_list)
@@ -1456,15 +1556,21 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
             # Check for deleted items if this was an incremental update
             if instance_item.service_updated and not full_refresh:
                 logger.debug(f"Checking for deleted services in portal '{instance_alias}'")
+                progress_recorder.set_progress(total_folders, total_folders,
+                                               "Checking for deleted services...")
                 check_deleted_items(instance_alias, credential_token, 'service', update_time)
                 # If check fails, exception is raised and delete_outdated_records won't run
 
             # Remove outdated Service and Layer records (CASCADE deletes Layer_Service automatically)
             logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
+            progress_recorder.set_progress(total_folders, total_folders,
+                                           "Removing outdated records...")
             delete_outdated_records(instance_item, update_time, [Service, Layer], result)
             logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
             logger.debug("Searching for view services to associate with parent services")
+            progress_recorder.set_progress(total_folders, total_folders,
+                                           "Linking view services...")
             view_items = target.content.search("NOT owner:esri* AND typekeywords:View Service", "Feature Layer",
                                                max_items=2000)
             view_count = len(view_items)
@@ -1480,32 +1586,29 @@ def update_services(self, instance_alias, full_refresh=False, credential_token=N
             instance_item.service_updated = update_time
             instance_item.save()
 
+            progress_recorder.set_progress(total_folders, total_folders,
+                                           "Updating layer dependencies...")
             utils.update_layer_dependency_counts()
 
             result.set_success()
             logger.info(f"Services update for portal '{instance_alias}' completed successfully")
-            logger.debug(f"Final result: {result.to_json()}")
-            return result.to_json()
+            logger.debug(f"Final result: {result.to_dict()}")
+            return result.to_dict()
 
+        except (JobCanceled, JobDeadlineExceeded):
+            raise
         except Exception as e:
             logger.critical(f"Services update failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error("Services update failed")
-
-            # Revoke child tasks if they exist
-            if batch_results and batch_results.children:
-                logger.warning(f"Revoking {len(batch_results.children)} child tasks due to failure")
-                for child in batch_results.children:
-                    if child.id:
-                        logger.debug(f"Revoking child task: {child.id}")
-                        current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
-                logger.info("All child tasks revoked")
-
-            return result.to_json()
+            return result.to_dict()
 
 
-@shared_task(bind=True, time_limit=6000, soft_time_limit=3000)
-@celery_logging_context
+@worker_thread
 def process_batch_services(self, instance_alias, credential_token, server_id, public_url, folder, update_time):
+    """
+    Process one server folder's services. Runs on a pool thread under
+    update_services; see process_batch_maps for why this is no longer a task.
+    """
     result = utils.UpdateResult()
     service_usage_list = []
 
@@ -1523,12 +1626,12 @@ def process_batch_services(self, instance_alias, credential_token, server_id, pu
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
             result.add_error(f"Unable to connect to {instance_alias}")
-            return {"result": result.to_json(), "service_usage": service_usage_list, "server_id": server_id}
+            return {"result": result.to_dict(), "service_usage": service_usage_list, "server_id": server_id}
 
         if server is None:
             logger.warning(f"Unable to resolve server {server_id} for folder '{folder}'")
             result.add_error(f"Unable to resolve server {server_id} for folder '{folder}'")
-            return {"result": result.to_json(), "service_usage": service_usage_list, "server_id": server_id}
+            return {"result": result.to_dict(), "service_usage": service_usage_list, "server_id": server_id}
 
         total_services_processed = 0
         logger.info(f"Processing services in folder '{folder}' on server {server_id}")
@@ -1540,6 +1643,7 @@ def process_batch_services(self, instance_alias, credential_token, server_id, pu
             logger.info(f"Found {service_count} services in folder '{folder}' for server {server_id}")
 
             for service_index, service in enumerate(services):
+                self.checkpoint()
                 service_name = getattr(service.properties, 'serviceName', 'unknown')
                 logger.debug(f"Processing service {service_index+1}/{service_count}: {service_name}")
 
@@ -1556,6 +1660,8 @@ def process_batch_services(self, instance_alias, credential_token, server_id, pu
                     logger.error(f"Error processing service '{service_name}' in folder '{folder}': {e}", exc_info=True)
                     result.add_error(f"Error processing service '{service_name}' in folder '{folder}'")
 
+        except (JobCanceled, JobDeadlineExceeded):
+            raise
         except Exception as e:
             logger.error(f"Error retrieving services for server {server_id} in folder '{folder}': {e}", exc_info=True)
             result.add_error(f"Error retrieving services for server {server_id} in folder '{folder}'")
@@ -1565,12 +1671,14 @@ def process_batch_services(self, instance_alias, credential_token, server_id, pu
 
         if result.num_errors == 0:
             result.set_success()
-        return {"result": result.to_json(), "service_usage": service_usage_list, "server_id": server_id}
+        return {"result": result.to_dict(), "service_usage": service_usage_list, "server_id": server_id}
 
+    except (JobCanceled, JobDeadlineExceeded):
+        raise
     except Exception as e:
         logger.error(f"Error processing services in folder {folder}: {e}", exc_info=True)
         result.add_error(f"Error processing services in folder {folder}")
-        return {"result": result.to_json(), "service_usage": service_usage_list, "server_id": server_id}
+        return {"result": result.to_dict(), "service_usage": service_usage_list, "server_id": server_id}
 
 
 def process_single_service(target, instance_item, service, base_url, folder, update_time, regex_patterns, result):
@@ -1752,29 +1860,15 @@ def process_single_service(target, instance_item, service, base_url, folder, upd
                         layer_name = getattr(layer.properties, 'name', f"unknown_layer_{layer_index}")
                         logger.debug(f"Processing layer {layer_index+1}/{layer_count}: {layer_name}")
 
+                        # Layer row plus its numbered link to the service
                         logger.debug(f"Creating or updating layer record for: {layer_name}")
-                        obj, layer_created = Layer.objects.update_or_create(
-                            portal_instance=instance_item,
-                            layer_server="Hosted",
-                            layer_version=None,
-                            layer_database=None,
-                            layer_name=layer.properties.name,
-                            defaults={"updated_date": update_time}
-                        )
+                        _, layer_created, rel_created = _record_hosted_layer(
+                            instance_item, s_obj, layer, update_time)
 
                         if layer_created:
                             logger.debug(f"Created new layer record: {layer_name}")
                         else:
                             logger.debug(f"Updated existing layer record: {layer_name}")
-
-                        logger.debug(f"Creating or updating layer-service relationship for: {layer_name}")
-                        rel_obj, rel_created = Layer_Service.objects.update_or_create(
-                            portal_instance=instance_item,
-                            layer_id=obj,
-                            service_id=s_obj,
-                            defaults={"updated_date": update_time}
-                        )
-
                         if rel_created:
                             logger.debug(f"Created new layer-service relationship for: {layer_name}")
                         else:
@@ -1846,8 +1940,7 @@ def process_single_service(target, instance_item, service, base_url, folder, upd
     return service_usage_str
 
 
-@shared_task(bind=True, name="Update apps", time_limit=6000, soft_time_limit=3000)
-@celery_logging_context
+@task(name="Update apps", portal_arg="instance_alias", time_limit=6000)
 def update_webapps(self, instance_alias, full_refresh=False, credential_token=None):
     """
     Update web applications for the given portal instance.
@@ -1866,25 +1959,26 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
     :type full_refresh: bool
     :param credential_token: Token for temporary credentials (optional)
     :type credential_token: str
-    :return: JSON string summarizing the update results (inserts, updates, deletions, errors).
-    :rtype: str
+    :return: Update result as a dict (inserts, updates, deletions, errors).
+    :rtype: dict
     """
     logger.debug(f"Starting update_webapps task for instance_alias={instance_alias}, full_refresh={full_refresh}")
 
     result = utils.UpdateResult()
-    progress_recorder = ProgressRecorder(self)
+    progress_recorder = self.progress
 
     try:
+        progress_recorder.set_progress(0, 0, f"Connecting to {instance_alias}...")
         instance_item = Portal.objects.get(alias=instance_alias)
         target = utils.connect(instance_item, credential_token)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        result.add_error(f"Unable to connect to {instance_alias}: {e}")
-        return result.to_json()
+        result.add_error(f"Unable to connect to {instance_alias}")
+        return result.to_dict()
 
     if not _verify_update_privileges(target, instance_alias, result, CONTENT_VIEW_PRIVILEGES):
-        return result.to_json()
+        return result.to_dict()
 
     try:
         update_time = timezone.now()
@@ -1892,6 +1986,7 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
 
         # Retrieve web application items by combining multiple searches for various app types
         logger.debug("Retrieving web applications from portal")
+        progress_recorder.set_progress(0, 0, "Searching for apps...")
 
         # Determine search query based on portal type
         if instance_item.portal_type == "agol":
@@ -1923,6 +2018,7 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
         logger.info(f"Found {total_apps} web applications to process in portal '{instance_alias}'")
 
         if full_refresh:
+            progress_recorder.set_progress(0, 0, "Clearing existing apps...")
             app_count = App.objects.filter(portal_instance=instance_item).count()
             App.objects.filter(portal_instance=instance_item).delete()
             logger.info(f"Deleted {app_count} existing web applications for portal '{instance_alias}'")
@@ -1933,60 +2029,29 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
         batch_tasks = []
         logger.debug(f"Setting up batch processing with batch size: {batch_size}")
 
-        # Create batch tasks
+        # Create batch arguments
         for batch in range(0, total_apps, batch_size):
-            logger.debug(f"Creating batch task for items {batch} to {min(batch+batch_size, total_apps)}")
+            logger.debug(f"Creating batch for items {batch} to {min(batch+batch_size, total_apps)}")
             batch_tasks.append(
-                process_batch_apps.s(
-                    instance_alias,
-                    credential_token,
-                    batch,
-                    batch_size,
-                    update_time,
-                    query
-                )
+                (instance_alias, credential_token, batch, batch_size, update_time, query)
             )
 
-        logger.info(f"Created {len(batch_tasks)} batch tasks for processing {total_apps} web applications")
+        logger.info(f"Created {len(batch_tasks)} batches for processing {total_apps} web applications")
 
-        # Execute parallel processing by batch TODO comment about https://docs.celeryq.dev/en/stable/userguide/tasks.html#task-synchronous-subtasks
+        # Parallel processing by batch, on a thread pool inside this job.
         logger.debug("Starting parallel batch processing")
-        task_group = group(batch_tasks)
-        batch_results = task_group.apply_async()
-        logger.debug(f"Batch processing started with group ID: {batch_results.id}")
-
-        # Monitor group progress
-        logger.debug("Monitoring batch processing progress")
-        while not batch_results.ready():
-            try:
-                completed_tasks = sum(
-                    task.result.get("current", 0) if "current" in task.result else batch_size
-                    for task in batch_results.children
-                    if task.result
-                )
-                progress_percentage = (completed_tasks / total_apps) * 100
-                logger.debug(f"Progress: {progress_percentage:.1f}% ({completed_tasks}/{total_apps} items)")
-                progress_recorder.set_progress(completed_tasks, total_apps)
-                time.sleep(1.5)
-            except Exception as e:
-                logger.warning(f"Error calculating progress: {e}")
-                time.sleep(1.5)
-                continue
-
-        # Aggregate results
-        logger.info(f"All batch tasks completed, aggregating results")
-        logger.debug(f"Batch results: {batch_results}")
 
         success_count = 0
         failure_count = 0
+        completed_items = 0
 
-        for batch in batch_results.get(disable_sync_subtasks=False):
+        for batch in run_batches(self, process_batch_apps, batch_tasks):
             batch_result = utils.UpdateResult(**batch)
 
             if batch_result.success is False:
                 failure_count += 1
                 result.success = False
-                logger.warning(f"Batch task reported failure: {batch_result.error_messages}")
+                logger.warning(f"Batch reported failure: {batch_result.error_messages}")
             else:
                 success_count += 1
 
@@ -1997,50 +2062,56 @@ def update_webapps(self, instance_alias, full_refresh=False, credential_token=No
             result.num_errors += batch_result.num_errors
             result.error_messages.extend(batch_result.error_messages)
 
+            completed_items = min(completed_items + batch_size, total_apps)
+            progress_recorder.set_progress(
+                completed_items, total_apps,
+                _processed_label(completed_items, total_apps, "app"))
+
         logger.info(f"Batch processing summary: {success_count} successful batches, {failure_count} failed batches")
 
         # Check for deleted items if this was an incremental update
         if instance_item.webapp_updated and not full_refresh:
             logger.debug(f"Checking for deleted webapps in portal '{instance_alias}'")
+            progress_recorder.set_progress(total_apps, total_apps,
+                                           "Checking for deleted apps...")
             check_deleted_items(instance_alias, credential_token, 'webapp', update_time)
             # If check fails, exception is raised and delete_outdated_records won't run
 
         # Clean up outdated App records (CASCADE deletes App_Map and App_Service automatically)
         logger.debug(f"Cleaning up outdated records for portal '{instance_alias}'")
+        progress_recorder.set_progress(total_apps, total_apps,
+                                       "Removing outdated records...")
         delete_outdated_records(instance_item, update_time, [App], result)
         logger.info(f"Outdated records cleanup completed with {result.num_deletes} deletions")
 
         instance_item.webapp_updated = timezone.now()
         instance_item.save()
 
+        progress_recorder.set_progress(total_apps, total_apps,
+                                       "Updating layer dependencies...")
         utils.update_layer_dependency_counts()
 
         result.set_success()
         logger.info(f"Web applications update for portal '{instance_alias}' completed successfully")
-        logger.debug(f"Final result: {result.to_json()}")
-        return result.to_json()
+        logger.debug(f"Final result: {result.to_dict()}")
+        return result.to_dict()
 
+    except (JobCanceled, JobDeadlineExceeded):
+        raise
     except Exception as e:
         logger.critical(f"Web applications update failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error("Web applications update failed")
-
-        # Revoke child tasks if they exist
-        if batch_results and batch_results.children:
-            logger.warning(f"Revoking {len(batch_results.children)} child tasks due to failure")
-            for child in batch_results.children:
-                if child.id:
-                    logger.debug(f"Revoking child task: {child.id}")
-                    current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
-            logger.info("All child tasks revoked")
-
-        return result.to_json()
+        return result.to_dict()
 
 
-@shared_task(bind=True)
-@celery_logging_context
+@worker_thread
 def process_batch_apps(self, instance_alias, credential_token, batch, batch_size, update_time, query=None):
+    """
+    Process one batch of web applications. Runs on a pool thread under
+    update_webapps; see process_batch_maps for why this is no longer a task.
+    """
     result = utils.UpdateResult()
-    progress_recorder = ProgressRecorder(self)
+    progress_recorder = self.progress
     try:
         try:
             instance_item = Portal.objects.get(alias=instance_alias)
@@ -2048,8 +2119,8 @@ def process_batch_apps(self, instance_alias, credential_token, batch, batch_size
 
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-            result.add_error(f"Unable to connect to {instance_alias}: {e}")
-            return result.to_json()
+            result.add_error(f"Unable to connect to {instance_alias}")
+            return result.to_dict()
 
         # Retrieve web applications for this batch
         logger.debug(f"Retrieving web applications for batch {batch} to {batch + batch_size}")
@@ -2081,6 +2152,7 @@ def process_batch_apps(self, instance_alias, credential_token, batch, batch_size
         logger.debug(f"Starting to process {total_apps} web applications")
 
         for counter, app in enumerate(results):
+            self.checkpoint()
             app_id = getattr(app, 'id', 'unknown')
             app_title = getattr(app, 'title', 'unknown')
             logger.debug(f"Processing web application {counter+1}/{total_apps}: {app_id} - '{app_title}'")
@@ -2102,12 +2174,14 @@ def process_batch_apps(self, instance_alias, credential_token, batch, batch_size
         logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
 
         result.set_success()
-        return result.to_json()
+        return result.to_dict()
 
+    except (JobCanceled, JobDeadlineExceeded):
+        raise
     except Exception as e:
         logger.error(f"Error processing web apps in batch {batch} to {batch + batch_size}: {e}", exc_info=True)
         result.add_error(f"Error processing web apps in batch {batch} to {batch + batch_size}")
-        return result.to_json()
+        return result.to_dict()
 
 
 def process_single_app(item, target, instance_item, update_time, result=None):
@@ -2393,17 +2467,36 @@ def process_single_app(item, target, instance_item, update_time, result=None):
                                 logger.error("Unable to find web map for filter layer resolution")
                                 continue
 
-                        # Look up the service using the webmap_layer_id
+                        # Look up the service using the webmap_layer_id. A map image
+                        # layer contributes one Map_Service row per sublayer, and every
+                        # one of them carries the same webmap_layer_id, so filter rather
+                        # than get.
                         try:
-                            # Find the Map_Service record that has this webmap_layer_id
-                            map_service = Map_Service.objects.get(
+                            map_services = list(Map_Service.objects.filter(
                                 portal_instance=instance_item,
                                 webmap_id=webmap_obj,
                                 webmap_layer_id=resource_value  # e.g., '191e2c1dee3-layer-3'
-                            )
+                            ))
 
-                            service_obj = map_service.service_id
-                            service_layer_id = map_service.service_layer_id
+                            if not map_services:
+                                logger.warning(
+                                    f"Filter layer {resource_value} not found in Map_Service for web map {webmap_obj.webmap_id}")
+                                result.add_error(f"Filter layer {resource_value} not found in map")
+                                continue
+
+                            service_obj = map_services[0].service_id
+                            distinct_services = {ms.service_id_id for ms in map_services}
+                            if len(distinct_services) > 1:
+                                logger.warning(
+                                    f"Filter layer {resource_value} in web map {webmap_obj.webmap_id} resolves to "
+                                    f"{len(distinct_services)} services; using '{service_obj}'")
+
+                            # Several rows mean the map added the map image service as a
+                            # whole, so the filter targets the whole service: leave the
+                            # layer unset rather than picking one of the sublayers.
+                            layer_ids = {ms.service_layer_id for ms in map_services
+                                         if ms.service_id_id == service_obj.pk}
+                            service_layer_id = layer_ids.pop() if len(layer_ids) == 1 else None
 
                             logger.debug(
                                 f"Resolved filter layer {resource_value} to service {service_obj} (layer {service_layer_id})")
@@ -2448,31 +2541,27 @@ def process_single_app(item, target, instance_item, update_time, result=None):
                                         app_id=app_obj,
                                         service_id=service_obj,
                                         rel_type="filter",
-                                        defaults={"updated_date": update_time}
+                                        defaults={"updated_date": update_time, "service_layer_id": None}
                                     )
                                     if rel_created:
                                         logger.debug(f"Created new app-service relationship with type 'filter'")
                                     else:
                                         logger.debug("Updated existing app-service relationship")
                             else:
-                                # No specific layer ID, link to service only
+                                # No specific layer ID (or the map added the whole
+                                # service), link to service only
                                 _, rel_created = App_Service.objects.update_or_create(
                                     portal_instance=instance_item,
                                     app_id=app_obj,
                                     service_id=service_obj,
                                     rel_type="filter",
-                                    defaults={"updated_date": update_time}
+                                    defaults={"updated_date": update_time, "service_layer_id": None}
                                 )
                                 if rel_created:
                                     logger.debug(f"Created new app-service relationship with type 'filter'")
                                 else:
                                     logger.debug("Updated existing app-service relationship")
 
-                        except Map_Service.DoesNotExist:
-                            logger.warning(
-                                f"Filter layer {resource_value} not found in Map_Service for web map {webmap_obj.webmap_id}")
-                            result.add_error(f"Filter layer {resource_value} not found in map")
-                            continue
                         except Exception as e:
                             logger.error(f"Error processing filter layer reference: {e}", exc_info=True)
                             result.add_error(f"Error processing filter layer {resource_value}")
@@ -3185,11 +3274,6 @@ def process_single_app(item, target, instance_item, update_time, result=None):
 
     logger.info(f"Successfully processed application '{app_id}' - '{app_title}'")
 
-    # Reconcile relationships: remove App_Service/App_Map rows not refreshed this
-    # run (dependencies the app no longer references). Every relationship written
-    # above stamps updated_date=update_time, so anything older is stale. Skipped
-    # when the app's data could not be retrieved, so a transient fetch failure
-    # never wipes still-valid relationships.
     if data_retrieved:
         removed_services = App_Service.objects.filter(
             portal_instance=instance_item, app_id=app_obj, updated_date__lt=update_time
@@ -3203,8 +3287,44 @@ def process_single_app(item, target, instance_item, update_time, result=None):
                 f"{removed_services} service(s), {removed_maps} map(s)")
 
 
-@shared_task(bind=True, name="Update users", time_limit=6000, soft_time_limit=3000)
-@celery_logging_context
+def _parse_pro_entitlement(entitlement_info):
+    """
+    Normalize the response from License._get_user_entitlement(username).
+
+    The per-user endpoint returns the user object wrapped under
+    "userEntitlements":
+        {"userEntitlements": {"username": ..., "lastLogin": -1,
+                              "disconnected": False, "entitlements": [...]}}
+    Some versions return the inner dict (or a single-element list) directly,
+    so handle all three shapes.
+
+    Returns (entitlements_list, last_login_date_or_None).
+    lastLogin is epoch milliseconds (-1 == never logged in to ArcGIS Pro).
+    """
+    if not isinstance(entitlement_info, dict):
+        return [], None
+
+    data = entitlement_info.get("userEntitlements", entitlement_info)
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if not isinstance(data, dict):
+        return [], None
+
+    entitlements = data.get("entitlements") or []
+
+    last_login = None
+    raw_last_login = data.get("lastLogin")
+    if raw_last_login and raw_last_login != -1:
+        try:
+            last_login = datetime.fromtimestamp(raw_last_login / 1000).date()
+        except Exception as e:
+            logger.warning(f"Error parsing lastLogin '{raw_last_login}': {e}")
+            last_login = None
+
+    return entitlements, last_login
+
+
+@task(name="Update users", portal_arg="instance_alias", time_limit=6000)
 def update_users(self, instance_alias, full_refresh=False, credential_token=None):
     """
     Update user records for the specified portal instance.
@@ -3225,34 +3345,37 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
     :type full_refresh: bool
     :param credential_token: Token for temporary credentials (optional)
     :type credential_token: str
-    :return: A JSON string summarizing the update results, including counts of inserts, updates,
+    :return: Update result as a dict, including counts of inserts, updates,
              deletions, and any error messages.
-    :rtype: str
+    :rtype: dict
     """
     result = utils.UpdateResult()
-    progress_recorder = ProgressRecorder(self)
+    progress_recorder = self.progress
     update_time = timezone.now()  # Mark the update timestamp for the current run
 
     try:
+        progress_recorder.set_progress(0, 0, f"Connecting to {instance_alias}...")
         instance_item = Portal.objects.get(alias=instance_alias)
         target = utils.connect(instance_item, credential_token)
 
     except Exception as e:
         logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-        result.add_error(f"Unable to connect to {instance_alias}: {e}")
-        return result.to_json()
+        result.add_error(f"Unable to connect to {instance_alias}")
+        return result.to_dict()
 
     if not _verify_update_privileges(target, instance_alias, result,
                                      USER_VIEW_PRIVILEGES, recommended=LICENSE_PRIVILEGES):
-        return result.to_json()
+        return result.to_dict()
 
     try:
         if full_refresh:
+            progress_recorder.set_progress(0, 0, "Clearing existing users...")
             user_count = User.objects.filter(portal_instance=instance_item).count()
             User.objects.filter(portal_instance=instance_item).delete()
             logger.info(f"Deleted {user_count} existing users for portal '{instance_alias}'")
 
         logger.debug("Retrieving user roles from portal")
+        progress_recorder.set_progress(0, 0, "Retrieving roles...")
         try:
             roles = dict([(role.role_id, role.name) for role in target.users.roles.all()])
             role_count = len(roles)
@@ -3262,6 +3385,7 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
             roles = {}
 
         logger.debug("Retrieving users from portal")
+        progress_recorder.set_progress(0, 0, "Searching for users...")
 
         # orgId needed for AGOL
         if instance_item.portal_type == "agol":
@@ -3278,59 +3402,29 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
         batch_tasks = []
         logger.debug(f"Setting up batch processing with batch size: {batch_size}")
 
-        # Create batch tasks
+        # Create batch arguments
         for batch in range(0, total_users, batch_size):
-            logger.debug(f"Creating batch task for users {batch} to {min(batch+batch_size, total_users)}")
+            logger.debug(f"Creating batch for users {batch} to {min(batch+batch_size, total_users)}")
             batch_tasks.append(
-                process_batch_users.s(
-                    instance_alias,
-                    credential_token,
-                    batch,
-                    batch_size,
-                    roles,
-                    update_time
-                )
+                (instance_alias, credential_token, batch, batch_size, roles, update_time)
             )
 
-        logger.info(f"Created {len(batch_tasks)} batch tasks for processing {total_users} users")
+        logger.info(f"Created {len(batch_tasks)} batches for processing {total_users} users")
 
+        # Parallel processing on a thread pool inside this job.
         logger.debug("Starting parallel batch processing")
-        task_group = group(batch_tasks)
-        batch_results = task_group.apply_async()
-        logger.debug(f"Batch processing started with group ID: {batch_results.id}")
-
-        # Monitor group progress
-        logger.debug("Monitoring batch processing progress")
-        while not batch_results.ready():
-            try:
-                completed_tasks = sum(
-                    task.result.get("current", 0) if "current" in task.result else batch_size
-                    for task in batch_results.children
-                    if task.result
-                )
-                progress_percentage = (completed_tasks / total_users) * 100
-                logger.debug(f"Progress: {progress_percentage:.1f}% ({completed_tasks}/{total_users} users)")
-                progress_recorder.set_progress(completed_tasks, total_users)
-                time.sleep(1.5)
-            except Exception as e:
-                logger.warning(f"Error calculating progress: {e}")
-                time.sleep(1.5)
-                continue
-
-        # Aggregate results
-        logger.info(f"All batch tasks completed, aggregating results")
-        logger.debug(f"Batch results: {batch_results}")
 
         success_count = 0
         failure_count = 0
+        completed_items = 0
 
-        for batch in batch_results.get(disable_sync_subtasks=False):
+        for batch in run_batches(self, process_batch_users, batch_tasks):
             batch_result = utils.UpdateResult(**batch)
 
             if batch_result.success is False:
                 failure_count += 1
                 result.success = False
-                logger.warning(f"Batch task reported failure: {batch_result.error_messages}")
+                logger.warning(f"Batch reported failure: {batch_result.error_messages}")
             else:
                 success_count += 1
 
@@ -3341,95 +3435,146 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
             result.num_errors += batch_result.num_errors
             result.error_messages.extend(batch_result.error_messages)
 
+            completed_items = min(completed_items + batch_size, total_users)
+            progress_recorder.set_progress(
+                completed_items, total_users,
+                _processed_label(completed_items, total_users, "user"))
+
         logger.info(f"Batch processing summary: {success_count} successful batches, {failure_count} failed batches")
 
         logger.debug("Retrieving ArcGIS Pro license information from portal")
+        progress_recorder.set_progress(total_users, total_users,
+                                       "Reading ArcGIS Pro licenses...")
+        current_licensed_users = set()
+        # Only a complete read may clear stored licenses. A portal that returns
+        # nothing — no manageLicenses privilege, a transient failure — must not
+        # be read as "nobody holds one".
+        licenses_retrieved = False
         try:
-            current_licensed_users = {}
+            # username -> {"license_type": <str>, "last_used": <date|None>}
+            pro_licenses = {}
+
             licenses = target.admin.license.get("ArcGIS Pro")
             if licenses:
                 logger.info("Successfully retrieved ArcGIS Pro license information")
+                licenses_retrieved = True
 
+                # --- 1) Licenses consumed from the pool (from the report) ---
                 try:
                     logger.debug("Extracting license usage details from report")
-                    desktop_adv_n = licenses.report.to_numpy()[2][4]
-                    desktop_basic_n = licenses.report.to_numpy()[3][4]
-                    desktop_std_n = licenses.report.to_numpy()[4][4]
-
-                    # Extract all licensed users in one go
+                    report = licenses.report.to_numpy()
                     license_data = [
-                        (desktop_adv_n, 'desktopAdvN'),
-                        (desktop_basic_n, 'desktopBasicN'),
-                        (desktop_std_n, 'desktopStdN')
+                        (report[2][4], 'desktopAdvN'),
+                        (report[3][4], 'desktopBasicN'),
+                        (report[4][4], 'desktopStdN'),
                     ]
 
-                    all_licensed_users = [
-                        {
-                            'username': user_license["user"],
-                            'last_used': user_license["lastUsed"],
-                            'license_type': license_type
-                        }
-                        for license_list, license_type in license_data
-                        for user_license in license_list
-                    ]
-
-                    current_licensed_users = {user['username'] for user in all_licensed_users}
-
-                    # Process all users
-                    success_count = 0
-                    error_count = 0
-
-                    for user_data in all_licensed_users:
-                        username = user_data['username']
-                        last_used = user_data['last_used']
-                        license_type = user_data['license_type']
-
-                        if last_used:
-                            try:
-                                last_used = datetime.strptime(last_used, "%B %d, %Y").date()
-                            except Exception as e:
-                                logger.warning(f"Error parsing last used date '{last_used}' for user {username}: {e}")
-                                last_used = None
-
-                        try:
-                            update_entry = User.objects.get(portal_instance=instance_item, user_username__exact=username)
-                            update_entry.user_pro_license = license_type
-                            update_entry.user_pro_last = last_used
-                            update_entry.save()
-                            success_count += 1
-                        except User.DoesNotExist:
-                            logger.warning(f"User {username} not found in database")
-                            result.add_error(f"User {username} not found in database")
-                            error_count += 1
-                        except Exception as e:
-                            logger.error(f"Error updating license for user {username}: {e}", exc_info=True)
-                            result.add_error(f"Error with licenses: {e}")
-                            error_count += 1
-
-                    logger.info(f"License processing completed: {success_count} successful, {error_count} errors")
-
+                    for user_list, license_type in license_data:
+                        for user_license in user_list:
+                            username = user_license["user"]
+                            last_used = user_license["lastUsed"]
+                            if last_used:
+                                try:
+                                    last_used = datetime.strptime(last_used, "%B %d, %Y").date()
+                                except Exception as e:
+                                    logger.warning(
+                                        f"Error parsing last used date '{last_used}' for user {username}: {e}")
+                                    last_used = None
+                            pro_licenses[username] = {
+                                'license_type': license_type,
+                                'last_used': last_used,
+                            }
                 except Exception as e:
                     logger.error(f"Error extracting license information from report: {e}", exc_info=True)
                     result.add_error("Error extracting license information from report")
+                    licenses_retrieved = False
+
+                # --- 2) Licenses included with user types (absent from the report) ---
+                # These are only visible per-user via _get_user_entitlement().
+                try:
+                    logger.debug("Retrieving user-type ArcGIS Pro entitlements")
+                    # Priority order when a user has more than one core level.
+                    pro_levels = ('desktopAdvN', 'desktopStdN', 'desktopBasicN')
+
+                    for db_user in User.objects.filter(portal_instance=instance_item):
+                        username = db_user.user_username
+
+                        # A pool-consumed license from the report takes precedence.
+                        if username in pro_licenses:
+                            continue
+
+                        try:
+                            entitlement_info = licenses._get_user_entitlement(username)
+                        except Exception as e:
+                            logger.warning(f"Error retrieving entitlement for user {username}: {e}")
+                            continue
+
+                        entitlements, last_login = _parse_pro_entitlement(entitlement_info)
+                        license_type = next((lvl for lvl in pro_levels if lvl in entitlements), None)
+
+                        if license_type:
+                            pro_licenses[username] = {
+                                'license_type': license_type,
+                                'last_used': last_login,
+                            }
+                except Exception as e:
+                    logger.error(f"Error retrieving user-type license entitlements: {e}", exc_info=True)
+                    result.add_error("Error retrieving user-type license entitlements")
+                    licenses_retrieved = False
+
+                # --- 3) Persist the combined results ---
+                current_licensed_users = set(pro_licenses.keys())
+                success_count = 0
+                error_count = 0
+
+                for username, info in pro_licenses.items():
+                    try:
+                        update_entry = User.objects.get(portal_instance=instance_item,
+                                                        user_username__exact=username)
+                        update_entry.user_pro_license = info['license_type']
+                        update_entry.user_pro_last = info['last_used']
+                        update_entry.save()
+                        success_count += 1
+                    except User.DoesNotExist:
+                        logger.warning(f"User {username} not found in database")
+                        result.add_error(f"User {username} not found in database")
+                        error_count += 1
+                    except Exception as e:
+                        logger.error(f"Error updating license for user {username}: {e}", exc_info=True)
+                        result.add_error(f"Error with licenses: {e}")
+                        error_count += 1
+
+                logger.info(f"License processing completed: {success_count} successful, {error_count} errors")
             else:
                 logger.info("No ArcGIS Pro license information available")
 
-            # Clear licenses for users not in current license report
-            logger.debug("Clearing licenses for users no longer in license report")
-            cleared_count = User.objects.filter(
-                portal_instance=instance_item,
-                user_pro_license__isnull=False
-            ).exclude(user_username__in=current_licensed_users).update(
-                user_pro_license=None,
-                user_pro_last=None
-            )
+            if licenses_retrieved:
+                # Clear licenses for users no longer holding any ArcGIS Pro license
+                logger.debug("Clearing licenses for users no longer in license report")
+                users_to_clear = User.objects.filter(
+                    portal_instance=instance_item,
+                    user_pro_license__isnull=False
+                ).exclude(user_username__in=current_licensed_users)
 
-            logger.info(f"Cleared licenses for {cleared_count} users no longer in license report")
+                cleared_count = 0
+                for user in users_to_clear:
+                    logger.debug(f"Clearing license for user: {user.user_username}")
+                    user.user_pro_license = None
+                    user.user_pro_last = None
+                    user.save()
+                    cleared_count += 1
+
+                logger.info(f"Cleared licenses for {cleared_count} users no longer in license report")
+            else:
+                logger.warning("ArcGIS Pro license information was unavailable or incomplete; "
+                               "stored licenses left as they were")
         except Exception as e:
             logger.error(f"Error retrieving ArcGIS Pro license information: {e}", exc_info=True)
             result.add_error("Error retrieving ArcGIS Pro license information")
 
         logger.debug(f"Cleaning up outdated user records for portal '{instance_alias}'")
+        progress_recorder.set_progress(total_users, total_users,
+                                       "Removing outdated records...")
         delete_outdated_records(instance_item, update_time, [User], result)
         logger.info(f"Outdated user records cleanup completed with {result.num_deletes} deletions")
 
@@ -3438,34 +3583,20 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
 
         result.set_success()
         logger.info(f"Users update for portal '{instance_alias}' completed successfully")
-        return result.to_json()
+        return result.to_dict()
 
+    except (JobCanceled, JobDeadlineExceeded):
+        raise
     except Exception as e:
         logger.critical(f"Users update failed for portal '{instance_alias}': {e}", exc_info=True)
         result.add_error(f"Unable to update users")
-
-        # Revoke child tasks if they exist
-        if batch_results and batch_results.children:
-            logger.warning(f"Revoking {len(batch_results.children)} child tasks due to failure")
-            for child in batch_results.children:
-                if child.id:
-                    logger.debug(f"Revoking child task: {child.id}")
-                    current_app.control.revoke(child.id, terminate=True, signal="SIGKILL")
-            logger.info("All child tasks revoked")
-
-        # Also revoke the current task
-        logger.debug(f"Revoking current task: {self.request.id}")
-        current_app.control.revoke(self.request.id, terminate=True, signal="SIGKILL")
-        logger.debug("Current task revoked")
-
-        return result.to_json()
+        return result.to_dict()
 
 
-@shared_task(bind=True)
-@celery_logging_context
+@worker_thread
 def process_batch_users(self, instance_alias, credential_token, batch, batch_size, roles, update_time):
     result = utils.UpdateResult()
-    progress_recorder = ProgressRecorder(self)
+    progress_recorder = self.progress
 
     try:
         try:
@@ -3474,8 +3605,8 @@ def process_batch_users(self, instance_alias, credential_token, batch, batch_siz
 
         except Exception as e:
             logger.critical(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
-            result.add_error(f"Unable to connect to {instance_alias}: {e}")
-            return result.to_json()
+            result.add_error(f"Unable to connect to {instance_alias}")
+            return result.to_dict()
 
         logger.debug(f"Retrieving users for batch {batch} to {batch + batch_size}")
 
@@ -3510,6 +3641,7 @@ def process_batch_users(self, instance_alias, credential_token, batch, batch_siz
         logger.debug(f"Starting to process {total_users} users")
 
         for counter, user in enumerate(results):
+            self.checkpoint()
             user_name = user.get("username", "unknown")
             logger.debug(f"Processing user {counter+1}/{total_users}: {user_name}")
 
@@ -3565,16 +3697,67 @@ def process_batch_users(self, instance_alias, credential_token, batch, batch_siz
         logger.debug(f"Batch summary - Updates: {result.num_updates}, Inserts: {result.num_inserts}, Errors: {result.num_errors}")
 
         result.set_success()
-        return result.to_json()
+        return result.to_dict()
 
+    except (JobCanceled, JobDeadlineExceeded):
+        raise
     except Exception as e:
         logger.error(f"Error processing users in batch {batch} to {batch + batch_size}: {e}", exc_info=True)
         result.add_error(f"Error processing users in batch {batch} to {batch + batch_size}")
-        return result.to_json()
+        return result.to_dict()
 
 
-@shared_task(bind=True)
-@celery_logging_context
+@task(name="Process webhook", portal_arg="instance_alias", rerunnable=False,
+      time_limit=1800)
+def process_webhook(self, instance_alias, events):
+    """
+    Handle the events from one webhook payload.
+
+    The view that receives the payload authenticates it and queues this, then
+    answers the portal. Everything that talks to the portal happens here:
+    connecting, and the per-event lookup that decides which item task to run.
+    Doing that in the request held one of the web server's threads and its
+    transaction for as long as the portal took to answer, on the one endpoint
+    reachable without a session.
+
+    Not rerunnable. Replaying a payload would re-enqueue whatever it triggered
+    the first time, including a public-sharing tool run that unshares items.
+
+    :param instance_alias: Alias of the portal the payload came from.
+    :type instance_alias: str
+    :param events: The payload's ``events`` array.
+    :type events: list
+    :return: Result payload for the job row.
+    :rtype: dict
+    """
+    result = utils.ToolResult(tool_name="Process webhook", portal_alias=instance_alias)
+    events = events or []
+
+    try:
+        instance_item = Portal.objects.get(alias=instance_alias)
+    except Portal.DoesNotExist:
+        logger.error(f"Webhook payload names unknown portal '{instance_alias}'")
+        result.add_error(f"Portal '{instance_alias}' no longer exists")
+        return result.to_dict()
+
+    self.progress.set_progress(0, len(events), "Connecting…")
+
+    try:
+        target = utils.connect(instance_item)
+    except Exception as e:
+        logger.error(f"Connection failed for portal '{instance_alias}': {e}", exc_info=True)
+        result.add_error(f"Unable to connect to {instance_alias}")
+        return result.to_dict()
+
+    handled = utils.process_webhook_events(events, target, instance_item, context=self)
+
+    result.processed = handled
+    result.set_success(True)
+    logger.info(f"Processed {handled} webhook event(s) for portal '{instance_alias}'")
+    return result.to_dict()
+
+
+@task(name="Process user", portal_arg="instance_alias")
 def process_user(self, instance_alias, username, operation):
     # Operations: delete, update, add(?)
     # Event triggers: add, delete, disable, enable, updateUserRole, updateUserLicenseType
@@ -3682,8 +3865,7 @@ def process_user(self, instance_alias, username, operation):
             return None
 
 
-@shared_task(bind=True)
-@celery_logging_context
+@task(name="Process web map", portal_arg="instance_alias")
 def process_webmap(self, instance_alias, item_id, operation):
     # Operation: add, delete, publish, share, unshare, update
     logger.debug(
@@ -3753,8 +3935,7 @@ def process_webmap(self, instance_alias, item_id, operation):
         return None
 
 
-@shared_task(bind=True)
-@celery_logging_context
+@task(name="Process service", portal_arg="instance_alias")
 def process_service(self, instance_alias, item, operation):
     logger.debug(f"Starting process_service for instance_alias={instance_alias}, item={item}, operation={operation}")
 
@@ -3878,8 +4059,7 @@ def process_service(self, instance_alias, item, operation):
         return None
 
 
-@shared_task(bind=True)
-@celery_logging_context
+@task(name="Process web app", portal_arg="instance_alias")
 def process_webapp(self, instance_alias, item_id, operation):
     # Operation: add, delete, publish, share, unshare, update
     logger.debug(
@@ -3907,12 +4087,7 @@ def process_webapp(self, instance_alias, item_id, operation):
         logger.debug(f"Web application type: {item.type}, Owner: {item.owner}")
 
         logger.debug(f"Processing web application details for: {item_id}")
-        # Recompute counts only for the layers this app depends on (directly via
-        # its services or via its web maps) instead of scanning every layer.
-        # Capture the dependency layers BEFORE reconciliation and union with the
-        # AFTER set: process_single_app removes relationships the app no longer
-        # references, so the "before" snapshot ensures dropped layers still get
-        # their counts recomputed.
+
         affected_layers = set(
             App_Service.objects.filter(portal_instance=instance_item, app_id__app_id=item_id)
             .values_list("service_id__layer__layer_name", flat=True)
@@ -4044,9 +4219,7 @@ USER_ADMIN_PRIVILEGES = ("portal:admin:viewUsers", "portal:admin:deleteUsers",
 # Privileges needed to view and update other members' items (Replace Service)
 CONTENT_ADMIN_PRIVILEGES = ("portal:admin:viewItems", "portal:admin:updateItems")
 
-# Inventory privileges. These are what the scheduled content updates need: the ability
-# to see every member's items and every member account, rather than the
-# privileges the tools require.
+# Inventory privileges. These are what the scheduled content updates need.
 CONTENT_VIEW_PRIVILEGES = ("portal:admin:viewItems",)
 USER_VIEW_PRIVILEGES = ("portal:admin:viewUsers",)
 
@@ -4088,7 +4261,17 @@ def portal_update_privileges(portal_type):
 
 
 def _verify_privileges(user, required=USER_ADMIN_PRIVILEGES):
-    """Verify user has the required admin privileges."""
+    """
+    Verify user has the required admin privileges.
+
+    ``user`` is None on an anonymous connection, which has no privileges at
+    all. Saying so is the useful answer; reading ``.username`` off it raised
+    AttributeError inside the caller's try, which reported a connection problem
+    instead of the privilege problem it actually was.
+    """
+    if user is None:
+        logger.error("Anonymous connection; required privileges cannot be verified.")
+        return False
     missing = missing_privileges(user, required)
     if missing:
         logger.error(f"User '{user.username}' is missing privilege(s): {', '.join(missing)}")
@@ -4152,10 +4335,12 @@ def _connect_portal_task(portal_alias, tool_result, credential_token=None,
             logger.error(f"Failed to connect to portal '{portal_alias}'")
             return portal_instance, None
 
-        if not _verify_privileges(target.users.me, required_privileges):
-            tool_result.add_error(f"User '{target.users.me.username}' lacks required admin "
+        me = target.users.me
+        if not _verify_privileges(me, required_privileges):
+            username = getattr(me, "username", None) or "anonymous"
+            tool_result.add_error(f"User '{username}' lacks required admin "
                                   f"privileges ({', '.join(required_privileges)})")
-            logger.error(f"User '{target.users.me.username}' lacks required admin privileges")
+            logger.error(f"User '{username}' lacks required admin privileges")
             return portal_instance, None
 
         return portal_instance, target
@@ -4165,7 +4350,7 @@ def _connect_portal_task(portal_alias, tool_result, credential_token=None,
         logger.error(f"Portal '{portal_alias}' not found in database")
         return None, None
     except ConnectionError as e:
-        tool_result.add_error(f"Connection error connecting to portal '{portal_alias}': {e}")
+        tool_result.add_error(f"Connection error connecting to portal '{portal_alias}'")
         logger.error(f"Connection error connecting to portal '{portal_alias}': {e}", exc_info=True)
         return None, None
     except Exception as e:
@@ -4237,11 +4422,11 @@ def _send_admin_notification(tool_result, portal_instance):
         return False
 
 
-@shared_task(bind=True, name="Pro License Tool")
+@task(name="Pro License Tool", portal_arg="portal_alias", rerunnable=False)
 def process_pro_license_task(self, portal_alias: str, duration_days: int, warning_days: int):
     """Process Pro License management."""
     start_time = time.time()
-    progress_recorder = ProgressRecorder(self)
+    progress_recorder = self.progress
     tool_result = utils.ToolResult(
         portal_alias=portal_alias,
         tool_name="pro_license"
@@ -4273,20 +4458,19 @@ def process_pro_license_task(self, portal_alias: str, duration_days: int, warnin
         logger.error(f"Pro License Tool failed: {e}")
         tool_result.add_error("Pro License Tool failed")
         progress_recorder.set_progress(100, 100, "Failed")
-        self.update_state(state="FAILURE")
 
     finally:
         tool_result.execution_time = time.time() - start_time
         _send_admin_notification(tool_result, portal_instance)
 
-    return tool_result.to_json()
+    return tool_result.to_dict()
 
 
-@shared_task(bind=True, name="Inactive User Tool")
+@task(name="Inactive User Tool", portal_arg="portal_alias", rerunnable=False)
 def process_inactive_user_task(self, portal_alias: str, duration_days: int, warning_days: int, action: str):
     """Process inactive user management."""
     start_time = time.time()
-    progress_recorder = ProgressRecorder(self)
+    progress_recorder = self.progress
     tool_result = utils.ToolResult(
         portal_alias=portal_alias,
         tool_name="inactive_user"
@@ -4309,7 +4493,8 @@ def process_inactive_user_task(self, portal_alias: str, duration_days: int, warn
             else:
                 progress_recorder.set_progress(20, 100, f"Processing {len(users)} users")
                 _run_inactive_user(target, duration_days, warning_days, action,
-                                   portal_instance.username, users, progress_recorder, tool_result)
+                                   portal_instance.username, users, progress_recorder, tool_result,
+                                   portal_instance)
 
                 tool_result.set_success(tool_result.errors == 0)
                 progress_recorder.set_progress(100, 100, f"Completed: {tool_result.actions_taken} actions")
@@ -4320,20 +4505,19 @@ def process_inactive_user_task(self, portal_alias: str, duration_days: int, warn
         logger.error(f"[{portal_alias}] {err}")
         tool_result.add_error(err)
         progress_recorder.set_progress(100, 100, f"Failed: {err}")
-        self.update_state(state="FAILURE", meta={"error": err})
 
     finally:
         tool_result.execution_time = time.time() - start_time
         _send_admin_notification(tool_result, portal_instance)
 
-    return tool_result.to_json()
+    return tool_result.to_dict()
 
 
-@shared_task(bind=True, name="Public Sharing Tool")
+@task(name="Public Sharing Tool", portal_arg="portal_alias", rerunnable=False)
 def process_public_unshare_task(self, portal_alias: str, score_threshold: int = None, item_id: str = None):
     """Process public unshare task - either for a specific item or all public items."""
     start_time = time.time()
-    progress_recorder = ProgressRecorder(self)
+    progress_recorder = self.progress
     tool_result = utils.ToolResult(
         portal_alias=portal_alias,
         tool_name="public_unshare"
@@ -4345,7 +4529,7 @@ def process_public_unshare_task(self, portal_alias: str, score_threshold: int = 
         portal_instance, target = _connect_portal_task(portal_alias, tool_result)
         if not target:
             progress_recorder.set_progress(100, 100, "Connection failed")
-            return tool_result.to_json()
+            return tool_result.to_dict()
 
         # Determine if this is webhook or scheduled execution
         is_webhook = item_id is not None
@@ -4356,11 +4540,11 @@ def process_public_unshare_task(self, portal_alias: str, score_threshold: int = 
                 score_threshold = portal_instance.tool_settings.tool_public_unshare_score
                 if not score_threshold:
                     tool_result.add_error("Score threshold not configured in portal settings")
-                    return tool_result.to_json()
+                    return tool_result.to_dict()
             except Exception as e:
                 tool_result.add_error("Failed to retrieve portal tool settings")
                 logger.error(f"Failed to retrieve portal tool settings: {e}", exc_info=True)
-                return tool_result.to_json()
+                return tool_result.to_dict()
 
         progress_recorder.set_progress(10, 100, "Connected")
         logger.info(f"[{portal_alias}] Starting Public Unshare Tool ({'webhook' if is_webhook else 'scheduled'})")
@@ -4370,13 +4554,13 @@ def process_public_unshare_task(self, portal_alias: str, score_threshold: int = 
         items = _get_items_for_processing(target, item_id, tool_result)
         if items is None:
             progress_recorder.set_progress(100, 100, "Failed to get items")
-            return tool_result.to_json()
+            return tool_result.to_dict()
 
         if not items:
             logger.info("No items to process")
             tool_result.set_success()
             progress_recorder.set_progress(100, 100, "No items to process")
-            return tool_result.to_json()
+            return tool_result.to_dict()
 
         progress_recorder.set_progress(20, 100, f"Processing {len(items)} items")
 
@@ -4401,13 +4585,12 @@ def process_public_unshare_task(self, portal_alias: str, score_threshold: int = 
         logger.error(f"[{portal_alias}] {err}", exc_info=True)
         tool_result.add_error(err)
         progress_recorder.set_progress(100, 100, f"Failed: {err}")
-        self.update_state(state="FAILURE", meta={"error": err})
 
     finally:
         tool_result.execution_time = time.time() - start_time
         _send_admin_notification(tool_result, portal_instance)
 
-    return tool_result.to_json()
+    return tool_result.to_dict()
 
 
 def _run_pro_license(target, duration_days, warning_days, users, recorder, tool_result):
@@ -4702,22 +4885,74 @@ Portal: {portal_url}"""
             logger.error(f"Failed to send warning email to {user.email}: {status_msg}")
 
 
-def _run_inactive_user(target, duration_days, warning_days, action, admin_username, users, recorder, tool_result):
+def _run_inactive_user(target, duration_days, warning_days, action, admin_username, users, recorder, tool_result,
+                       portal_instance=None):
     """Inactive User tool implementation."""
     params = {"duration_days": duration_days, "warning_days": warning_days, "action": action}
     if not _validate_params(params, ["duration_days", "warning_days", "action"], tool_result):
         return
 
     cutoffs = _calc_cutoffs(duration_days, warning_days)
-    _process_inactive_users(target, users, cutoffs, action, admin_username, tool_result, recorder)
+    _process_inactive_users(target, users, cutoffs, action, admin_username, tool_result, recorder,
+                            portal_instance)
     _log_completion(tool_result)
 
 
-def _process_inactive_users(target, users, cutoffs, action, admin_username, tool_result, recorder):
+#: Actions that change or remove a portal account, as opposed to emailing about it.
+DESTRUCTIVE_INACTIVE_ACTIONS = ("disable", "delete", "remove_role")
+
+
+def _inactive_action_cap(total_users, portal_instance=None):
+    """
+    Largest number of accounts one run may disable, delete or demote.
+
+    A misjudged inactivity window, a portal that reports lastLogin oddly, or a
+    tool switched on against an unfamiliar org can otherwise take out a large
+    share of the accounts in a single unattended run, and delete has no undo.
+    The cap turns that into a run that stops and reports instead.
+
+    Both limits come from the portal's tool settings, alongside the inactivity
+    window and the action they bound: an absolute count and a percentage of the
+    organization. Each applies independently, the smaller wins, and 0 switches
+    one off — 0 in both means the run is uncapped.
+
+    Read from the saved row at run time rather than snapshotted into the
+    schedule's arguments the way the window and action are, so the limit in
+    force is whatever the tool settings page currently shows. A portal with no
+    row yet — a "Run Now" against one never configured on that page — is capped
+    at the field defaults, which is what an unsaved instance carries.
+
+    :return: the cap, or None if this run is uncapped
+    :rtype: int | None
+    """
+    tool_settings = (getattr(portal_instance, "tool_settings", None) if portal_instance else None)
+    if tool_settings is None:
+        tool_settings = PortalToolSettings()
+
+    absolute = tool_settings.tool_inactive_user_max_actions
+    percent = tool_settings.tool_inactive_user_max_percent
+
+    limits = []
+    if absolute:
+        limits.append(absolute)
+    if percent:
+        limits.append(int(total_users * percent / 100))
+
+    if not limits:
+        return None
+    return max(1, min(limits))
+
+
+def _process_inactive_users(target, users, cutoffs, action, admin_username, tool_result, recorder,
+                            portal_instance=None):
     """Process users for inactivity."""
     action_cutoff, warning_cutoff = cutoffs
     portal_info = _get_portal_info(target)
     total = len(users)
+
+    cap = (_inactive_action_cap(total, portal_instance)
+           if action in DESTRUCTIVE_INACTIVE_ACTIONS else None)
+    cap_reported = False
 
     for i, user in enumerate(users):
         progress = 20 + int((i / total) * 75)
@@ -4731,7 +4966,20 @@ def _process_inactive_users(target, users, cutoffs, action, admin_username, tool
         if not last_activity:
             continue
 
+        capped = cap is not None and tool_result.actions_taken >= cap
+        if capped and not cap_reported:
+            cap_reported = True
+            message = (f"Stopped taking action after {tool_result.actions_taken} '{action}' action(s): that is the "
+                       f"safety limit for one run against an org of {total} user(s). Review the "
+                       f"accounts already actioned, then either widen the inactivity window or raise "
+                       f"the per-run limits under Inactive User Management in this portal's tool "
+                       f"settings if this is expected. Warning emails continue to be sent.")
+            tool_result.add_error(message)
+            logger.error(message)
+
         if last_activity < action_cutoff:
+            if capped:
+                continue
             success, msg = _take_inactive_action(user, last_activity, action, tool_result)
             if success:
                 tool_result.actions_taken += 1
@@ -4896,7 +5144,77 @@ def _record_webhook_notification(item, portal_instance):
         logger.error(f"Failed to log notification for {item.id}: {e}")
 
 
-@shared_task(bind=True, name="Replace Service Tool", time_limit=6000, soft_time_limit=3000)
+# Why a whole-service reference survives a partial mapping, and what to do
+# about it. Such a reference is one URL standing for the entire service, so it
+# can only be repointed by swapping that URL - which the mapping withholds
+# while any layer is routed elsewhere or left on the source service.
+WHOLE_SERVICE_REMEDY = ("repointing one needs every layer mapped to the same "
+                        "replacement service")
+
+
+def _unreplaced_note(changes, partial):
+    """
+    Builds the dry-run note for references a partial mapping leaves pointing
+    at the source service. A web map naming the whole service is reported by
+    layer, with the sublayers it uses, because nothing in its JSON matches the
+    per-sublayer replacement strings; everything else falls back to the raw
+    count of remaining whole-service references. Either way the note says what
+    would make the reference repointable, since that is the operator's next
+    move and the outcome alone does not suggest it.
+
+    :param changes: Change set from utils.analyze_item
+    :type changes: dict
+    :param partial: Whether the mapping deliberately leaves references behind
+    :type partial: bool
+    :return: Note for the dry-run results row, empty when nothing remains
+    :rtype: str
+    """
+    if not partial:
+        return ""
+
+    notes = []
+    for layer in changes.get("wholeServiceLayers") or []:
+        sublayers = layer.get("sublayers")
+        scope = (f"sublayers {', '.join(str(i) for i in sublayers)}" if sublayers
+                 else "all sublayers")
+        notes.append(f"whole-service layer '{layer['title']}' ({scope}) not repointed")
+
+    if not notes:
+        unreplaced_count = changes.get("unreplacedCount", 0)
+        if not unreplaced_count:
+            return ""
+        notes.append(f"{unreplaced_count} whole-service reference(s) remain")
+
+    notes.append(WHOLE_SERVICE_REMEDY)
+    return "; ".join(notes)
+
+
+def _item_note(changes, partial, coverage):
+    """
+    The dry-run note for one item: what a partial mapping leaves behind, then
+    which of the layers this item references the replacement service does not
+    publish under that number (or publishes under another name).
+
+    :param changes: Change set from utils.analyze_item
+    :type changes: dict
+    :param partial: Whether the mapping deliberately leaves references behind
+    :type partial: bool
+    :param coverage: From utils.build_coverage_context, or None
+    :type coverage: dict or None
+    :return: Note text, empty when there is nothing to say
+    :rtype: str
+    """
+    parts = []
+    unreplaced = _unreplaced_note(changes, partial)
+    if unreplaced:
+        parts.append(unreplaced)
+    if coverage:
+        parts.extend(utils.item_coverage_findings(
+            changes.get("referencedSublayers"), changes.get("referencesWholeService"), coverage))
+    return "; ".join(parts)
+
+
+@task(name="Replace Service Tool", time_limit=6000, rerunnable=False)
 def process_replacement_task(self, job_id, mode, credential_token=None):
     """
     Analyzes or executes a service replacement job.
@@ -4921,7 +5239,7 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
     from .models import ReplacementJob
 
     start_time = time.time()
-    progress_recorder = ProgressRecorder(self)
+    progress_recorder = self.progress
     job = ReplacementJob.objects.get(pk=job_id)
     portal_alias = job.portal_instance.alias
     tool_result = utils.ToolResult(portal_alias=portal_alias, tool_name="replace_service")
@@ -4939,7 +5257,7 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
             # Claim the pending -> running transition; a zombie task whose job
             # was auto-failed as abandoned must abort, not resurrect it
             claimed = ReplacementJob.objects.filter(pk=job.pk, status="pending").update(
-                status="running", celery_task_id=self.request.id,
+                status="running", celery_task_id=str(self.id),
                 status_updated=timezone.now())
             if not claimed:
                 job.refresh_from_db()
@@ -4948,7 +5266,7 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
                 logger.warning(f"[{portal_alias}] {message}")
                 tool_result.add_error(message)
                 progress_recorder.set_progress(100, 100, "Aborted")
-                return tool_result.to_json()
+                return tool_result.to_dict()
             job.refresh_from_db()
 
         progress_recorder.set_progress(0, 100, "Connecting to portal...")
@@ -4959,7 +5277,7 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
             job.status = "failed"
             job.error_message = "; ".join(tool_result.error_messages)
             job.save(update_fields=["status", "error_message"])
-            return tool_result.to_json()
+            return tool_result.to_dict()
 
         replacements = [tuple(pair) for pair in job.replacement_pairs]
         selected_ids = list(job.selected_map_ids) + list(job.selected_app_ids)
@@ -4969,8 +5287,24 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
 
         # Whole-service URLs and item IDs deliberately left unreplaced in a
         # partial replacement; the dry run counts remaining references to them
-        unreplaced_references = (job.dry_run_summary.get("unreplaced_references", [])
-                                 if not is_execute else [])
+        # Kept at execute too: an item a split cannot repoint is recorded as
+        # skipped with the same note the dry run showed, so the results view
+        # and the report keep saying it needs a human after the run
+        unreplaced_references = job.dry_run_summary.get("unreplaced_references", [])
+
+        # A web map that added the whole map image service holds its sublayer
+        # numbers as bare integers, out of reach of URL replacement; analyze_item
+        # renumbers those structurally.
+        source_service = job.source_service
+        source_root_urls = [u.rstrip("/") for u in
+                            ((source_service.service_url if source_service else None) or []) if u]
+        sublayer_renumber = {int(k): int(v)
+                             for k, v in (job.sublayer_renumber or {}).items()}
+        # credential_token reaches the inventory reads, so the per-item coverage
+        # check gets live layer numbers even on a portal that prompts
+        coverage = (utils.build_coverage_context(source_service, job.replacement_config or {},
+                                                 credential_token)
+                    if source_service else None)
 
         summary_items = []
         warnings = list(job.dry_run_summary.get("warnings", [])) if not is_execute else []
@@ -4978,6 +5312,7 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
         applied_ids = []
 
         for index, item_id in enumerate(selected_ids):
+            self.checkpoint()
             progress = int(10 + (index / max(total, 1)) * 80)
             try:
                 item = target.content.get(item_id)
@@ -4996,40 +5331,69 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
                 else:
                     summary_items.append({"item_id": item_id, "title": item_id, "type": "",
                                           "owner": "", "url_count": 0, "data_count": 0,
-                                          "resource_count": 0, "note": "not found"})
+                                          "resource_count": 0, "sublayer_count": 0,
+                                          "note": "not found"})
                 continue
 
-            progress_recorder.set_progress(progress, 100, f"Analyzing {item.title}")
+            progress_recorder.set_progress(progress, 100, f"Analyzing: {item.title}")
 
             try:
-                changes = utils.analyze_item(item, replacements)
+                changes = utils.analyze_item(
+                    item, replacements,
+                    sublayer_renumber=sublayer_renumber,
+                    source_root_urls=source_root_urls,
+                    unreplaced_references=unreplaced_references)
                 tool_result.processed += 1
+
+                # analyze_item also returns a change set with no edits when it
+                # has something to report (a whole-service reference a split
+                # mapping cannot repoint), so test the counts, not None
+                has_edits = bool(changes and (changes["urlCount"] or changes["dataCount"]
+                                              or changes["resourceCount"]))
 
                 if changes is None:
                     if not is_execute:
                         summary_items.append({"item_id": item.id, "title": item.title,
                                               "type": item.type, "owner": item.owner,
                                               "url_count": 0, "data_count": 0,
-                                              "resource_count": 0, "note": "no references found"})
+                                              "resource_count": 0, "sublayer_count": 0,
+                                              "note": "no references found"})
                     continue
 
                 warnings.extend(changes.get("warnings", []))
 
+                note = _item_note(changes, bool(unreplaced_references), coverage)
+
                 if not is_execute:
-                    unreplaced_count = 0
-                    if unreplaced_references and changes["newDataText"]:
-                        unreplaced_count = utils.count_occurrences(changes["newDataText"],
-                                                                   unreplaced_references)
                     summary_items.append({
                         "item_id": item.id, "title": item.title, "type": item.type,
                         "owner": item.owner, "url_count": changes["urlCount"],
-                        "data_count": changes["dataCount"],
+                        # Data counts text replacements only; renumbered
+                        # sublayer ids have their own column
+                        "data_count": changes["dataCount"] - changes["sublayerCount"],
                         "resource_count": changes["resourceCount"],
+                        "sublayer_count": changes["sublayerCount"],
                         "resource_names": [r[0] for r in changes["resources"]],
                         "modified": getattr(item, "modified", None),
-                        "note": (f"{unreplaced_count} whole-service reference(s) remain"
-                                 if unreplaced_count else ""),
+                        "note": note,
                     })
+                    continue
+
+                if not has_edits:
+                    # Nothing to back up or write, but the reason it was left
+                    # alone must outlive the dry run: the results view and the
+                    # report list backup rows only, so record it as skipped
+                    job.item_backups.update_or_create(
+                        item_id=item.id,
+                        defaults={"item_type": item.type or "", "item_title": item.title or "",
+                                  "item_owner": item.owner or "", "url_property": item.url,
+                                  "data_text": None, "resources": {},
+                                  "item_modified_at": getattr(item, "modified", None),
+                                  "counts": {"url": 0, "data": 0, "resources": 0, "sublayers": 0},
+                                  "status": "skipped",
+                                  "error": note or "no references found"})
+                    tool_result.add_extra_metric("skipped_items",
+                                                 tool_result.extra_metrics.get("skipped_items", 0) + 1)
                     continue
 
                 # Execute: flag items changed since the dry-run snapshot;
@@ -5085,9 +5449,9 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
             progress_recorder.set_progress(92, 100, "Queueing database resync...")
             for item_id in applied_ids:
                 if item_id in job.selected_map_ids:
-                    process_webmap.delay(portal_alias, item_id, "update")
+                    process_webmap.enqueue(portal_alias, item_id, "update")
                 else:
-                    process_webapp.delay(portal_alias, item_id, "update")
+                    process_webapp.enqueue(portal_alias, item_id, "update")
 
             job.status = "completed" if tool_result.errors == 0 else "completed_errors"
             job.executed_at = timezone.now()
@@ -5100,10 +5464,12 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
                 "unreplaced_references": unreplaced_references,
                 "totals": {
                     "items_affected": sum(1 for i in summary_items
-                                          if i["url_count"] or i["data_count"] or i["resource_count"]),
+                                          if i["url_count"] or i["data_count"]
+                                          or i["resource_count"] or i.get("sublayer_count")),
                     "url": sum(i["url_count"] for i in summary_items),
                     "data": sum(i["data_count"] for i in summary_items),
                     "resources": sum(i["resource_count"] for i in summary_items),
+                    "sublayers": sum(i.get("sublayer_count", 0) for i in summary_items),
                 },
             }
             # Conditional transition so a job no longer 'analyzing' (e.g.
@@ -5126,6 +5492,9 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
                                        if is_execute else "Dry run complete")
         logger.info(f"[{portal_alias}] Replace Service Tool ({mode}) job {job.id} completed")
 
+    except (JobCanceled, JobDeadlineExceeded):
+        raise
+
     except Exception as e:
         err = f"Replace Service Tool failed: {e}"
         logger.error(f"[{portal_alias}] {err}", exc_info=True)
@@ -5134,17 +5503,16 @@ def process_replacement_task(self, job_id, mode, credential_token=None):
         job.error_message = str(e)
         job.save(update_fields=["status", "error_message"])
         progress_recorder.set_progress(100, 100, f"Failed: {err}")
-        self.update_state(state="FAILURE", meta={"error": err})
 
     finally:
         tool_result.execution_time = time.time() - start_time
         if is_execute:
             _send_admin_notification(tool_result, portal_instance)
 
-    return tool_result.to_json()
+    return tool_result.to_dict()
 
 
-@shared_task(bind=True, name="Revert Replacement Tool", time_limit=6000, soft_time_limit=3000)
+@task(name="Revert Replacement Tool", time_limit=6000, rerunnable=False)
 def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None, prior_status=None,
                             force=False):
     """
@@ -5175,7 +5543,7 @@ def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None
     from .models import ReplacementJob, ReplacementItemBackup
 
     start_time = time.time()
-    progress_recorder = ProgressRecorder(self)
+    progress_recorder = self.progress
     job = ReplacementJob.objects.get(pk=job_id)
     portal_alias = job.portal_instance.alias
     tool_result = utils.ToolResult(portal_alias=portal_alias, tool_name="revert_replacement")
@@ -5188,7 +5556,7 @@ def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None
             # task whose job was auto-failed as abandoned aborts instead of
             # resurrecting it
             claimed = ReplacementJob.objects.filter(pk=job.pk, status="reverting").update(
-                revert_task_id=self.request.id)
+                revert_task_id=str(self.id))
             if not claimed:
                 job.refresh_from_db()
                 message = (f"Job {job.id} is '{job.status}', not 'reverting'; revert aborted "
@@ -5196,10 +5564,10 @@ def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None
                 logger.warning(f"[{portal_alias}] {message}")
                 tool_result.add_error(message)
                 progress_recorder.set_progress(100, 100, "Aborted")
-                return tool_result.to_json()
+                return tool_result.to_dict()
             job.refresh_from_db()
         else:
-            job.revert_task_id = self.request.id
+            job.revert_task_id = str(self.id)
             job.save(update_fields=["revert_task_id"])
 
         progress_recorder.set_progress(0, 100, "Connecting to portal...")
@@ -5213,7 +5581,7 @@ def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None
                 job.status = prior_status or "completed_errors"
             job.error_message = "; ".join(tool_result.error_messages)
             job.save(update_fields=["status", "error_message"])
-            return tool_result.to_json()
+            return tool_result.to_dict()
 
         backup_qs = job.item_backups.filter(status__in=ReplacementItemBackup.REVERTABLE_STATUSES)
         if is_partial:
@@ -5227,8 +5595,10 @@ def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None
         skipped_newer = 0
         claim_lease_cutoff = timezone.now() - ReplacementItemBackup.REVERT_CLAIM_LEASE
         for index, backup in enumerate(backups):
+            self.checkpoint()
             progress = int(10 + (index / max(total, 1)) * 80)
-            progress_recorder.set_progress(progress, 100, f"Reverting {backup.item_title}")
+            # Colon-separated for the same reason as "Analyzing:" above.
+            progress_recorder.set_progress(progress, 100, f"Reverting: {backup.item_title}")
             try:
                 # Atomically claim the backup so a concurrent duplicate request
                 # (or a redelivered copy of this same task, e.g. after a worker
@@ -5276,9 +5646,9 @@ def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None
         progress_recorder.set_progress(92, 100, "Queueing database resync...")
         for item_id in reverted_ids:
             if item_id in job.selected_map_ids:
-                process_webmap.delay(portal_alias, item_id, "update")
+                process_webmap.enqueue(portal_alias, item_id, "update")
             else:
-                process_webapp.delay(portal_alias, item_id, "update")
+                process_webapp.enqueue(portal_alias, item_id, "update")
 
         # The job only becomes "reverted" once no revertable items remain; items
         # skipped for newer edits (or failures) keep it in a revertable state
@@ -5314,6 +5684,9 @@ def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None
             + (f", {skipped_newer} skipped (modified after replacement)" if skipped_newer else ""))
         logger.info(f"[{portal_alias}] Revert Replacement job {job.id} completed")
 
+    except (JobCanceled, JobDeadlineExceeded):
+        raise
+
     except Exception as e:
         err = f"Revert Replacement Tool failed: {e}"
         logger.error(f"[{portal_alias}] {err}", exc_info=True)
@@ -5323,10 +5696,9 @@ def revert_replacement_task(self, job_id, credential_token=None, backup_ids=None
         job.error_message = str(e)
         job.save(update_fields=["status", "error_message"])
         progress_recorder.set_progress(100, 100, f"Failed: {err}")
-        self.update_state(state="FAILURE", meta={"error": err})
 
     finally:
         tool_result.execution_time = time.time() - start_time
         _send_admin_notification(tool_result, portal_instance)
 
-    return tool_result.to_json()
+    return tool_result.to_dict()

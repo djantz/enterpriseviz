@@ -17,17 +17,17 @@
 # ----------------------------------------------------------------------
 from __future__ import unicode_literals
 
-import json
+import uuid
 from datetime import timedelta
 
 from django import forms
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.validators import URLValidator, validate_email
+from django.core.validators import (MaxValueValidator, MinValueValidator,
+                                    URLValidator, validate_email)
 from django.db import models
 from django.utils import timezone
 from django_celery_beat.models import PeriodicTask
-from django_celery_results.models import TaskResult
 from django_cryptography.fields import encrypt
 from django.contrib.postgres.fields import ArrayField
 
@@ -83,10 +83,11 @@ class Portal(models.Model):
 
     def save(self, *args, **kwargs):
         # store_password is retained for one release; keep it derived from auth_method.
-        self.store_password = self.auth_method == "password"
         update_fields = kwargs.get("update_fields")
-        if update_fields is not None and "store_password" not in update_fields:
-            kwargs["update_fields"] = list(update_fields) + ["store_password"]
+        if update_fields is None or "auth_method" in update_fields:
+            self.store_password = self.auth_method == "password"
+            if update_fields is not None and "store_password" not in update_fields:
+                kwargs["update_fields"] = list(update_fields) + ["store_password"]
         super().save(*args, **kwargs)
 
     @property
@@ -298,6 +299,7 @@ class PortalCreateForm(forms.ModelForm):
     def clean_password(self):
         """Keep the stored password when the field is submitted blank."""
         password = self.cleaned_data.get("password")
+        self._password_submitted = bool(password)
         if not password and self._is_update:
             return self.instance.password
         return password
@@ -326,6 +328,22 @@ class PortalCreateForm(forms.ModelForm):
             if not client_id:
                 self.add_error("oauth_client_id", "Client ID is required for OAuth authentication.")
         return cleaned_data
+
+    def stored_credentials_need_check(self):
+        """
+        True when the stored-credential login should be re-tested before it is saved.
+
+        :return: Whether :func:`utils.try_connection` should be run for this submission
+        :rtype: bool
+        """
+        if self.cleaned_data.get("auth_method") != "password":
+            return False
+        if not self._is_update:
+            return True  # New portal
+        return (self._password_submitted
+                or self.cleaned_data.get("auth_method") != self._original_auth_method
+                or self.cleaned_data.get("url") != self._original_url
+                or self.cleaned_data.get("username") != self._original_username)
 
     def _clear_unused_credentials(self, portal):
         """
@@ -395,16 +413,17 @@ class PortalCreateForm(forms.ModelForm):
         self.fields["oauth_client_id"].required = False
         self.fields["oauth_client_secret"].required = False
         self.fields["oauth_client_secret"].widget.attrs["placeholder"] = "Leave blank to keep current secret"
-        # Remember what the stored credentials were granted against, so save() can tell
-        # which of them the pending changes invalidate. This has to be captured here:
-        # alias is the primary key, so once _post_clean() has run, instance.pk holds the
-        # submitted alias and no longer distinguishes an update from a new portal.
         stored = self.instance if self.instance.pk else None
         self._is_update = stored is not None
+        self._password_submitted = False  # Set by clean_password()
         self._original_url = stored.url if stored else ""
+        self._original_username = stored.username if stored else ""
         self._original_auth_method = stored.auth_method if stored else ""
         self._original_oauth_client_id = stored.oauth_client_id if stored else ""
         self._original_oauth_client_secret = stored.oauth_client_secret if stored else ""
+        if self._is_update:
+            self.initial["password"] = ""
+            self.initial["oauth_client_secret"] = ""
 
 
 class PortalScheduleForm(forms.ModelForm):
@@ -526,7 +545,7 @@ class Layer_Service(models.Model):
 
     class Meta:
         db_table = 'layer_service'
-        unique_together = ['portal_instance', 'layer_id', 'service_id']
+        unique_together = ['portal_instance', 'layer_id', 'service_id', 'service_layer_id']
         indexes = [
             models.Index(fields=['service_id', 'service_layer_id'], name='idx_service_layer')
         ]
@@ -593,18 +612,31 @@ class UserProfile(models.Model):
     service_usage = models.BooleanField(default=True)
 
 
-def result_as_dict(self):
-    """Convert the result field from a JSON string to a dictionary."""
-    try:
-        return json.loads(self.result) if self.result else {}
-    except (ValueError, TypeError):
-        return {}
-
-
-TaskResult.result_as_dict = result_as_dict
-
-
 class SiteSettings(models.Model):
+    arcgis_org_url = models.CharField(
+        max_length=512, blank=True, default="",
+        verbose_name="Organization URL",
+        help_text="Enterprise portal or ArcGIS Online organization users sign in against, "
+                  "e.g. https://example.maps.arcgis.com."
+    )
+    arcgis_client_id = models.CharField(
+        max_length=128, blank=True, default="",
+        verbose_name="App ID",
+        help_text="Client ID of the OAuth application registered in the portal."
+    )
+    arcgis_client_secret = encrypt(models.CharField(
+        max_length=255, blank=True, default="",
+        verbose_name="App Secret",
+        help_text="Client secret of that OAuth application."
+    ))
+    arcgis_user_role = models.CharField(
+        max_length=128, blank=True, default="org_admin",
+        verbose_name="Required role",
+        help_text="Portal role a user must hold to sign in: a built-in role such as org_admin "
+                  "or org_publisher, or the ID of a custom role. Blank refuses every ArcGIS "
+                  "sign-in."
+    )
+
     admin_email = models.EmailField(null=True, blank=True)
     email_host = models.CharField(max_length=255, null=True, blank=True)
     email_port = models.PositiveIntegerField(default=25, null=True)
@@ -615,7 +647,7 @@ class SiteSettings(models.Model):
     )
     email_encryption = models.CharField(max_length=255, choices=types, default="plain_text")
     email_username = models.CharField(max_length=255, null=True, blank=True)
-    email_password = models.CharField(max_length=255, null=True, blank=True)
+    email_password = encrypt(models.CharField(max_length=255, null=True, blank=True))
     from_email = models.EmailField(null=True, blank=True)
     reply_to = models.EmailField(null=True, blank=True)
     LOG_LEVEL_CHOICES = [
@@ -625,23 +657,44 @@ class SiteSettings(models.Model):
         ('DEBUG', 'Debug'),
         ('CRITICAL', 'Critical'),
     ]
-    logging_level = models.CharField(max_length=255, choices=LOG_LEVEL_CHOICES, default='warning', null=False, blank=False)
+    logging_level = models.CharField(max_length=255, choices=LOG_LEVEL_CHOICES, default='WARNING', null=False, blank=False)
     webhook_secret = encrypt(models.CharField(max_length=255, null=True, blank=True))
+    log_retention_days = models.PositiveIntegerField(
+        default=90,
+        verbose_name="Log retention (days)",
+        help_text="Delete application log entries older than this. 0 keeps them indefinitely."
+    )
+    job_retention_days = models.PositiveIntegerField(
+        default=30,
+        verbose_name="Job history retention (days)",
+        help_text="Delete finished background jobs older than this. 0 keeps them indefinitely."
+    )
+    replacement_backup_retention_days = models.PositiveIntegerField(
+        default=90,
+        verbose_name="Replacement backup retention (days)",
+        help_text="Delete Replace Service item backups older than this, after which those "
+                  "replacements can no longer be reverted. 0 keeps them indefinitely."
+    )
 
-    def has_module_permission(self, request):
-        return request.user.is_superuser
+    @classmethod
+    def load(cls):
+        """
+        The settings row, created on first use.
 
-    def has_view_permission(self, request, obj=None):
-        return request.user.is_superuser
+        There is only ever one, at pk=1. Call sites used to be split between
+        ``objects.first()`` and ``get_or_create(pk=1)``, which differ on an
+        empty table: the first returns None and the caller falls back to
+        something, the second decides what the defaults are.
 
-    def has_change_permission(self, request, obj=None):
-        return request.user.is_superuser
-
-    def has_add_permission(self, request):
-        return request.user.is_superuser
-
-    def has_delete_permission(self, request, obj=None):
-        return request.user.is_superuser
+        The existing row is reused whatever its pk. A row deleted and re-added
+        in the admin comes back at pk=2, and keying on pk=1 alone would answer
+        with a second row full of defaults while the configured one sat unread.
+        """
+        obj = cls.objects.order_by("pk").first()
+        if obj is not None:
+            return obj
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
 
 
 class LogEntry(models.Model):
@@ -775,6 +828,17 @@ class PortalToolSettings(models.Model):
         choices=TOOL_USER_ACTION_CHOICES,
         help_text="Action to take for inactive users."
     )
+    tool_inactive_user_max_actions = models.PositiveIntegerField(
+        default=25,
+        verbose_name="Maximum accounts per run",
+        help_text="Most accounts one run may disable, delete or demote. 0 for no limit."
+    )
+    tool_inactive_user_max_percent = models.PositiveIntegerField(
+        default=25,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        verbose_name="Maximum share of the organization per run",
+        help_text="Same limit as a percentage of the organization's accounts. 0 for no limit."
+    )
 
 
     def __str__(self):
@@ -893,6 +957,13 @@ class ReplacementJob(models.Model):
     replacement_pairs = models.JSONField(
         default=list,
         help_text="Ordered [[old, new], ...] string pairs computed at dry-run."
+    )
+    sublayer_renumber = models.JSONField(
+        default=dict, blank=True,
+        help_text="{old_layer_id: new_layer_id} for whole-service map image "
+                  "layers, computed at dry-run alongside replacement_pairs. "
+                  "These sublayer numbers are bare integers in the web map "
+                  "JSON, so URL replacement cannot reach them."
     )
     selected_map_ids = models.JSONField(default=list)
     selected_app_ids = models.JSONField(default=list)
@@ -1014,3 +1085,205 @@ class ReplacementItemBackup(models.Model):
 
     def __str__(self):
         return f"{self.item_title or self.item_id} ({self.get_status_display()})"
+
+
+class Job(models.Model):
+    """
+    One unit of background work: the queue, the progress bar and the run
+    history, in a single row.
+
+    This replaces the three separate things celery needed — a broker to hold
+    the message, a result backend to hold the outcome, and a side channel for
+    progress. Keeping them together is what lets the whole system run with no
+    service beyond PostgreSQL, which is the requirement on the Windows host.
+
+    Rows are claimed by ``run_worker`` with SELECT ... FOR UPDATE SKIP LOCKED,
+    so more than one worker is safe even though only one is deployed.
+
+    The properties at the bottom deliberately mirror django_celery_results'
+    TaskResult field names, so the run-history templates that render this did
+    not have to change.
+    """
+
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    WARNING = "WARNING"
+    FAILURE = "FAILURE"
+    CANCELED = "CANCELED"
+
+    STATUS_CHOICES = [
+        (QUEUED, "Queued"),
+        (RUNNING, "Running"),
+        (SUCCESS, "Success"),
+        (WARNING, "Completed with errors"),
+        (FAILURE, "Failed"),
+        (CANCELED, "Canceled"),
+    ]
+
+    #: Statuses that mean the worker is finished with the row.
+    TERMINAL = frozenset({SUCCESS, WARNING, FAILURE, CANCELED})
+
+    # The primary key is a UUID because it is handed straight to the browser as
+    # the progress-polling URL, and it kept those URLs the same shape as the
+    # celery task ids they replaced.
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    #: Human-readable, shown in the UI: "Update webmaps", "Pro License Tool".
+    name = models.CharField(max_length=150)
+    #: Registry key from app.jobs — how the worker finds the callable.
+    func = models.CharField(max_length=255)
+    args = models.JSONField(default=list, blank=True)
+    kwargs = models.JSONField(default=dict, blank=True)
+
+    status = models.CharField(
+        max_length=10, choices=STATUS_CHOICES, default=QUEUED, db_index=True
+    )
+
+    progress_current = models.PositiveIntegerField(default=0)
+    progress_total = models.PositiveIntegerField(default=0)
+    progress_description = models.TextField(blank=True)
+
+    result = models.JSONField(null=True, blank=True)
+    error = models.TextField(blank=True)
+    traceback = models.TextField(blank=True)
+
+    portal_alias = models.CharField(max_length=20, blank=True, db_index=True)
+
+    #: Set when a PeriodicTask produced this job; blank for user-initiated runs.
+    periodic_task_name = models.CharField(max_length=200, blank=True)
+
+    queued_at = models.DateTimeField(default=timezone.now)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    cancel_requested = models.BooleanField(default=False)
+    #: Wall-clock limit, checked at the same boundaries. Replaces soft_time_limit.
+    deadline_at = models.DateTimeField(null=True, blank=True)
+
+    # Written while a job runs so a job orphaned by a worker crash can be
+    # spotted and requeued rather than sitting in RUNNING forever.
+    worker_id = models.CharField(max_length=100, blank=True)
+    heartbeat_at = models.DateTimeField(null=True, blank=True)
+
+    attempts = models.PositiveSmallIntegerField(default=0)
+
+    # Carried from the HTTP request that queued the job, so log lines written
+    # by the job join up with the request that caused it.
+    request_id = models.CharField(max_length=64, blank=True)
+    username = models.CharField(max_length=150, blank=True)
+    client_ip = models.CharField(max_length=45, blank=True)
+    request_path = models.TextField(blank=True)
+
+    class Meta:
+        verbose_name = "Background Job"
+        verbose_name_plural = "Background Jobs"
+        ordering = ["-queued_at"]
+        indexes = [
+            # The claim query: oldest queued job first.
+            models.Index(fields=["status", "queued_at"], name="job_claim_idx"),
+            # The run-history tables: latest finished runs for one portal.
+            models.Index(fields=["portal_alias", "-finished_at"], name="job_history_idx"),
+            # Finding running jobs whose worker has stopped reporting.
+            models.Index(fields=["status", "heartbeat_at"], name="job_heartbeat_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.status})"
+
+    @property
+    def is_terminal(self):
+        return self.status in self.TERMINAL
+
+    @property
+    def progress_percent(self):
+        """Whole-percent progress, clamped to 0-100."""
+        if self.is_terminal:
+            return 100
+        if not self.progress_total:
+            return 0
+        pct = (self.progress_current / self.progress_total) * 100
+        return max(0, min(100, int(pct)))
+
+    @property
+    def is_active(self):
+        """Queued or running: the worker is not finished with this row."""
+        return self.status in (self.QUEUED, self.RUNNING)
+
+    def idle_description(self):
+        """
+        What to show under the bar before a job describes itself, and after.
+
+        Names the state rather than a phase, and only while there is still one
+        to come: an empty line next to a bar that is not moving yet reads as a
+        stall. A finished job says nothing here — see bar_description.
+        """
+        return {
+            self.QUEUED: "Waiting for a worker…",
+            self.RUNNING: "Working…",
+        }.get(self.status, "")
+
+    @property
+    def bar_description(self):
+        """
+        The line under the progress bar, or "" once the job is over.
+
+        progress_description holds the last phase the job announced, and
+        nothing rewrites it when the job ends — so a completed refresh sat
+        there reading "Removing outdated records…", describing work that had
+        finished several seconds earlier.
+
+        Rather than replace it with "Finished", say nothing. The bar has
+        already turned green, amber or red, calcite-progress carries the same
+        outcome in its accessible label, and an alert has just named it. A
+        fourth copy adds nothing, and a stale one actively misleads.
+
+        The column keeps its last value either way: on a failed job, knowing
+        which phase it died in is worth having in the admin.
+        """
+        if self.is_terminal:
+            return ""
+        return self.progress_description or self.idle_description()
+
+    @property
+    def progress_info(self):
+        """
+        The dict partials/progress_bar.html renders from.
+
+        On the model rather than in the view because two places need it: the
+        progress endpoint htmx polls, and the page itself, which renders a live
+        bar for a job that was already running when it loaded.
+        """
+        return {
+            "state": self.status,
+            "complete": self.is_terminal,
+            "success": self.status == self.SUCCESS,
+            "percent": self.progress_percent,
+            "current": self.progress_current,
+            "total": self.progress_total,
+            "description": self.bar_description,
+            "cancel_requested": self.cancel_requested,
+        }
+
+
+    @property
+    def task_name(self):
+        return self.name
+
+    @property
+    def date_created(self):
+        return self.started_at or self.queued_at
+
+    @property
+    def date_done(self):
+        return self.finished_at
+
+    def result_as_dict(self):
+        """
+        The result payload as a dict.
+
+        A method rather than a property to match the TaskResult helper the
+        templates already call, which parsed a JSON string. Here the column is
+        already JSON, so this only has to guarantee the type.
+        """
+        return self.result if isinstance(self.result, dict) else {}

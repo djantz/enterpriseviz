@@ -1,6 +1,7 @@
 # Licensed under GPLv3 - See LICENSE file for details.
 import django_tables2 as tables
-from django.utils.html import format_html
+from django.utils.html import format_html, format_html_join
+from django.utils.safestring import mark_safe
 from collections import defaultdict
 import json
 
@@ -11,19 +12,37 @@ from .models import Webmap, Service, Layer, App, User, LogEntry
 class ColumnVisibilityTableMixin:
     """Column metadata for tables supporting show/hide columns."""
     DEFAULT_VISIBLE_COLUMNS = ()  # empty => all columns visible by default
+    PINNED_COLUMNS = ("details",)
+
+    @classmethod
+    def pinned_columns(cls):
+        """Pinned names this table actually defines (a table without them gets ())."""
+        return tuple(n for n in cls.PINNED_COLUMNS if n in cls.base_columns)
 
     @classmethod
     def default_visible_columns(cls):
         return tuple(cls.DEFAULT_VISIBLE_COLUMNS) or tuple(cls.base_columns)
 
     @classmethod
+    def selectable_default_columns(cls):
+        """Default visible columns minus the pinned ones, i.e. the dropdown's initial selection."""
+        pinned = cls.pinned_columns()
+        return tuple(n for n in cls.default_visible_columns() if n not in pinned)
+
+    @classmethod
     def get_column_labels(cls):
-        """Return (field_name, label) tuples: Meta.sequence order first, remaining base_columns after."""
+        """
+        Return (field_name, label) tuples for the user-selectable columns:
+        Meta.sequence order first, remaining base_columns after. Pinned columns
+        are omitted so they can't be toggled off.
+        """
         meta = getattr(cls, "Meta", None)
         sequence = tuple(getattr(meta, "sequence", ()) or ())
+        pinned = cls.pinned_columns()
         ordered = [n for n in sequence if n != "..." and n in cls.base_columns]
         ordered += [n for n in cls.base_columns if n not in ordered]
-        return [(n, cls.base_columns[n].header or n.replace("_", " ").title()) for n in ordered]
+        return [(n, cls.base_columns[n].header or n.replace("_", " ").title())
+                for n in ordered if n not in pinned]
 
 
 class WebmapTable(ColumnVisibilityTableMixin, tables.Table):
@@ -108,19 +127,22 @@ class ServiceTable(ColumnVisibilityTableMixin, tables.Table):
 
     def render_grouped_layers(self, value, record):
         """Django Tables2 calls this method to populate the `grouped_layers` column."""
-        layers = Layer.objects.filter(layer_service__service_id=record).order_by("layer_database")
+        layers = Layer.objects.filter(layer_service__service_id=record).distinct().order_by("layer_database")
 
         # Group layers by database
         grouped_layers = defaultdict(list)
         for layer in layers:
             grouped_layers[layer.layer_database].append(layer.layer_name)
 
-        # Format as a string or HTML table
-        result = []
-        for database, layer_names in grouped_layers.items():
-            result.append(f"<strong>{database}</strong>: {', '.join(layer_names)}")
+        if not grouped_layers:
+            return "No Layers"
 
-        return format_html("<br>".join(result) if result else "No Layers")
+        return format_html_join(
+            mark_safe("<br>"),
+            "<strong>{}</strong>: {}",
+            ((database, ", ".join(layer_names))
+             for database, layer_names in grouped_layers.items()),
+        )
 
     def render_service_usage_trend(self, value):
         if value is None or not isinstance(value, (int, float)):

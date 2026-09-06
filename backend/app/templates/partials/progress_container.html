@@ -1,0 +1,8 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<div id="progress-container" class="progress-slot progress-slot-{{ items }}">
+  {% if job %}
+    {% include "partials/progress_bar.html" with instance=instance task_id=job.id task_name=job.name value=job.progress_percent progress=job.progress_info %}
+  {% else %}
+    <div class="progress_bar" id="progress-bar"></div>
+  {% endif %}
+</div>
