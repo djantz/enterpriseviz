@@ -132,6 +132,15 @@
             </div>
           </div>
         </div>
+        {% if item %}
+        <div class="x_panel">
+          <calcite-button download scale="s" kind="inverse" width="full"
+                          icon-start="file-excel"
+                          href="{% url 'enterpriseviz:map_report' instance=item.portal_instance.alias id=item.webmap_id %}"
+                          label="Download dependency report for {{ item.webmap_title }}">Download report
+          </calcite-button>
+        </div>
+        {% endif %}
       </div>
     </div>
     <div class="row">
@@ -169,7 +178,7 @@
                    aria-label="Services used in this webmap" hx-boost="true">
               <thead>
               <tr>
-                <th scope="col" class="details">Details</th>
+                <th scope="col" class="details no-export">Details</th>
                 <th scope="col">Name</th>
                 <th scope="col">URL</th>
                 <th scope="col">Publish Server</th>
@@ -241,6 +250,10 @@
             <div class="clearfix"></div>
           </div>
           <div class="x_content">
+            <div class="datatables-toolbar">
+              <div class="dt-buttons"></div>
+              <div class="datatables-filter" id="datatable-layers-filter"></div>
+            </div>
             <table id="datatable-layers" class="table table-striped wrap" width="100%"
                    aria-label="Layers in this webmap" hx-boost="true">
               <thead>
@@ -254,8 +267,9 @@
               {% for layer, value in layers.items %}
                 <tr>
                   <td>{{ layer }}</td>
-                  <td>{{ value.0|default:"—" }}</td>
-                  <td>{{ value.1|default:"—" }}</td>
+                  {# webmap_layers values are dicts; value.0/value.1 rendered blank for every row. #}
+                  <td>{{ value.url|default:"—" }}</td>
+                  <td>{{ value.type|default:"—" }}</td>
                 </tr>
               {% endfor %}
               </tbody>
@@ -292,6 +306,10 @@
             <div class="clearfix"></div>
           </div>
           <div class="x_content">
+            <div class="datatables-toolbar">
+              <div class="dt-buttons"></div>
+              <div class="datatables-filter" id="datatable-apps-filter"></div>
+            </div>
             <table id="datatable-apps" class="table table-striped wrap" width="100%"
                    aria-label="Apps using this webmap">
               <thead>
@@ -357,7 +375,5 @@
   </calcite-tooltip>
 {% endblock content %}
 {% block javascripts %}
-  <script id="graph-data" type="application/json">
-    {{ graph_data|safe }}
-  </script>
+  {{ graph_data|json_script:"graph-data" }}
 {% endblock javascripts %}

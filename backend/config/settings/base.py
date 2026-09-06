@@ -13,7 +13,6 @@ https://docs.djangoproject.com/en/3.2/ref/settings/
 from pathlib import Path
 
 import environ
-from celery.schedules import crontab
 from csp.constants import NONE, SELF, UNSAFE_INLINE, UNSAFE_EVAL, NONCE
 
 BASE_DIR = Path(__file__).resolve(strict=True).parent.parent.parent
@@ -21,10 +20,28 @@ BASE_DIR = Path(__file__).resolve(strict=True).parent.parent.parent
 APPS_DIR = BASE_DIR / "config"
 env = environ.Env()
 
-READ_DOT_ENV_FILE = env.bool("DJANGO_READ_DOT_ENV_FILE", default=False)
+# Read the .env file one level above BASE_DIR whenever it exists.
+#
+# BASE_DIR is the directory IIS is pointed at as the site's physical path, so a
+# .env inside it would sit under the web root. Nothing serves it today, but the
+# file holds the database password, the ArcGIS client secret and the key that
+# decrypts every stored portal credential — so it lives in the parent, where the
+# web server has no path to it at all:
+#
+#     D:\apps\enterpriseviz\.env          <- here
+#     D:\apps\enterpriseviz\backend\      <- IIS physical path (BASE_DIR)
+#
+# Defaulting this on matters on Windows, where a Scheduled Task action has no
+# environment-variable field and a second console session does not inherit the
+# first one's. A missing .env is a no-op, and real environment variables still
+# win over the file, so containers and CI that inject configuration directly are
+# unaffected.
+READ_DOT_ENV_FILE = env.bool("DJANGO_READ_DOT_ENV_FILE", default=True)
 if READ_DOT_ENV_FILE:
-    # OS environment variables take precedence over variables from .env
-    env.read_env(str(BASE_DIR / ".env"))
+    _env_file = BASE_DIR.parent / ".env"
+    if _env_file.is_file():
+        # OS environment variables take precedence over variables from .env
+        env.read_env(str(_env_file))
 
 # GENERAL
 # ------------------------------------------------------------------------------
@@ -79,7 +96,6 @@ DJANGO_APPS = [
 THIRD_PARTY_APPS = [
     'django_htmx',
     'django_celery_beat',
-    'django_celery_results',
     'social_django',
     'django_tables2',
     'django_filters',
@@ -101,6 +117,8 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # Default-closed authentication; views opt out with @login_not_required.
+    "app.auth_middleware.AppLoginRequiredMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     'django_htmx.middleware.HtmxMiddleware',
@@ -115,6 +133,37 @@ AUTHENTICATION_BACKENDS = (
     'django.contrib.auth.backends.ModelBackend',
 )
 
+# PASSWORDS
+# ------------------------------------------------------------------------------
+# Applies to local Django accounts, including the superuser created from
+# DJANGO_SUPERUSER_PASSWORD. Accounts that sign in through the portal are
+# authenticated by ArcGIS and never have a usable password here.
+# https://docs.djangoproject.com/en/dev/ref/settings/#auth-password-validators
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+     "OPTIONS": {"min_length": 12}},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
+# How many reverse proxies sit in front of this deployment and append to
+# X-Forwarded-For. See app.middleware.client_ip.
+#
+# 0 means the header is ignored and REMOTE_ADDR is used, which is correct for
+# the IIS layout — HttpPlatformHandler proxies from loopback and adds no
+# X-Forwarded-For, so any value present came from the client. Raise it only to
+# the number of proxies you actually run: each one you claim is an entry an
+# attacker gets to choose.
+TRUSTED_PROXY_COUNT = env.int("TRUSTED_PROXY_COUNT", default=0)
+
+# Failed sign-in throttling. See app.throttling; both counters must stay under
+# their limit for an attempt to proceed.
+LOGIN_RATELIMIT_ATTEMPTS = env.int("LOGIN_RATELIMIT_ATTEMPTS", default=10)
+LOGIN_RATELIMIT_WINDOW = env.int("LOGIN_RATELIMIT_WINDOW", default=900)
+WEBHOOK_RATELIMIT_ATTEMPTS = env.int("WEBHOOK_RATELIMIT_ATTEMPTS", default=20)
+WEBHOOK_RATELIMIT_WINDOW = env.int("WEBHOOK_RATELIMIT_WINDOW", default=300)
+
 # STATIC
 # ------------------------------------------------------------------------------
 # https://docs.djangoproject.com/en/dev/ref/settings/#static-root
@@ -122,7 +171,7 @@ STATIC_ROOT = str(BASE_DIR / "staticfiles")
 # https://docs.djangoproject.com/en/dev/ref/settings/#static-url
 STATIC_URL = f"/static/"
 # https://docs.djangoproject.com/en/dev/ref/contrib/staticfiles/#std:setting-STATICFILES_DIRS
-STATICFILES_DIRS = (str(BASE_DIR.joinpath("static")),)
+STATICFILES_DIRS = ()
 # https://docs.djangoproject.com/en/dev/ref/contrib/staticfiles/#staticfiles-finders
 STATICFILES_FINDERS = [
     "django.contrib.staticfiles.finders.FileSystemFinder",
@@ -149,16 +198,12 @@ SOCIAL_AUTH_PIPELINE = (
     'social_core.pipeline.user.user_details',  # 8
 )
 
-SOCIAL_AUTH_ARCGIS_KEY = env('SOCIAL_AUTH_ARCGIS_KEY')
-SOCIAL_AUTH_ARCGIS_SECRET = env('SOCIAL_AUTH_ARCGIS_SECRET')
-SOCIAL_AUTH_ARCGIS_URL = env('SOCIAL_AUTH_ARCGIS_URL')
-ARCGIS_USER_ROLE = env('ARCGIS_USER_ROLE')
 USE_SERVICE_USAGE_REPORT = env.bool("USE_SERVICE_USAGE_REPORT", default=True)
 
 # MEDIA
 # ------------------------------------------------------------------------------
 # https://docs.djangoproject.com/en/dev/ref/settings/#media-root
-MEDIA_ROOT = "media/"
+MEDIA_ROOT = str(BASE_DIR / "media")
 # https://docs.djangoproject.com/en/dev/ref/settings/#media-url
 MEDIA_URL = f"/media/"
 
@@ -201,16 +246,11 @@ X_FRAME_OPTIONS = "DENY"
 # Django Admin URL.
 ADMIN_URL = "admin/"
 WEBHOOK_URL = "webhook/"
-WEBHOOK_SECRET = env("WEBHOOK_SECRET", default="your_secure_secret_here")
+
 # https://docs.djangoproject.com/en/dev/ref/settings/#admins
-# Must be a list of ("Name", "email") 2-tuples for the mail_admins 500-error
-# handler to work; leave empty to disable error emails.
 ADMINS = []
 # https://docs.djangoproject.com/en/dev/ref/settings/#managers
 MANAGERS = ADMINS
-# https://cookiecutter-django.readthedocs.io/en/latest/settings.html#other-environment-settings
-# Force the `admin` sign in process to go through the `django-allauth` workflow
-DJANGO_ADMIN_FORCE_ALLAUTH = env.bool("DJANGO_ADMIN_FORCE_ALLAUTH", default=False)
 
 # LOGGING
 # ------------------------------------------------------------------------------
@@ -273,12 +313,12 @@ LOGGING = {
             "level": "ERROR",
             "propagate": True,
         },
-        "celery": {
+        "enterpriseviz.jobs": {  # Queueing, claiming and running background jobs
             "handlers": ["console", "database"],
-            "level": "ERROR",
-            "propagate": True,
+            "level": "INFO",
+            "propagate": False,
         },
-        "celery.task": {  # Logs from @shared_task or app.task, if not caught by a more specific logger
+        "enterpriseviz.worker": {  # The run_worker loop and its scheduler
             "handlers": ["console", "database"],
             "level": "INFO",
             "propagate": False,
@@ -303,56 +343,29 @@ LOGGING = {
 
 }
 
-# Celery
+# BACKGROUND JOBS
 # ------------------------------------------------------------------------------
-if USE_TZ:
-    # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-timezone
-    CELERY_TIMEZONE = TIME_ZONE
-    DJANGO_CELERY_BEAT_TZ_AWARE = True
-else:
-    DJANGO_CELERY_BEAT_TZ_AWARE = False
+DJANGO_CELERY_BEAT_TZ_AWARE = bool(USE_TZ)
 
-# https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-broker_url
-CELERY_BROKER_URL = env("REDIS_URL")
-# https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-result_backend
-CELERY_RESULT_BACKEND = 'django-db'
-CELERY_RESULT_EXPIRES = 86400
-# https://docs.celeryq.dev/en/stable/userguide/configuration.html#result-extended
-CELERY_RESULT_EXTENDED = True
-# https://docs.celeryq.dev/en/stable/userguide/configuration.html#result-backend-always-retry
-# https://github.com/celery/celery/pull/6122
-CELERY_RESULT_BACKEND_ALWAYS_RETRY = True
-# https://docs.celeryq.dev/en/stable/userguide/configuration.html#result-backend-max-retries
-CELERY_RESULT_BACKEND_MAX_RETRIES = 1
-# https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-accept_content
-CELERY_ACCEPT_CONTENT = ["json"]
-# https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-task_serializer
-CELERY_TASK_SERIALIZER = "json"
-# https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-result_serializer
-CELERY_RESULT_SERIALIZER = "json"
-# https://docs.celeryq.dev/en/stable/userguide/configuration.html#task-time-limit
-# TODO: set to whatever value is adequate in your circumstances
-CELERY_TASK_TIME_LIMIT = 5 * 60
-# https://docs.celeryq.dev/en/stable/userguide/configuration.html#task-soft-time-limit
-# TODO: set to whatever value is adequate in your circumstances
-CELERY_TASK_SOFT_TIME_LIMIT = 60
-# https://docs.celeryq.dev/en/stable/userguide/configuration.html#beat-scheduler
-CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
-# https://docs.celeryq.dev/en/stable/userguide/periodic-tasks.html#beat-entries
-# Synced into the django_celery_beat PeriodicTask table on beat startup.
-CELERY_BEAT_SCHEDULE = {
-    "purge-expired-replacement-backups": {
-        "task": "app.tasks.purge_expired_replacement_backups_task",
-        "schedule": crontab(hour=3, minute=0),
-    },
-}
-# https://docs.celeryq.dev/en/stable/userguide/configuration.html#worker-send-task-events
-CELERY_WORKER_SEND_TASK_EVENTS = True
-# https://docs.celeryq.dev/en/stable/userguide/configuration.html#std-setting-task_send_sent_event
-CELERY_TASK_SEND_SENT_EVENT = True
-CELERY_HIJACK_ROOT_LOGGER = False
+# How many jobs one worker runs at once.
+JOB_CONCURRENCY = env.int("JOB_CONCURRENCY", default=2)
+# How many batches a single job may fan out to.
+JOB_BATCH_CONCURRENCY = env.int("JOB_BATCH_CONCURRENCY", default=8)
+# Seconds between polls of the queue. The progress bar polls every 3 seconds,
+# so anything below that is latency nobody can see.
+JOB_POLL_INTERVAL = env.float("JOB_POLL_INTERVAL", default=3.0)
+# A RUNNING job whose worker has not written a heartbeat in this long is
+# treated as orphaned by a crashed worker and returned to the queue.
+JOB_HEARTBEAT_TIMEOUT = env.int("JOB_HEARTBEAT_TIMEOUT", default=300)
+# How many times a worker may claim the same job before it is failed instead of
+# requeued.
+JOB_MAX_ATTEMPTS = env.int("JOB_MAX_ATTEMPTS", default=3)
 
 # CSP_INCLUDE_NONCE_IN = ['style-src', 'script-src']
+
+
+CSP_ARCGIS = "https://js.arcgis.com"
+CSP_DATATABLES = "https://cdn.datatables.net/"
 
 CONTENT_SECURITY_POLICY = {
     "DIRECTIVES": {
@@ -360,20 +373,31 @@ CONTENT_SECURITY_POLICY = {
 
         "script-src": [
             SELF,
-            "https://cdnjs.cloudflare.com",
-            'https://cdn.datatables.net',
-            "https://cdn.jsdelivr.net",
-            "https://js.arcgis.com",
-            "https://code.jquery.com",
-            "https://unpkg.com",
+            CSP_ARCGIS,
+            CSP_DATATABLES,
+            "https://cdnjs.cloudflare.com/ajax/libs/cytoscape/",
+            "https://cdnjs.cloudflare.com/ajax/libs/dagre/",
+            "https://cdnjs.cloudflare.com/ajax/libs/htmx/",
+            "https://cdnjs.cloudflare.com/ajax/libs/pdfmake/",
+            "https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/",
+            # Exact versions, matching the script tags in base_site.html. None
+            # of these end in a slash, so CSP requires an exact path match -
+            # bumping a version here without bumping it there (or the reverse)
+            # blocks the script, which is what the @^1 encoding bug did.
+            "https://cdn.jsdelivr.net/npm/chart.js@4.5.1",
+            "https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.1",
+            "https://cdn.jsdelivr.net/npm/chartjs-plugin-autocolors@0.3.1",
+            "https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/",
+            "https://cdn.jsdelivr.net/npm/d3@3.0.0/",
+            "https://unpkg.com/htmx-ext-loading-states@2.0.0/",
         ],
 
         "style-src": [
             SELF,
-            "https://cdnjs.cloudflare.com",
-            "https://cdn.jsdelivr.net",
-            "https://cdn.datatables.net",
-            "https://js.arcgis.com",
+            CSP_ARCGIS,
+            CSP_DATATABLES,
+            "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/",
+            "https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/",
             UNSAFE_INLINE
         ],
 
@@ -385,15 +409,13 @@ CONTENT_SECURITY_POLICY = {
 
         "font-src": [
             SELF,
-            "https://cdnjs.cloudflare.com",
-            "https://js.arcgis.com",
+            CSP_ARCGIS,
+            "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/",
         ],
 
         "connect-src": [
             SELF,
-            "https://js.arcgis.com",
-            "https://cdnjs.cloudflare.com",
-            "https://cdn.jsdelivr.net"
+            CSP_ARCGIS,
         ],
 
         "worker-src": [
@@ -411,4 +433,81 @@ CONTENT_SECURITY_POLICY = {
     }
 }
 
+# DATABASE CONNECTIONS
+# ------------------------------------------------------------------------------
+#: A second connection to the same database, used only to rotate OAuth refresh
+#: tokens. See configure_databases() and app.utils._ensure_oauth_access_token.
+OAUTH_DB_ALIAS = "oauth"
+
+#: Seconds the OAuth connection waits for the portal row lock before giving up
+#: and refreshing without it. Bounded so a request can never hang here.
+OAUTH_LOCK_TIMEOUT = env.int("OAUTH_LOCK_TIMEOUT", default=5)
+
+
+def configure_databases(databases):
+    """
+    Turn ATOMIC_REQUESTS on, and add the connection OAuth refreshes run on.
+
+    ATOMIC_REQUESTS wraps each request in one transaction, which is what this
+    application wants everywhere except one place. Refreshing an OAuth token is
+    not a database write that can be taken back: the portal invalidates the old
+    refresh token the moment it issues the new one. Store the new one inside the
+    request transaction and any later rollback loses it while the old one is
+    already dead — the portal is then locked out until an administrator consents
+    again.
+
+    A second connection to the same database fixes that. It has its own
+    transaction, so the rotated token is committed the instant the refresh
+    succeeds, whatever the request goes on to do. It also means SELECT ... FOR
+    UPDATE on the portal row is held for the length of the refresh rather than
+    the length of the request, so a slow page cannot block the worker from
+    refreshing the same portal.
+
+    Mirrored for tests so the runner reuses the one test database instead of
+    building a second.
+    """
+    import copy
+
+    default = databases["default"]
+    default["ATOMIC_REQUESTS"] = True
+
+    oauth = copy.deepcopy(default)
+    # This connection exists to commit on its own; wrapping it in the request
+    # transaction would defeat the entire point of having it.
+    oauth["ATOMIC_REQUESTS"] = False
+    # Held open no longer than a refresh needs. Persisting it would mean a
+    # second idle connection per web worker for something used rarely.
+    oauth["CONN_MAX_AGE"] = 0
+    oauth["TEST"] = {"MIRROR": "default"}
+    databases[OAUTH_DB_ALIAS] = oauth
+
+    return databases
+
+
 CREDENTIAL_ENCRYPTION_KEY = env('CREDENTIAL_ENCRYPTION_KEY', default=None)
+
+# How long a temporary portal credential stays readable, in seconds.
+CREDENTIAL_TOKEN_TTL = env.int("CREDENTIAL_TOKEN_TTL", default=900)
+
+
+# ARCGIS TLS
+# ------------------------------------------------------------------------------
+def _tls_verify_setting(raw):
+    """
+    Interpret a TLS verification env var as a bool or a CA bundle path.
+
+    Accepts "true"/"false" (and the usual synonyms) or a filesystem path, which
+    is what both requests' verify= and arcgis' verify_cert= take.
+    """
+    value = (raw or "").strip().strip("'\" ")
+    if not value:
+        return True
+    if value.lower() in ("true", "yes", "on", "1"):
+        return True
+    if value.lower() in ("false", "no", "off", "0"):
+        return False
+    return value
+
+
+# Whether to validate the portal's TLS certificate on every connection to it.
+ARCGIS_VERIFY_TLS = _tls_verify_setting(env("ARCGIS_VERIFY_TLS", default=""))

@@ -56,6 +56,49 @@ async function init_DataTables(tableElement) {
     return tableInstance
 }
 
+// Every table carries an aria-label describing what it holds ("Apps using this
+// layer"). Reusing it names the download, so exports from different tables stop
+// landing under the same generic document title.
+function exportTitle(selector) {
+    return $(selector).attr('aria-label') || document.title || 'export';
+}
+
+function exportFilename(selector) {
+    return exportTitle(selector).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+// The four download buttons, shared by every table.
+//
+// ':not(.no-export)' drops the Details column of action buttons, which used to
+// export as a column of the literal word "Details". Hidden columns (Instance,
+// URL) are already included by default, so nothing extra is needed to keep them.
+function exportButtons(selector) {
+    const shared = {
+        tag: 'calcite-button',
+        title: () => exportTitle(selector),
+        filename: () => exportFilename(selector),
+        exportOptions: {columns: ':not(.no-export)'}
+    };
+    return [
+        {
+            ...shared, extend: "copyHtml5", text: "Copy",
+            attr: {scale: "s", kind: "inverse", "icon-start": "copy-to-clipboard"}
+        },
+        {
+            ...shared, extend: "csvHtml5", text: "CSV",
+            attr: {scale: "s", kind: "inverse", "icon-start": "file-csv"}
+        },
+        {
+            ...shared, extend: "excelHtml5", text: "Excel",
+            attr: {scale: "s", kind: "inverse", "icon-start": "file-excel"}
+        },
+        {
+            ...shared, extend: "pdfHtml5", text: "PDF",
+            attr: {scale: "s", kind: "inverse", "icon-start": "file-pdf"}
+        }
+    ];
+}
+
 function initDataTable(selector, filterSelector, columnContains, usageTarget) {
     const table = $(selector).DataTable({
         paging: true,
@@ -68,36 +111,7 @@ function initDataTable(selector, filterSelector, columnContains, usageTarget) {
                 }
             }
         },
-        buttons: [
-            {
-                extend: "copyHtml5",
-                text: "Copy",
-                tag: 'calcite-button',
-                attr: {scale: "s", kind: "inverse", "icon-start": "copy-to-clipboard"},
-                exportOptions: {columns: ':not(.no-export)'}
-            },
-            {
-                extend: "csvHtml5",
-                text: "CSV",
-                tag: 'calcite-button',
-                attr: {scale: "s", kind: "inverse", "icon-start": "file-csv"},
-                exportOptions: {columns: ':not(.no-export)'}
-            },
-            {
-                extend: "excelHtml5",
-                text: "Excel",
-                tag: 'calcite-button',
-                attr: {scale: "s", kind: "inverse", "icon-start": "file-excel"},
-                exportOptions: {columns: ':not(.no-export)'}
-            },
-            {
-                extend: "pdfHtml5",
-                text: "PDF",
-                tag: 'calcite-button',
-                attr: {scale: "s", kind: "inverse", "icon-start": "file-pdf"},
-                exportOptions: {columns: ':not(.no-export)'}
-            }
-        ],
+        buttons: exportButtons(selector),
         language: {
             paginate: {
                 next: '<calcite-icon icon="chevron-right" preload="true" scale="s"></calcite-icon>',
@@ -261,9 +275,17 @@ function init_Charts() {
             instances.add(instanceName);
         }
 
-        // Append unique instances to dropdown
+        // Append unique instances to dropdown.
+        // createElement + setAttribute, not an interpolated HTML string: the
+        // instance name is the first segment of a chart dataset label, which
+        // comes from the portal, and parsing it as markup would make any
+        // quote in it an injection point.
         for (const instance of instances) {
-            $select.append(`<calcite-combobox-item value="${instance}" heading="${instance}" label="${instance}"></calcite-combobox-item>`);
+            const item = document.createElement('calcite-combobox-item');
+            item.setAttribute('value', instance);
+            item.setAttribute('heading', instance);
+            item.setAttribute('label', instance);
+            $select.append(item);
         }
 
         // Ensure the dropdown is empty before appending (prevents duplicates)
@@ -732,10 +754,14 @@ async function setupReplaceForm(modal) {
             const layerSelect = row.querySelector(".replace-row-layer");
             if (serviceSelect?.value) {
                 const oldLayerId = parseInt(row.dataset.oldLayerId, 10);
+                // explicit records that a target layer was picked here rather
+                // than left on "Same layer ID", so the dry run can tell a
+                // deliberate cross-name mapping from a number carried over
                 mappings.push({
                     old_layer_id: oldLayerId,
                     target_service_id: parseInt(serviceSelect.value, 10),
-                    new_layer_id: layerSelect?.value ? parseInt(layerSelect.value, 10) : oldLayerId
+                    new_layer_id: layerSelect?.value ? parseInt(layerSelect.value, 10) : oldLayerId,
+                    explicit: Boolean(layerSelect?.value)
                 });
             }
         });
@@ -800,13 +826,6 @@ async function setupReplaceForm(modal) {
         }
     });
 
-    // Keep the button in a loading state for as long as the dry-run task is
-    // actually running. The initial POST only queues the task and returns the
-    // progress bar, so loading must persist until the task reports completion
-    // (the `updateComplete` event, which bubbles up from the polling progress
-    // bar). If the response was instead a credential prompt or a validation
-    // error - i.e. no progress bar was swapped in - there is no task to wait
-    // for, so clear the loading state immediately.
     form.addEventListener("htmx:afterSettle", function () {
         if (!dryRunPending) return;
         const container = document.getElementById("replace-dryrun-container");
@@ -842,10 +861,6 @@ htmx.on("htmx:load", async (e) => {
             await init_DataTables(table);
         }
     }
-    // Only (re)initialize page-level components when they are part of the
-    // content that was just swapped in - not on every unrelated fragment swap
-    // (e.g. the progress bar polling every few seconds), which would otherwise
-    // rebuild the dependency graph and re-fetch its icons on each poll.
     const inSwappedContent = (selector) => {
         if (target.matches && target.matches(selector)) return target;
         return target.querySelector ? target.querySelector(selector) : null;
@@ -936,17 +951,27 @@ function externalTooltipHandler(context) {
         return;
     }
 
-    // Set Text
-    let innerHtml = '';
+    // Set text. Built as DOM nodes rather than an interpolated HTML string:
+    // titles and body lines are chart dataset labels, which are assembled from
+    // the portal alias and the service path the portal reported. The body's
+    // line breaks come from white-space: pre-line on .chartjs-tooltip-body.
+    const parts = [];
     if (tooltip.title && tooltip.title.length > 0) {
-        innerHtml += `<div class="chartjs-tooltip-title">${tooltip.title[0]}</div>`;
+        const titleEl = document.createElement('div');
+        titleEl.className = 'chartjs-tooltip-title';
+        titleEl.textContent = tooltip.title[0];
+        parts.push(titleEl);
     }
     if (tooltip.body) {
-        const bodyLines = tooltip.body.map(b => b.lines);
-        innerHtml += `<div class="chartjs-tooltip-body">${bodyLines.map(lines => lines.join('')).join('<br>')}</div>`;
+        const bodyEl = document.createElement('div');
+        bodyEl.className = 'chartjs-tooltip-body';
+        bodyEl.textContent = tooltip.body
+            .map(b => b.lines.join(''))
+            .join('\n');
+        parts.push(bodyEl);
     }
 
-    tooltipEl.innerHTML = innerHtml;
+    tooltipEl.replaceChildren(...parts);
 
     const {offsetLeft: positionX, offsetTop: positionY} = chart.canvas;
 
@@ -1183,11 +1208,15 @@ async function setupPortalFormLogic(modal) {
         return checked ? checked.value : "prompt";
     }
 
+    // The stored password, like the client secret, may be left blank on update to keep
+    // the current value. On add there is nothing to keep, so it stays required.
+    const isUpdate = !!modal.querySelector("#update-portal-form");
+
     function toggleCredentials() {
         const method = selectedAuthMethod();
 
         applySectionState(storePasswordSection, [usernameInput, passwordInput],
-            method === "password", [usernameInput, passwordInput]);
+            method === "password", isUpdate ? [usernameInput] : [usernameInput, passwordInput]);
 
         // The client secret may be left blank on update to keep the stored value.
         applySectionState(oauthSection, [clientIdInput, clientSecretInput],
@@ -1310,7 +1339,10 @@ async function showAlert(kind, label, message, autoClose = true) {
         alert.setAttribute("auto-close-duration", "medium");
     }
 
-    alert.innerHTML = `<div slot="message">${message}</div>`;
+    const messageEl = document.createElement("div");
+    messageEl.setAttribute("slot", "message");
+    messageEl.textContent = message;
+    alert.replaceChildren(messageEl);
 
     await new Promise(resolve => setTimeout(resolve, 150));
 
@@ -1359,8 +1391,7 @@ const PENDING_ALERT_LEVELS = {
 function showPendingAlerts() {
     document.querySelectorAll("#pending-alerts .pending-alert").forEach((el) => {
         const [kind, label, autoClose] = PENDING_ALERT_LEVELS[el.dataset.level] || PENDING_ALERT_LEVELS.info;
-        // innerHTML keeps Django's escaping intact; showAlert interpolates into innerHTML.
-        showAlert(kind, label, el.innerHTML.trim(), autoClose).catch(console.error);
+        showAlert(kind, label, el.textContent.trim(), autoClose).catch(console.error);
     });
 }
 
@@ -1605,10 +1636,7 @@ function initWebhookSecretGenerator() {
     });
 })();
 
-// Calcite confirmation sheet for htmx actions (replaces browser-native
-// hx-confirm dialogs). Any element with a data-confirm-sheet attribute has
-// its htmx request held until the user confirms in the sheet; message,
-// details, and button text come from data-confirm-* attributes.
+
 (function () {
     const sheet = document.getElementById('replace-confirm-sheet');
     const message = document.getElementById('replace-confirm-message');

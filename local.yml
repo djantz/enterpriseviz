@@ -1,4 +1,7 @@
-version: "3"
+# Development stack. Mirrors the Windows/IIS deployment in the ways that
+# matter: no broker and no Redis, background work queued to PostgreSQL and run
+# by a single worker process. Only the web server differs — runserver here,
+# waitress behind IIS there.
 
 volumes:
   enterpriseviz_local_postgres_data: {}
@@ -13,7 +16,6 @@ services:
     container_name: enterpriseviz_local_django
     depends_on:
       - postgres
-      - redis
     volumes:
       - ./backend/:/app:z
     env_file:
@@ -22,6 +24,21 @@ services:
     command: /start
     ports:
       - "80:8000"
+    healthcheck:
+      # Ready once /start has migrated and created the cache table, which is
+      # what the worker is really waiting for.
+      #
+      # A routed URL, not "/": nothing serves the site root, so a check against
+      # it 404s. http.client rather than urlopen because it neither follows
+      # redirects nor raises on a non-2xx status - any HTTP response at all
+      # means the server is up, and /start does not exec it until migrate and
+      # createcachetable have finished.
+      test: ["CMD", "python", "-c",
+             "import http.client; c = http.client.HTTPConnection('127.0.0.1', 8000, timeout=5); c.request('GET', '/enterpriseviz/login/'); c.getresponse()"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   postgres:
     build:
@@ -35,26 +52,15 @@ services:
     env_file:
       - ./.envs/.local/backend/.postgres
 
-  redis:
-    image: redis:6
-    container_name: enterpriseviz_local_redis
-
-  celeryworker:
+  worker:
     <<: *django
-    image: enterpriseviz_local_celeryworker
-    container_name: enterpriseviz_local_celeryworker
+    image: enterpriseviz_local_worker
+    container_name: enterpriseviz_local_worker
     depends_on:
-      - redis
-      - postgres
-    command: /start-celeryworker
+      django:
+        condition: service_healthy
+    command: /start-worker
     ports: []
-
-  celerybeat:
-    <<: *django
-    image: enterpriseviz_local_celerybeat
-    container_name: enterpriseviz_local_celerybeat
-    depends_on:
-      - redis
-      - postgres
-    command: /start-celerybeat
-    ports: []
+    healthcheck:
+      disable: true
+    stop_grace_period: 60s

@@ -4,12 +4,22 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
+# Apply the migrations committed to the repository. This deliberately does not
+# generate them: the previous version deleted every migration file and ran
+# makemigrations on each boot, which regenerated an 0001_initial that the
+# django_migrations table already recorded as applied. Schema changes were
+# therefore never applied to an existing database, and the drift only surfaced
+# later as errors about missing columns. Migrations are created in development,
+# reviewed, and committed.
+python /app/manage.py migrate --noinput
 
-find . -path "*/migrations/*.py" -not -name "__init__.py" -delete
-find . -path "*/migrations/*.pyc"  -delete
-python /app/manage.py makemigrations
-python /app/manage.py migrate
-#python /app/manage.py createsuperuser --noinput --username admin --email <email>
+# Required by the DatabaseCache backend, which replaced Redis. The cache is how
+# the web process hands encrypted portal credentials to the worker, so the app
+# cannot refresh a credential-prompting portal without this table. Creating it
+# is idempotent.
+python /app/manage.py createcachetable
 
-
-exec /usr/local/bin/gunicorn config.wsgi --bind 0.0.0.0:8080 --chdir=/app
+# waitress, not gunicorn. The primary deployment is now Windows/IIS, where
+# gunicorn cannot run at all — it imports fcntl — and running the same WSGI
+# server in both places means one set of concurrency behaviour to reason about.
+exec python -m waitress --listen=0.0.0.0:8080 --threads=16 --channel-timeout=1200 config.wsgi:application

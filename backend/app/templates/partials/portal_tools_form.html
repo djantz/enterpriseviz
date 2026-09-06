@@ -213,6 +213,41 @@
                                icon="exclamation-mark-triangle-f" status="invalid">
           {{ form.tool_inactive_user_action.errors|join:" " }}
         </calcite-input-message>
+
+        <calcite-input type="number" min="0" step="1"
+                       id="tool-inactive-user-max-actions" name="tool_inactive_user_max_actions"
+                       value="{{ form.tool_inactive_user_max_actions.value|default_if_none:'' }}"
+                       label-text="Per-Run Limit (accounts)" required suffix-text="accounts"
+                       status="{% if form.tool_inactive_user_max_actions.errors %}invalid{% else %}idle{% endif %}">
+          <calcite-icon slot="label-content" id="tool-inactive-user-max-actions-tooltip" icon="information"
+                        scale="s"></calcite-icon>
+        </calcite-input>
+        <calcite-input-message {% if not form.tool_inactive_user_max_actions.errors %}hidden{% endif %}
+                               icon="exclamation-mark-triangle-f" status="invalid">
+          {{ form.tool_inactive_user_max_actions.errors|join:" " }}
+        </calcite-input-message>
+
+        <calcite-input type="number" min="0" max="100" step="1"
+                       id="tool-inactive-user-max-percent" name="tool_inactive_user_max_percent"
+                       value="{{ form.tool_inactive_user_max_percent.value|default_if_none:'' }}"
+                       label-text="Per-Run Limit (share of organization)" required suffix-text="%"
+                       status="{% if form.tool_inactive_user_max_percent.errors %}invalid{% else %}idle{% endif %}">
+          <calcite-icon slot="label-content" id="tool-inactive-user-max-percent-tooltip" icon="information"
+                        scale="s"></calcite-icon>
+        </calcite-input>
+        <calcite-input-message {% if not form.tool_inactive_user_max_percent.errors %}hidden{% endif %}
+                               icon="exclamation-mark-triangle-f" status="invalid">
+          {{ form.tool_inactive_user_max_percent.errors|join:" " }}
+        </calcite-input-message>
+
+        <calcite-notice open icon kind="warning" scale="s">
+          <div slot="title">Per-Run Limits</div>
+          <div slot="message">
+            A run that disables, deletes or demotes accounts stops once it reaches the smaller of these two
+            limits and reports what it did, so a mistaken inactivity window cannot empty an organization
+            unattended. Deletion cannot be undone. Enter 0 in both to run without a limit.
+          </div>
+        </calcite-notice>
       </div>
       <calcite-button id="run-inactive-user" scale="s" {% if not email_configured %}disabled{% endif %}
                       hx-post="{% url 'enterpriseviz:tools_run' instance=form.instance.portal.alias tool_name='inactive_user' %}"
@@ -248,4 +283,10 @@
 </calcite-tooltip>
 <calcite-tooltip reference-element="tool-inactive-user-action-tooltip">
   <span>Action to take on inactive users: notify only, disable, delete, or transfer content</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="tool-inactive-user-max-actions-tooltip">
+  <span>Most accounts a single run may disable, delete or demote before stopping. 0 for no limit</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="tool-inactive-user-max-percent-tooltip">
+  <span>The same limit as a share of all accounts in the organization. 0 for no limit</span>
 </calcite-tooltip>

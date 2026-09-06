@@ -1,0 +1,84 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+{% load filter %}
+<form id="arcgis-signin-form" class="calcite-form" autocomplete="off"
+      aria-label="ArcGIS sign-in configuration">
+  {% csrf_token %}
+
+  <calcite-input type="url" id="{{ form.arcgis_org_url.name }}" name="{{ form.arcgis_org_url.name }}"
+                 autocomplete="off" placeholder="https://example.maps.arcgis.com" maxlength="512"
+                 value="{{ form.arcgis_org_url.value|default_if_none:'' }}"
+                 label-text="Organization URL"
+                 status="{% if form.arcgis_org_url.errors %}invalid{% else %}idle{% endif %}"
+                 validation-message="{{ form.arcgis_org_url.errors|join:' ' }}"
+                 validation-icon="{% if form.arcgis_org_url.errors %}exclamation-mark-triangle{% endif %}">
+    <calcite-icon slot="label-content" id="org-url-tooltip" icon="information" scale="s"></calcite-icon>
+  </calcite-input>
+
+  <calcite-input type="text" id="{{ form.arcgis_client_id.name }}" name="{{ form.arcgis_client_id.name }}"
+                 autocomplete="off" placeholder="Enter the registered App ID" maxlength="128"
+                 value="{{ form.arcgis_client_id.value|default_if_none:'' }}"
+                 label-text="App ID"
+                 status="{% if form.arcgis_client_id.errors %}invalid{% else %}idle{% endif %}"
+                 validation-message="{{ form.arcgis_client_id.errors|join:' ' }}"
+                 validation-icon="{% if form.arcgis_client_id.errors %}exclamation-mark-triangle{% endif %}">
+  </calcite-input>
+
+  <calcite-input type="password" id="{{ form.arcgis_client_secret.name }}"
+                 name="{{ form.arcgis_client_secret.name }}"
+                 autocomplete="off"
+                 placeholder="{% if current_secret %}Leave blank to keep the stored secret{% else %}Enter the App Secret{% endif %}"
+                 label-text="App Secret"
+                 status="{% if form.arcgis_client_secret.errors %}invalid{% else %}idle{% endif %}"
+                 validation-message="{{ form.arcgis_client_secret.errors|join:' ' }}"
+                 validation-icon="{% if form.arcgis_client_secret.errors %}exclamation-mark-triangle{% endif %}">
+    <calcite-icon slot="label-content" id="client-secret-tooltip" icon="information" scale="s"></calcite-icon>
+  </calcite-input>
+
+  <calcite-input type="text" id="{{ form.arcgis_user_role.name }}" name="{{ form.arcgis_user_role.name }}"
+                 autocomplete="off" placeholder="org_admin" maxlength="128"
+                 value="{{ form.arcgis_user_role.value|default_if_none:'' }}"
+                 label-text="Required Role"
+                 status="{% if form.arcgis_user_role.errors %}invalid{% else %}idle{% endif %}"
+                 validation-message="{{ form.arcgis_user_role.errors|join:' ' }}"
+                 validation-icon="{% if form.arcgis_user_role.errors %}exclamation-mark-triangle{% endif %}">
+    <calcite-icon slot="label-content" id="user-role-tooltip" icon="information" scale="s"></calcite-icon>
+  </calcite-input>
+
+  <calcite-notice open kind="info" icon>
+    <div slot="title">Registering the Application</div>
+    <div slot="message">
+      Register an OAuth application in your portal, add this site's callback URL to it as a
+      redirect URI, then copy its App ID and App Secret here. Only members holding the required
+      role can sign in; everyone else is refused after authenticating. Local accounts are
+      unaffected and remain the way in if any of this is wrong.
+    </div>
+  </calcite-notice>
+
+  <calcite-notice open kind="info" icon>
+    <div slot="title">Who Can Administer</div>
+    <div slot="message">
+      Signing in and administering are separate. Every ArcGIS account arrives without staff
+      status and is promoted by hand in the Django admin, because staff can edit the settings
+      that hold this App Secret, the webhook secret and the SMTP password.
+    </div>
+  </calcite-notice>
+
+  {% if form.non_field_errors %}
+    <calcite-notice open kind="danger" icon>
+      <div slot="message">{{ form.non_field_errors|join:" " }}</div>
+    </calcite-notice>
+  {% endif %}
+
+</form>
+
+<calcite-tooltip reference-element="org-url-tooltip">
+  <span>The Enterprise portal or ArcGIS Online organization users sign in against. Clearing it
+    removes the sign-in button from the login page</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="client-secret-tooltip">
+  <span>Stored encrypted. Leave blank when editing to keep the secret already saved</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="user-role-tooltip">
+  <span>Portal role required to sign in — org_admin, org_publisher, org_user, or a custom role ID.
+    Compared exactly</span>
+</calcite-tooltip>

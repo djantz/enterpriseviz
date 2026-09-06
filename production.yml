@@ -1,5 +1,3 @@
-version: "3"
-
 volumes:
   production_django_media: {}
 
@@ -13,59 +11,53 @@ services:
     image: <imageName>
     volumes:
       - production_django_media:/app/media
-    depends_on:
-      - rabbit
     environment:
       # Django
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
       DJANGO_SECURE_SSL_REDIRECT: ${DJANGO_SECURE_SSL_REDIRECT}
       DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE}
       DJANGO_ADMIN_URL: ${DJANGO_ADMIN_URL}
-      # Redis - Celery
-      RABBIT_URL: ${RABBIT_URL}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      # Host names this deployment serves, comma separated. Unset, production.py
+      # falls back to localhost only and every real hostname gets a 400.
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      # Origins allowed to POST, comma separated and scheme-qualified, e.g.
+      # https://gis.example.com. Unset, every form submission fails CSRF.
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS}
+      # Set to True only when something in front terminates TLS and overwrites
+      # X-Forwarded-Proto. Left False behind such a proxy, SECURE_SSL_REDIRECT
+      # never sees a secure request and the site redirects to itself forever.
+      DJANGO_USE_X_FORWARDED_PROTO: ${DJANGO_USE_X_FORWARDED_PROTO}
       # Azure postgres sql
       AZURE_POSTGRESQL_HOST: ${AZURE_POSTGRESQL_HOST}
       AZURE_POSTGRESQL_DATABASE: ${AZURE_POSTGRESQL_DATABASE}
       AZURE_POSTGRESQL_USERNAME: ${AZURE_POSTGRESQL_USERNAME}
       AZURE_POSTGRESQL_PASSWORD: ${AZURE_POSTGRESQL_PASSWORD}
-      DJANGO_SUPERUSER_PASSWORD: ${DJANGO_SUPERUSER_PASSWORD}
-      DJANGO_SUPERUSER_USERNAME: ${DJANGO_SUPERUSER_USERNAME}
-      DJANGO_SUPERUSER_EMAIL: ${DJANGO_SUPERUSER_EMAIL}
 
-      SOCIAL_AUTH_ARCGIS_KEY: ${SOCIAL_AUTH_ARCGIS_KEY}
-      SOCIAL_AUTH_ARCGIS_SECRET: ${SOCIAL_AUTH_ARCGIS_SECRET}
-      SOCIAL_AUTH_ARCGIS_URL: ${SOCIAL_AUTH_ARCGIS_URL}
-      ARCGIS_USER_ROLE: ${ARCGIS_USER_ROLE}
       USE_SERVICE_USAGE_REPORT: ${USE_SERVICE_USAGE_REPORT}
     command: /start
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import http.client; c = http.client.HTTPConnection('127.0.0.1', 8080, timeout=5); c.request('GET', '/enterpriseviz/login/'); c.getresponse()"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     ports:
       - 8080:8080
-      - 2222:2222
 
-  rabbit:
-    image: rabbitmq:3-management
-    container_name: rabbit
-    hostname: rabbit
-    environment:
-      - RABBITMQ_DEFAULT_USER=admin
-      - RABBITMQ_DEFAULT_PASS=admin
-      - RABBITMQ_DEFAULT_VHOST=/
-    ports:
-      - "5682:5672"
-      - "15682:15672"
-
-
-  celeryworker:
+  worker:
     <<: *django
     platform: linux/amd64
     image: <imageName>
-    command: /start-celeryworker
+    command: /start-worker
     ports: []
-
-  celerybeat:
-    <<: *django
-    platform: linux/amd64
-    image: <imageName>
-    command: /start-celerybeat
-    ports: []
+    healthcheck:
+      disable: true
+    depends_on:
+      # The django container runs migrate and createcachetable; starting
+      # alongside it means racing app_job and django_cache into existence.
+      django:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 120s

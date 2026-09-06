@@ -12,7 +12,6 @@ handler500 = "app.views.error_500_view"
 
 urlpatterns = [
     path(settings.ADMIN_URL, admin.site.urls),
-    path(r'enterpriseviz/admin/', admin.site.urls),
     path('enterpriseviz', include("app.urls")),
     path(r'enterpriseviz/oauth/', include("social_django.urls", namespace="social")),
 
