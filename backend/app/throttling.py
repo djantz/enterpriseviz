@@ -77,6 +77,10 @@ class FailureLimiter:
         """
         True when any identity has reached the limit.
 
+        Callers should only pass identities the client cannot choose for someone
+        else. A username is not one: counting failures against it lets anyone
+        deny that account the application for a whole window.
+
         A broken or unreachable cache fails open. Failing closed would turn a
         cache outage into a total sign-in outage, which is a worse result than
         briefly losing the limiter; the failure is logged so it is visible.

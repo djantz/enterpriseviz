@@ -48,6 +48,13 @@ class PortalAdmin(SecretFreeAdminMixin, admin.ModelAdmin):
     list_display = ("alias", "url", "portal_type", "auth_method")
     list_filter = ("portal_type", "auth_method")
 
+    def get_readonly_fields(self, request, obj=None):
+        # Changing the URL has to drop the stored secrets, or the next connection sends
+        # them to the new host. PortalCreateForm does that and this form cannot, so on an
+        # existing portal the URL is changed there.
+        fields = super().get_readonly_fields(request, obj)
+        return fields + ("url",) if obj else fields
+
 
 class SiteSettingsAdmin(SecretFreeAdminMixin, admin.ModelAdmin):
     """

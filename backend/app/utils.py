@@ -32,7 +32,7 @@ from itertools import combinations, groupby
 from operator import itemgetter
 from pathlib import Path
 from typing import Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
 from arcgis import gis
@@ -61,8 +61,34 @@ from .models import (Webmap, Service, Layer, App, Portal, SiteSettings,
 logger = logging.getLogger('enterpriseviz.utils')
 
 
+def normalize_portal_url(url):
+    """
+    A portal URL in the form used to compare two of them.
+
+    Scheme and host are case-insensitive and a trailing slash means nothing, so
+    both are folded. The path keeps its case: a Web Adaptor name is part of
+    which portal it is.
+
+    :param url: Portal URL as stored on the model
+    :type url: str
+    :return: Normalized URL
+    :rtype: str
+    """
+    parts = urlsplit((url or "").strip())
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), parts.query, ""))
+
+
 class CredentialManager:
-    """Manages temporary credential storage with encryption and TTL."""
+    """
+    Manages temporary credential storage with encryption and TTL.
+
+    Each handle is bound to the portal the credentials were checked against,
+    by alias and URL. A handle outlives the request that minted it - it waits
+    in a queued job and is re-read by every batch thread - and the portal row
+    can be edited meanwhile. Without the binding, a staff user who repointed the
+    portal's URL while another operator's refresh was queued had that operator's
+    typed password sent to the new host.
+    """
 
     @staticmethod
     def _get_encryption_key():
@@ -107,9 +133,16 @@ class CredentialManager:
         return getattr(settings, "CREDENTIAL_TOKEN_TTL", 900)
 
     @staticmethod
-    def store_credentials(username, password, ttl_seconds=None):
+    def _binding(portal):
+        return {"portal_alias": portal.alias, "portal_url": normalize_portal_url(portal.url)}
+
+    @staticmethod
+    def store_credentials(username, password, *, portal, ttl_seconds=None):
         """
-        Store credentials temporarily with encryption.
+        Store credentials temporarily with encryption, bound to ``portal``.
+
+        Mint the handle for the portal the credentials were just checked
+        against: retrieve_credentials refuses it for any other alias or URL.
 
         The lifetime is a sliding window, not a deadline: retrieve_credentials
         pushes it out on every read. A refresh reconnects to the portal from
@@ -117,6 +150,7 @@ class CredentialManager:
         sign-in form expired mid-run, and the job then failed with "Unable to
         connect" some way into work it had already done.
 
+        :param portal: Portal model instance the credentials belong to
         :return: Unique token to retrieve credentials, or None on failure.
         """
         ttl_seconds = ttl_seconds or CredentialManager._ttl()
@@ -129,7 +163,8 @@ class CredentialManager:
             credential_token = hashlib.sha256(token_data.encode()).hexdigest()
 
             fernet = Fernet(CredentialManager._get_encryption_key())
-            credentials_to_encrypt = f"{username}:{password}"
+            credentials_to_encrypt = json.dumps(
+                {"username": username, "password": password, **CredentialManager._binding(portal)})
             encrypted_data = fernet.encrypt(credentials_to_encrypt.encode())
 
             cache_key = f"portal_creds:{credential_token}"
@@ -143,15 +178,21 @@ class CredentialManager:
             return None
 
     @staticmethod
-    def retrieve_credentials(credential_token):
+    def retrieve_credentials(credential_token, *, portal):
         """
-        Retrieve and decrypt credentials using token.
+        Retrieve and decrypt credentials using token, for use against ``portal``.
 
         Extends the entry's lifetime on the way through, so the credential
         lives as long as something is still using it and expires promptly once
         nothing is. See store_credentials.
 
-        :return: dict {'username': str, 'password': str} or None if not found/expired/decryption error.
+        A handle minted for a different alias or URL is refused and deleted:
+        the portal it was checked against is no longer the one being connected
+        to, so the credentials must not be sent there.
+
+        :param portal: Portal model instance about to receive the credentials
+        :return: dict {'username': str, 'password': str} or None if not found/expired/decryption error
+                 or bound to another portal.
         """
         if not CredentialManager._validate_token(credential_token):
             logger.warning("Invalid credential token format")
@@ -165,19 +206,23 @@ class CredentialManager:
                 logger.warning(f"Credentials not found or expired for token {credential_token[:8]}...")
                 return None
 
+            fernet = Fernet(CredentialManager._get_encryption_key())
+            stored = json.loads(fernet.decrypt(encrypted_data).decode())
+
+            bound = {k: stored.get(k) for k in ("portal_alias", "portal_url")}
+            if bound != CredentialManager._binding(portal):
+                logger.warning(f"Credential token {credential_token[:8]}... was issued for portal "
+                               f"'{bound['portal_alias']}' at {bound['portal_url']}, not "
+                               f"'{portal.alias}' at {normalize_portal_url(portal.url)}; refusing it.")
+                cache.delete(cache_key)
+                return None
+
             try:
                 cache.touch(cache_key, CredentialManager._ttl())
             except Exception as e:
                 logger.warning(f"Could not extend credential lifetime: {e}")
 
-            fernet = Fernet(CredentialManager._get_encryption_key())
-            decrypted_data_bytes = fernet.decrypt(encrypted_data)
-            decrypted_data_str = decrypted_data_bytes.decode()
-
-            # Split on first colon to handle passwords with colons
-            username, password = decrypted_data_str.split(':', 1)
-
-            return {'username': username, 'password': password}
+            return {'username': stored['username'], 'password': stored['password']}
 
         except Exception as e:
             logger.error(
@@ -467,7 +512,7 @@ def connect(portal_model_instance, credential_token=None):
         # Determine credentials to use
         if credential_token:
             # Use temporary credentials from token
-            creds = CredentialManager.retrieve_credentials(credential_token)
+            creds = CredentialManager.retrieve_credentials(credential_token, portal=portal_model_instance)
             if not creds:
                 logger.error(f"Failed to retrieve credentials for portal {portal_model_instance.alias}")
                 raise ConnectionError("Authentication failed. Credentials not found or expired")
@@ -805,6 +850,12 @@ def _ensure_oauth_access_token(portal_model_instance, buffer_seconds=120):
     again. A separate connection commits the moment the exchange succeeds. It also keeps
     the row lock to the length of the refresh instead of the length of the request.
 
+    Nothing is exchanged unless the row lock was actually taken. Holding it is what
+    guarantees the UPDATE that stores the rotated token cannot itself block or time out:
+    exchanging first and discovering afterwards that the row cannot be written loses the
+    only working refresh token, which is the lockout this whole function exists to avoid.
+    A busy row therefore fails the refresh, which the next run retries.
+
     :param portal_model_instance: The Portal model instance configured for OAuth.
     :type portal_model_instance: enterpriseviz.models.Portal
     :param buffer_seconds: Refresh early by this many seconds to avoid mid-task expiry.
@@ -822,13 +873,14 @@ def _ensure_oauth_access_token(portal_model_instance, buffer_seconds=120):
 
     try:
         with transaction.atomic(using=alias):
-            # Bounds every lock this transaction takes, the UPDATE that stores the
-            # token as well as the SELECT below. See _lock_portal_for_refresh.
+            # Bounds the wait for the row lock below, so a row someone else holds
+            # fails this refresh instead of wedging the thread.
             with connections[alias].cursor() as cursor:
                 cursor.execute("SET LOCAL lock_timeout = %s",
                                [f"{settings.OAUTH_LOCK_TIMEOUT}s"])
 
-            locked = _lock_portal_for_refresh(portal_model_instance.pk, alias)
+            locked = Portal.objects.using(alias).select_for_update().get(
+                pk=portal_model_instance.pk)
 
             if _oauth_access_token_is_fresh(locked, buffer_seconds):
                 logger.debug(f"The OAuth token for {locked.alias} was refreshed elsewhere; "
@@ -843,51 +895,18 @@ def _ensure_oauth_access_token(portal_model_instance, buffer_seconds=120):
 
             _copy_oauth_token_state(locked, portal_model_instance)
     except OperationalError:
-        # Only reachable if something else holds the row and never lets go —
-        # in practice a caller that locked the portal itself and is waiting on
-        # us. Failing is the honest outcome; the alternative is a wedged thread.
         logger.error(
-            f"Timed out storing the refreshed OAuth token for "
-            f"'{portal_model_instance.alias}': the portal row is locked by another "
-            f"transaction.", exc_info=True)
+            f"Could not lock portal '{portal_model_instance.alias}' to refresh its OAuth "
+            f"token within {settings.OAUTH_LOCK_TIMEOUT}s; no token was exchanged.",
+            exc_info=True)
         raise ConnectionError(
-            f"Could not store a refreshed OAuth token for portal "
+            f"Could not refresh the OAuth token for portal "
             f"'{portal_model_instance.alias}' because its record was busy. Try again.")
 
     if refresh_error:
         raise refresh_error
 
     return portal_model_instance.token
-
-
-def _lock_portal_for_refresh(portal_pk, alias):
-    """
-    Read the portal row for refreshing, holding its lock where that is possible.
-
-    Bounded by the caller's lock_timeout rather than waiting indefinitely, and
-    read unlocked if that expires. This runs on its own connection, so a row the
-    caller's transaction already holds would otherwise be waited on forever: the
-    replacement views take the portal row as a mutex, and under ATOMIC_REQUESTS
-    they keep it until the response is sent.
-
-    Giving up the lock gives up the serialization, not the correctness. Two
-    refreshes racing means the loser holds a token the portal has invalidated and
-    fails on its next call — one failed operation, against a hung request.
-
-    :return: The Portal row, read on ``alias``.
-    :rtype: enterpriseviz.models.Portal
-    """
-    portals = Portal.objects.using(alias)
-    try:
-        # Nested so a timeout rolls back to this savepoint and leaves the
-        # surrounding transaction usable.
-        with transaction.atomic(using=alias):
-            return portals.select_for_update().get(pk=portal_pk)
-    except OperationalError:
-        logger.warning(
-            f"Could not lock portal '{portal_pk}' to refresh its OAuth token within "
-            f"{settings.OAUTH_LOCK_TIMEOUT}s; refreshing without the lock.")
-        return portals.get(pk=portal_pk)
 
 
 def _update_portal_token_info(portal_model_instance, target_gis_connection):
@@ -1504,6 +1523,51 @@ def epoch_to_date(epoch_ms):
         return None
 
 
+# A service endpoint, optionally with a layer id: https://host/.../<Type>Server[/<n>]. The match against
+# item data is exact, so this only has to turn away input that cannot be a service URL at all.
+_SERVICE_URL_RE = re.compile(r"^https?://[^/\s?#]+(?:/[^/\s?#]+)*/[a-z]+server(?:/\d+)?$", re.IGNORECASE)
+_EMBEDDED_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+
+
+def _normalize_reference_url(url):
+    """A URL as compared by the layer-usage search: no query or fragment, no trailing slash, lower case."""
+    return url.strip().split("#", 1)[0].split("?", 1)[0].rstrip("/").lower()
+
+
+def _referenced_urls(item_data):
+    """
+    Every URL value in an item's data, normalized for comparison.
+
+    Only whole values that are URLs count. The search used to test whether the input
+    appeared anywhere in str(item.get_data()), which made it a substring oracle over the
+    whole item: any signed-in user could confirm, then recover character by character, a
+    value such as an API key embedded in a private app's configuration, read with the
+    portal's stored admin credential. Comparing whole URL values leaves one observable,
+    whether the item references that service or layer.
+
+    :param item_data: Result of Item.get_data(): a dict or list, or text for some item types
+    :return: Normalized URLs
+    :rtype: set
+    """
+    if isinstance(item_data, str):
+        try:
+            item_data = json.loads(item_data)
+        except ValueError:
+            return {_normalize_reference_url(u) for u in _EMBEDDED_URL_RE.findall(item_data)}
+
+    urls = set()
+    stack = [item_data]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+        elif isinstance(value, str) and value.strip().lower().startswith(("http://", "https://")):
+            urls.add(_normalize_reference_url(value))
+    return urls
+
+
 def service_layer_details(portal_model_instance, layer_url_to_find):
     """
     Identifies web maps and apps in a portal that reference a specific layer URL.
@@ -1515,7 +1579,13 @@ def service_layer_details(portal_model_instance, layer_url_to_find):
 
     :param portal_model_instance: Portal model instance to search.
     :type portal_model_instance: enterpriseviz.models.Portal
-    :param layer_url_to_find: URL of the layer to search for (e.g., "https://server/service/MapServer/5").
+    The input must be an ArcGIS REST service or layer URL, and the live fallback
+    compares it with whole URL values in each item's data (see _referenced_urls).
+
+    :param portal_model_instance: Portal model instance to search.
+    :type portal_model_instance: enterpriseviz.models.Portal
+    :param layer_url_to_find: URL of the layer to search for
+        (e.g., "https://server/arcgis/rest/services/Name/MapServer/5").
     :type layer_url_to_find: str
     :return: Dictionary with 'maps' (list of map dicts) and 'apps' (list of app dicts).
              Returns {'error': msg} on failure.
@@ -1524,7 +1594,10 @@ def service_layer_details(portal_model_instance, layer_url_to_find):
     if not layer_url_to_find:
         return {"error": "Layer URL to find cannot be empty."}
 
-    normalized_layer_url = layer_url_to_find.strip().rstrip('/')
+    normalized_layer_url = layer_url_to_find.strip().split("#", 1)[0].split("?", 1)[0].rstrip('/')
+    if not _SERVICE_URL_RE.match(normalized_layer_url):
+        return {"error": "Provide a full service or layer URL, such as "
+                         "https://server/arcgis/rest/services/Name/MapServer/0."}
 
     # Parse the URL to extract service URL and layer ID
     url_parts = normalized_layer_url.split("/")
@@ -1653,11 +1726,11 @@ def service_layer_details(portal_model_instance, layer_url_to_find):
 
             for item in all_relevant_items:
                 try:
-                    item_data_str = str(item.get_data()).lower()
+                    item_urls = _referenced_urls(item.get_data())
 
                     # Check if this item uses the specific layer or the full service
-                    has_specific_layer = normalized_search_url in item_data_str
-                    has_full_service = service_layer_id is not None and normalized_service_url in item_data_str
+                    has_specific_layer = normalized_search_url in item_urls
+                    has_full_service = service_layer_id is not None and normalized_service_url in item_urls
 
                     if has_specific_layer or has_full_service:
                         usage_type = "specific_layer" if has_specific_layer else "full_service"
@@ -4010,6 +4083,8 @@ def process_msd_layers_for_service(service_manifest, service_name, instance_item
                 if not dataset_name:
                     logger.warning(f"No dataset name for layer '{layer_info.layer_name}' in service '{service_name}'")
                     continue
+                if db_server:
+                    dataset_name = unqualified_dataset_name(dataset_name)
 
                 logger.debug(f"Processing layer: {layer_info.layer_name} (dataset: {dataset_name}, service_layer_id: {layer_info.service_layer_id})")
 
@@ -4067,6 +4142,24 @@ def process_msd_layers_for_service(service_manifest, service_name, instance_item
                     logger.debug(f"Cleaned up temporary MSD directory: {temp_dir}")
             except Exception as e:
                 logger.warning(f"Error cleaning up temporary MSD files: {e}")
+
+
+def unqualified_dataset_name(dataset_name):
+    """
+    Strip database and owner/schema qualifiers from an enterprise geodatabase
+    dataset name, e.g. 'GISDB.SDE.Parcels' or 'sde.Parcels' -> 'Parcels'.
+
+    Only call this for enterprise geodatabase datasets; file-based names such
+    as 'roads.shp' contain dots that are not qualifiers.
+
+    :param dataset_name: Dataset name as stored in the MSD or manifest.
+    :type dataset_name: str
+    :return: Table or feature class name only.
+    :rtype: str
+    """
+    if not dataset_name:
+        return dataset_name
+    return dataset_name.rsplit(".", 1)[-1]
 
 
 def _extract_database_info(connection_string):
@@ -4234,6 +4327,47 @@ def _inventory_endpoint(service):
     return urls[0]
 
 
+def _portal_token_may_go_to(portal, url):
+    """
+    True when ``url`` belongs to ``portal``, so its session token may be sent there.
+
+    On ArcGIS Online a service's URL is the item's own url, which whoever owns the item
+    chose: an org member can register a service item pointing at a server they run, and
+    a vendor's or another organization's service gets one pointing at theirs. Sending the
+    portal admin's token to such a URL hands that server an administrator-level token for
+    the org. So on AGOL the URL has to be https and either the portal's own host or an
+    Esri-hosted service under this org's id:
+
+    * ``https://services<n>.arcgis.com/<org_id>/arcgis/rest/services/...``
+    * ``https://tiles<n>.arcgis.com/tiles/<org_id>/arcgis/rest/services/...``
+
+    An unknown org id matches nothing. On Enterprise, service URLs are built from the
+    federated servers' own admin data rather than from item urls, so they are trusted as
+    they always were. A portal whose type is not recorded is treated as AGOL.
+
+    :param portal: Portal model instance whose token would be sent
+    :param url: Destination URL
+    :return: Whether the token may be attached
+    :rtype: bool
+    """
+    if portal.portal_type == "portal":
+        return True
+
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if parts.scheme.lower() != "https" or not host:
+        return False
+    if host == (urlsplit(portal.url or "").hostname or ""):
+        return True
+    if not portal.org_id or not host.endswith(".arcgis.com"):
+        return False
+
+    segments = [s for s in parts.path.split("/") if s]
+    if segments[:1] == ["tiles"]:
+        segments = segments[1:]
+    return segments[:1] == [portal.org_id]
+
+
 def fetch_service_sublayers(service, credential_token=None):
     """
     Sublayer ids and names read from the service's own REST endpoint.
@@ -4248,7 +4382,10 @@ def fetch_service_sublayers(service, credential_token=None):
 
     Only attempted when the portal can authenticate without prompting, or a
     credential token is supplied; the callers fall back to the database rather
-    than making an operator sign in to open a dialog.
+    than making an operator sign in to open a dialog. The same fallback applies
+    to an endpoint that does not belong to the portal: the request carries the
+    portal's token, so it is only made where _portal_token_may_go_to allows,
+    and never follows a redirect, which would carry the header along.
 
     :param service: Service model instance
     :param credential_token: Optional temporary credential token
@@ -4271,12 +4408,18 @@ def fetch_service_sublayers(service, credential_token=None):
 
     try:
         target = connect(portal, credential_token)
+        # After connect, which records an AGOL portal's org id on first use.
+        if not _portal_token_may_go_to(portal, url):
+            logger.warning(f"Not reading a sublayer inventory from '{url}': it is not a service "
+                           f"of portal '{portal.alias}', so its token is not sent there.")
+            return None
         token = getattr(getattr(target, "_con", None), "token", None)
         headers = {"Accept": "application/json"}
         if token:
             headers["X-Esri-Authorization"] = f"Bearer {token}"
+        # requests strips Authorization on a cross-host redirect, but not this header.
         response = requests.get(url, headers=headers, params={"f": "json"},
-                                timeout=10, verify=portal_verify_tls())
+                                timeout=10, verify=portal_verify_tls(), allow_redirects=False)
         if response.status_code != 200:
             logger.warning(f"Sublayer inventory for '{url}' returned HTTP {response.status_code}")
             return None
@@ -5733,7 +5876,7 @@ def resolve_replacement_credentials(request, portal, job_id=None):
             return {"token": None, "prompt": True,
                     "error": auth_result.get("error", "Authentication failed. Please verify credentials.")}
         token = CredentialManager.store_credentials(
-            username, password, ttl_seconds=REPLACEMENT_CREDENTIAL_TTL_SECONDS)
+            username, password, portal=portal, ttl_seconds=REPLACEMENT_CREDENTIAL_TTL_SECONDS)
         if not token:
             return {"token": None, "prompt": True,
                     "error": "Failed to store credentials. Please try again."}
@@ -5743,7 +5886,7 @@ def resolve_replacement_credentials(request, portal, job_id=None):
 
     if job_id:
         token = cache.get(f"replace_job_creds:{job_id}:{request.user.pk}")
-        if token and CredentialManager.retrieve_credentials(token):
+        if token and CredentialManager.retrieve_credentials(token, portal=portal):
             return {"token": token, "prompt": False, "error": None}
 
     return {"token": None, "prompt": True, "error": None}

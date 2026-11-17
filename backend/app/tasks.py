@@ -919,6 +919,8 @@ def process_databases(manifest, regex_patterns, instance_item, s_obj, update_tim
             dataset_name = dataset.get("onServerName")
             if not dataset_name:
                 continue
+            if db_server:
+                dataset_name = utils.unqualified_dataset_name(dataset_name)
             layer_obj, _ = Layer.objects.update_or_create(
                 portal_instance=instance_item,
                 layer_server=db_server,
@@ -3496,8 +3498,21 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
                     # Priority order when a user has more than one core level.
                     pro_levels = ('desktopAdvN', 'desktopStdN', 'desktopBasicN')
 
-                    for db_user in User.objects.filter(portal_instance=instance_item):
-                        username = db_user.user_username
+                    entitlement_users = list(
+                        User.objects.filter(portal_instance=instance_item)
+                        .values_list("user_username", flat=True))
+                    entitlement_total = len(entitlement_users)
+
+                    # One portal request per user; the endpoint has no bulk form.
+                    for index, username in enumerate(entitlement_users, start=1):
+                        self.checkpoint()
+                        # Counted against this phase rather than pinned at the
+                        # user total: it is the longest phase in the task, and
+                        # a bar pinned at complete writes on every call.
+                        progress_recorder.set_progress(
+                            index, entitlement_total,
+                            _processed_label(index, entitlement_total,
+                                             "ArcGIS Pro entitlement"))
 
                         # A pool-consumed license from the report takes precedence.
                         if username in pro_licenses:
@@ -3517,6 +3532,8 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
                                 'license_type': license_type,
                                 'last_used': last_login,
                             }
+                except (JobCanceled, JobDeadlineExceeded):
+                    raise
                 except Exception as e:
                     logger.error(f"Error retrieving user-type license entitlements: {e}", exc_info=True)
                     result.add_error("Error retrieving user-type license entitlements")
@@ -3568,6 +3585,8 @@ def update_users(self, instance_alias, full_refresh=False, credential_token=None
             else:
                 logger.warning("ArcGIS Pro license information was unavailable or incomplete; "
                                "stored licenses left as they were")
+        except (JobCanceled, JobDeadlineExceeded):
+            raise
         except Exception as e:
             logger.error(f"Error retrieving ArcGIS Pro license information: {e}", exc_info=True)
             result.add_error("Error retrieving ArcGIS Pro license information")
@@ -3987,7 +4006,7 @@ def process_service(self, instance_alias, item, operation):
 
         server_admin = None
         for server in servers:
-            if server.services.exists(folder=folder_name, name=service_name, service_type=service_type):
+            if server.services.exists(folder_name=folder_name, name=service_name, service_type=service_type):
                 server_admin = server
                 break
         if server_admin is None:
@@ -4422,7 +4441,7 @@ def _send_admin_notification(tool_result, portal_instance):
         return False
 
 
-@task(name="Pro License Tool", portal_arg="portal_alias", rerunnable=False)
+@task(name="Pro License Tool", portal_arg="portal_alias", rerunnable=False, time_limit=6000)
 def process_pro_license_task(self, portal_alias: str, duration_days: int, warning_days: int):
     """Process Pro License management."""
     start_time = time.time()
@@ -4448,11 +4467,15 @@ def process_pro_license_task(self, portal_alias: str, duration_days: int, warnin
                 progress_recorder.set_progress(100, 100, "Failed to get users")
             else:
                 progress_recorder.set_progress(20, 100, f"Processing {len(users)} users")
-                _run_pro_license(target, duration_days, warning_days, users, progress_recorder, tool_result)
+                _run_pro_license(target, duration_days, warning_days, users, progress_recorder,
+                                 tool_result, self)
 
                 tool_result.set_success(tool_result.errors == 0)
                 progress_recorder.set_progress(100, 100, f"Completed: {tool_result.actions_taken} actions")
                 logger.info(f"[{portal_alias}] Pro License Tool completed in {tool_result.execution_time:.2f}s")
+
+    except (JobCanceled, JobDeadlineExceeded):
+        raise
 
     except Exception as e:
         logger.error(f"Pro License Tool failed: {e}")
@@ -4466,7 +4489,7 @@ def process_pro_license_task(self, portal_alias: str, duration_days: int, warnin
     return tool_result.to_dict()
 
 
-@task(name="Inactive User Tool", portal_arg="portal_alias", rerunnable=False)
+@task(name="Inactive User Tool", portal_arg="portal_alias", rerunnable=False, time_limit=6000)
 def process_inactive_user_task(self, portal_alias: str, duration_days: int, warning_days: int, action: str):
     """Process inactive user management."""
     start_time = time.time()
@@ -4494,11 +4517,14 @@ def process_inactive_user_task(self, portal_alias: str, duration_days: int, warn
                 progress_recorder.set_progress(20, 100, f"Processing {len(users)} users")
                 _run_inactive_user(target, duration_days, warning_days, action,
                                    portal_instance.username, users, progress_recorder, tool_result,
-                                   portal_instance)
+                                   self, portal_instance)
 
                 tool_result.set_success(tool_result.errors == 0)
                 progress_recorder.set_progress(100, 100, f"Completed: {tool_result.actions_taken} actions")
                 logger.info(f"[{portal_alias}] Inactive User Tool completed in {tool_result.execution_time:.2f}s")
+
+    except (JobCanceled, JobDeadlineExceeded):
+        raise
 
     except Exception as e:
         err = f"Inactive User Tool failed: {e}"
@@ -4513,7 +4539,7 @@ def process_inactive_user_task(self, portal_alias: str, duration_days: int, warn
     return tool_result.to_dict()
 
 
-@task(name="Public Sharing Tool", portal_arg="portal_alias", rerunnable=False)
+@task(name="Public Sharing Tool", portal_arg="portal_alias", rerunnable=False, time_limit=6000)
 def process_public_unshare_task(self, portal_alias: str, score_threshold: int = None, item_id: str = None):
     """Process public unshare task - either for a specific item or all public items."""
     start_time = time.time()
@@ -4568,7 +4594,7 @@ def process_public_unshare_task(self, portal_alias: str, score_threshold: int = 
         portal_info = _get_portal_info(target)
         user_items = _process_public_items(
             items, score_threshold, portal_info, target,
-            tool_result, progress_recorder, is_webhook, portal_instance
+            tool_result, progress_recorder, is_webhook, portal_instance, self
         )
 
         # Send notifications (scheduled only sends batch notifications)
@@ -4579,6 +4605,9 @@ def process_public_unshare_task(self, portal_alias: str, score_threshold: int = 
         tool_result.set_success(tool_result.errors == 0)
         progress_recorder.set_progress(100, 100, f"Completed: {tool_result.actions_taken} actions")
         logger.info(f"[{portal_alias}] Public Unshare Tool completed in {tool_result.execution_time:.2f}s")
+
+    except (JobCanceled, JobDeadlineExceeded):
+        raise
 
     except Exception as e:
         err = f"Public Unshare Tool failed: {e}"
@@ -4593,7 +4622,7 @@ def process_public_unshare_task(self, portal_alias: str, score_threshold: int = 
     return tool_result.to_dict()
 
 
-def _run_pro_license(target, duration_days, warning_days, users, recorder, tool_result):
+def _run_pro_license(target, duration_days, warning_days, users, recorder, tool_result, context):
     """Pro License tool implementation."""
     params = {"duration_days": duration_days, "warning_days": warning_days}
     if not _validate_params(params, ["duration_days", "warning_days"], tool_result):
@@ -4602,17 +4631,18 @@ def _run_pro_license(target, duration_days, warning_days, users, recorder, tool_
     cutoffs = _calc_cutoffs(duration_days, warning_days)
     portal_info = _get_portal_info(target)
 
-    _process_pro_users(target, users, cutoffs, portal_info, tool_result, recorder)
+    _process_pro_users(target, users, cutoffs, portal_info, tool_result, recorder, context)
     _log_completion(tool_result)
 
 
-def _process_pro_users(target, users, cutoffs, portal_info, tool_result, recorder):
+def _process_pro_users(target, users, cutoffs, portal_info, tool_result, recorder, context):
     """Process users for Pro License management."""
     action_cutoff, warning_cutoff = cutoffs
     portal_name, portal_url = portal_info
     total = len(users)
 
     for i, user in enumerate(users):
+        context.checkpoint()
         progress = 20 + int((i / total) * 75)
         recorder.set_progress(progress, 100, f"Checking: {user.username}")
 
@@ -4753,13 +4783,14 @@ def _get_items_for_processing(target, item_id, tool_result):
 
 
 def _process_public_items(items, threshold, portal_info, target, tool_result,
-                          progress_recorder, is_webhook, portal_instance):
+                          progress_recorder, is_webhook, portal_instance, context):
     """Process public items with different behavior for webhook vs scheduled."""
     user_items = {} if not is_webhook else None
     total = len(items)
     portal_name, portal_url = portal_info
 
     for i, item in enumerate(items):
+        context.checkpoint()
         progress = 20 + int((i / total) * (65 if not is_webhook else 75))
         progress_recorder.set_progress(progress, 100, f"Checking: {item.title[:30]}...")
 
@@ -4886,7 +4917,7 @@ Portal: {portal_url}"""
 
 
 def _run_inactive_user(target, duration_days, warning_days, action, admin_username, users, recorder, tool_result,
-                       portal_instance=None):
+                       context, portal_instance=None):
     """Inactive User tool implementation."""
     params = {"duration_days": duration_days, "warning_days": warning_days, "action": action}
     if not _validate_params(params, ["duration_days", "warning_days", "action"], tool_result):
@@ -4894,7 +4925,7 @@ def _run_inactive_user(target, duration_days, warning_days, action, admin_userna
 
     cutoffs = _calc_cutoffs(duration_days, warning_days)
     _process_inactive_users(target, users, cutoffs, action, admin_username, tool_result, recorder,
-                            portal_instance)
+                            context, portal_instance)
     _log_completion(tool_result)
 
 
@@ -4944,7 +4975,7 @@ def _inactive_action_cap(total_users, portal_instance=None):
 
 
 def _process_inactive_users(target, users, cutoffs, action, admin_username, tool_result, recorder,
-                            portal_instance=None):
+                            context, portal_instance=None):
     """Process users for inactivity."""
     action_cutoff, warning_cutoff = cutoffs
     portal_info = _get_portal_info(target)
@@ -4955,6 +4986,7 @@ def _process_inactive_users(target, users, cutoffs, action, admin_username, tool
     cap_reported = False
 
     for i, user in enumerate(users):
+        context.checkpoint()
         progress = 20 + int((i / total) * 75)
         recorder.set_progress(progress, 100, f"Checking: {user.username}")
 

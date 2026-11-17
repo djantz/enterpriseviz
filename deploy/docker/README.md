@@ -164,8 +164,8 @@ alone.
 
 Static assets are the exception. `local.py` prepends
 `whitenoise.runserver_nostatic`, so WhiteNoise serves `/static` from
-`STATIC_ROOT` the same way it does in production, and edits to `app/static/`
-appear once collected:
+`STATIC_ROOT` the same way it does in production. `/start` collects them on
+boot; later edits to `app/static/` appear once collected again:
 
 ```bash
 docker compose -f local.yml run --rm django python manage.py collectstatic --noinput
@@ -257,7 +257,7 @@ And give these forwarded variables a value:
 |---|---|
 | `DJANGO_ALLOWED_HOSTS` | Empty falls back to `localhost` and `127.0.0.1`, which rejects every other hostname with a 400. |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | Scheme and host of the site, including a non-default port. Required whenever a proxy terminates TLS, or every form submission fails CSRF. |
-| `DJANGO_USE_X_FORWARDED_PROTO` | Leave `False` unless a proxy overwrites the header. Left `False` *behind* a TLS-terminating proxy, `SECURE_SSL_REDIRECT` never sees a secure request and the site redirects to itself forever. |
+| `DJANGO_USE_X_FORWARDED_PROTO` | Leave `False` unless a proxy overwrites the header. `SECURE_SSL_REDIRECT` defaults to this, so leaving it off leaves the HTTPS redirect to the proxy rather than looping on a scheme Django cannot see. |
 
 See [TLS and the reverse proxy](#tls-and-the-reverse-proxy) for what
 `DJANGO_USE_X_FORWARDED_PROTO` and `TRUSTED_PROXY_COUNT` each require of the
@@ -269,18 +269,14 @@ secret in its environment. See
 
 ### Static files
 
-Static files must be collected as part of the build or the start-up. Add this to
-`compose/production/django/start`, above the waitress line:
+`compose/production/django/start` runs `collectstatic --noinput` on every boot,
+after `migrate` and `createcachetable`.
 
-```bash
-python /app/manage.py collectstatic --noinput
-```
-
-Nothing does this today: neither the Dockerfile nor the production start script
-runs `collectstatic`, and `backend/staticfiles/` is git-ignored, so a clean clone
-builds an image with no static manifest. `production.py` uses WhiteNoise's
-`CompressedManifestStaticFilesStorage`, which raises instead of falling back, and
-every page then returns 500 with `Missing staticfiles manifest entry`.
+It has to. `backend/staticfiles/` is git-ignored, so a clean clone builds an
+image with no static manifest, and `production.py` uses WhiteNoise's
+`CompressedManifestStaticFilesStorage`, which raises instead of falling back:
+without the manifest every page returns 500 with `Missing staticfiles manifest
+entry`.
 
 Once the manifest exists WhiteNoise serves `/static` from inside Django, so
 nothing in front needs a static handler.
@@ -322,7 +318,9 @@ The same applies to `X-Forwarded-For`. Set `TRUSTED_PROXY_COUNT` to the number
 of proxies that append to it — `1` behind a single reverse proxy — so the
 sign-in throttle and `LogEntry.client_ip` read the address your proxy saw. At
 the default of `0` the header is ignored and the peer address is used, which is
-right when the container is reached directly. Every entry you claim to trust is
+right when the container is reached directly. Behind a proxy, `0` means every
+client arrives from the proxy's address and shares one throttle, so one
+client's failed sign-ins lock out everyone. Every entry you claim to trust is
 one an attacker can supply.
 
 ### First administrator
@@ -359,7 +357,7 @@ portal credentials. See [Encryption keys](../../README.md#encryption-keys).
 | **Credential-prompt refreshes fail** | The `django_cache` table is missing. Run `manage.py createcachetable`. |
 | **The worker crash-loops on startup** | It started before `migrate` created `app_job`. `depends_on` waits for the django container's healthcheck; check that container first. |
 | **`ImproperlyConfigured`, e.g. `DJANGO_SECRET_KEY`** | The variable is absent, or the file was added after the containers started. Recreate them with `up -d --force-recreate`. |
-| **500 on every page, `Missing staticfiles manifest entry`** | `collectstatic` has not run. See [Static files](#static-files). |
+| **500 on every page, `Missing staticfiles manifest entry`** | `collectstatic` failed or was skipped on boot. Check `logs django` and see [Static files](#static-files). |
 | **No ArcGIS button on the login page** | No organization URL is configured. Sign in with the superuser and set it under Settings > ArcGIS Sign-In. |
 | **Login bounces back to login, no error** | Secure cookies over plain HTTP. See [TLS and the reverse proxy](#tls-and-the-reverse-proxy). |
 | **Port 80 already in use** | Change the `django` port mapping in `local.yml`, set `DJANGO_CSRF_TRUSTED_ORIGINS` to match, and update the portal's registered redirect URI. |

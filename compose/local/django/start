@@ -8,4 +8,8 @@ python manage.py migrate
 
 python manage.py createcachetable
 
+# local.py prepends whitenoise.runserver_nostatic, so /static is served from
+# STATIC_ROOT here as well as in production and a clean clone has nothing there.
+python manage.py collectstatic --noinput
+
 exec python manage.py runserver 0.0.0.0:8000

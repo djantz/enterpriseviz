@@ -27,11 +27,13 @@ def client_ip(request):
     this deployment, and only that many entries are believed:
 
     * ``0`` (the default) — nothing in front adds the header, so it is ignored
-      entirely and REMOTE_ADDR is the answer. This is right for the IIS layout,
-      where HttpPlatformHandler proxies from loopback and sets no XFF, and for
-      any container reached directly.
+      entirely and REMOTE_ADDR is the answer. This is right for a container
+      reached directly. It is wrong behind any proxy, where REMOTE_ADDR is the
+      proxy and every client shares one throttle bucket.
     * ``1`` — one reverse proxy, which appends the peer it saw. The last entry
-      is that address; earlier ones came from the client.
+      is that address; earlier ones came from the client. This is the IIS
+      layout: HttpPlatformHandler connects from loopback, and the URL Rewrite
+      rule in deploy/iis/web.config overwrites the header with the real peer.
     * ``n`` — the nth entry from the right, for a chain of n proxies you run.
 
     A value that is not an address is discarded rather than passed on. It ends up

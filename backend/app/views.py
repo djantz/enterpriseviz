@@ -959,6 +959,49 @@ def _privilege_warning(username, absent):
             f"{', '.join(absent)}. Content updates will fail until the account's role grants them.")
 
 
+def _validate_portal_credentials(portal, form):
+    """
+    Check credentials submitted for a portal and mint a temporary token for them.
+
+    Shared by the two views that prompt for credentials before starting work
+    against a portal. Failures are added to ``form``, so a caller only has to
+    decide how to re-render it.
+
+    :param portal: Portal model instance the credentials are for
+    :param form: A valid PortalCredentialsForm carrying username and password
+    :return: (credential token, error message) - exactly one of the two is set
+    :rtype: tuple
+    """
+    username = form.cleaned_data['username']
+    password = form.cleaned_data['password']
+
+    logger.debug(f"Testing auth for {portal.alias} with user {username[0] if username else ''}...")
+    auth_result = utils.try_connection(
+        {'username': username, 'password': password, 'url': portal.url})
+
+    if not auth_result.get("authenticated", False):
+        logger.warning(f"Auth failed for {portal.alias} during form submission.")
+        message = auth_result.get("error", "Authentication failed. Please verify credentials.")
+        form.add_error('password', message)
+        return None, "Authentication failed. Please verify credentials."
+
+    logger.info(f"Authenticated to {portal.alias} as {username}")
+
+    if portal.portal_type is None and auth_result.get("is_agol") is not None:
+        portal.portal_type = "agol" if auth_result["is_agol"] else "portal"
+        portal.save(update_fields=['portal_type'])
+
+    credential_token = utils.CredentialManager.store_credentials(username, password, portal=portal)
+    if not credential_token:
+        logger.error(f"Failed to store temporary credentials for {portal.alias}.")
+        message = "System error: Failed to secure credentials."
+        form.add_error(None, message)
+        return None, message
+
+    logger.debug(f"Credential token generated for {portal.alias}: {credential_token[:8]}...")
+    return credential_token, None
+
+
 def _needs_oauth_connect(portal):
     """True when a portal is set to OAuth but has no usable authorization."""
     return portal.auth_method == "oauth" and portal.oauth_needs_reconsent
@@ -1255,54 +1298,20 @@ def refresh_portal_view(request):
             )
 
             if form.is_valid():
-                username = form.cleaned_data['username']
-                password = form.cleaned_data['password']
-
-                # Test connection
-                logger.debug(f"Testing auth for {portal.alias} with user {username[0] if username else ''}...")
-                auth_payload = {'username': username, 'password': password, 'url': portal.url}
-                auth_result = utils.try_connection(auth_payload)
-
-                # When credentials fail during form submission
-                if not auth_result.get("authenticated", False):
-                    logger.warning(f"Auth failed for {portal.alias} during form submission.")
-                    form.add_error('password',
-                                   auth_result.get("error", "Authentication failed. Please verify credentials."))
+                credential_token, cred_error = _validate_portal_credentials(portal, form)
+                if not credential_token:
                     context = {
                         "form": form,
                         "instance": portal,
                         "items": items_to_refresh,
                         "full_refresh": full_refresh,
-                        "error_message": "Authentication failed. Please verify credentials."
+                        "error_message": cred_error
                     }
                     response = render(request, "partials/portal_credentials_form.html", context)
                     # Retarget to the credentials modal container
                     response["HX-Retarget"] = "#credentials-form-container"
                     response["HX-Reswap"] = "innerHTML"
                     return response
-
-                # Store credentials
-                logger.info(f"Authenticated to {portal.alias} as {username}")
-
-                # Update portal type if needed
-                if portal.portal_type is None and auth_result.get("is_agol") is not None:
-                    portal.portal_type = "agol" if auth_result["is_agol"] else "portal"
-                    portal.save(update_fields=['portal_type'])
-
-                credential_token = utils.CredentialManager.store_credentials(username, password)
-                if not credential_token:
-                    logger.error(f"Failed to store temporary credentials for {portal.alias}.")
-                    form.add_error(None, "System error: Failed to secure credentials.")
-                    context = {
-                        "form": form,
-                        "instance": portal,
-                        "items": items_to_refresh,
-                        "full_refresh": full_refresh,
-                        "error_message": "System error: Failed to secure credentials."
-                    }
-                    return render(request, "portals/portal_credentials.html", context, status=200)
-
-                logger.debug(f"Credential token generated for {portal.alias}: {credential_token[:8]}...")
 
             else:
                 # Form validation failed
@@ -1676,9 +1685,12 @@ def login_view(request):
     form = AuthenticationForm(request, data=request.POST if request.method == "POST" else None)
     if request.method == "POST":
         attempted_username = (request.POST.get("username") or "").strip().lower()
+        # Counted per source address only. Counting per username as well would
+        # let anyone lock a named account out of the application for the length
+        # of the window by failing against it from anywhere.
         ip = client_ip(request)
 
-        if login_limiter.is_blocked(attempted_username, ip):
+        if login_limiter.is_blocked(ip):
             logger.warning(f"Login throttled for '{attempted_username}' from {ip}.")
             messages.error(request, "Too many failed sign-in attempts. Please try again later.")
             return render(request, "app/login.html",
@@ -1690,13 +1702,13 @@ def login_view(request):
             user = form.get_user()
 
             if user is not None:
-                login_limiter.reset(attempted_username, ip)
+                login_limiter.reset(ip)
                 login(request, user)
                 messages.success(request, f"Welcome back, {username}!")
                 logger.info(f"User '{username}' logged in successfully.")
                 return redirect("/enterpriseviz/")
         else:
-            login_limiter.record_failure(attempted_username, ip)
+            login_limiter.record_failure(ip)
             logger.warning(f"Login form invalid: {form.errors.as_json()}")
             messages.error(request, "Invalid username or password.")
 
@@ -2138,47 +2150,15 @@ def metadata_view(request, instance):
             )
 
             if form.is_valid():
-                username = form.cleaned_data['username']
-                password = form.cleaned_data['password']
-
-                # Test connection
-                logger.debug(f"Testing auth for {portal.alias} with user {username[0] if username else ''}...")
-                auth_payload = {'username': username, 'password': password, 'url': portal.url}
-                auth_result = utils.try_connection(auth_payload)
-
-                if not auth_result.get("authenticated", False):
-                    logger.warning(f"Auth failed for {portal.alias} during form submission.")
-                    form.add_error('password',
-                                   auth_result.get("error", "Authentication failed. Please verify credentials."))
-                    context = {
-                        "form": form,
-                        "instance": portal,
-                        "items": "metadata",
-                        "error_message": "Authentication failed. Please verify credentials."
-                    }
-                    return render(request, "portals/portal_credentials.html", context, status=200)
-
-                # Store credentials
-                logger.info(f"Authenticated to {portal.alias} as {username}")
-
-                # Update portal type if needed
-                if portal.portal_type is None and auth_result.get("is_agol") is not None:
-                    portal.portal_type = "agol" if auth_result["is_agol"] else "portal"
-                    portal.save(update_fields=['portal_type'])
-
-                credential_token = utils.CredentialManager.store_credentials(username, password)
+                credential_token, cred_error = _validate_portal_credentials(portal, form)
                 if not credential_token:
-                    logger.error(f"Failed to store temporary credentials for {portal.alias}.")
-                    form.add_error(None, "System error: Failed to secure credentials.")
                     context = {
                         "form": form,
                         "instance": portal,
                         "items": "metadata",
-                        "error_message": "System error: Failed to secure credentials."
+                        "error_message": cred_error
                     }
                     return render(request, "portals/portal_credentials.html", context, status=200)
-
-                logger.debug(f"Credential token generated for {portal.alias}: {credential_token[:8]}...")
 
             else:
                 # Form validation failed
@@ -2306,6 +2286,36 @@ def usage_toggle_view(request):
         return JsonResponse({"error": "Failed to toggle usage setting."}, status=500)
 
 
+def _webhook_job_events(events):
+    """
+    Reduce a payload's events to the fields the handlers read.
+
+    The whole payload would otherwise be stored verbatim in Job.args and kept
+    for the job retention window, so a burst of large payloads grows the job
+    table by everything the portal chose to send.
+
+    :param events: The payload's ``events`` array.
+    :return: The same events carrying only source, operation, id and the
+             sharedToGroups property the public-sharing check looks at.
+    :rtype: list
+    """
+    trimmed = []
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        kept = {
+            "source": event.get("source"),
+            "operation": event.get("operation"),
+            "id": event.get("id"),
+        }
+        properties = event.get("properties")
+        shared_to_groups = properties.get("sharedToGroups") if isinstance(properties, dict) else None
+        if shared_to_groups:
+            kept["properties"] = {"sharedToGroups": shared_to_groups}
+        trimmed.append(kept)
+    return trimmed
+
+
 @require_POST
 @csrf_exempt
 @login_not_required
@@ -2389,7 +2399,7 @@ def webhook_view(request):
         logger.warning(f"Unknown portal URL received: {portal_url}")
         return JsonResponse({"error": "Unknown portal"}, status=404)
 
-    events = payload.get("events", [])
+    events = _webhook_job_events(payload.get("events", []))
     if not events:
         logger.debug(f"Webhook payload for {portal_url} carried no events.")
         return JsonResponse({"message": "Webhook received successfully"}, status=200)

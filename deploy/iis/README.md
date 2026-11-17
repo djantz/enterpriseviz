@@ -38,7 +38,8 @@ Run every PowerShell block in this document from an elevated session.
 |-------------------------|----------------------------------------------------------------------|
 | Python 3.11 (64-bit)    | See the note below.                                                  |
 | IIS                     | With the Application Initialization feature, used for preload.       |
-| HttpPlatformHandler 1.2 | Starts and supervises the Python process. The only IIS extension this deployment requires. [Download](https://www.iis.net/downloads/microsoft/httpplatformhandler) |
+| HttpPlatformHandler 1.2 | Starts and supervises the Python process. [Download](https://www.iis.net/downloads/microsoft/httpplatformhandler) |
+| URL Rewrite 2.1         | Passes the client's address to Django. See [Giving Django the client's address](#giving-django-the-clients-address). [Download](https://www.iis.net/downloads/microsoft/url-rewrite) |
 | PostgreSQL              | Reachable from this host, on it or elsewhere.                        |
 | Service account         | Runs both the app pool and the worker task. See [Service account](#8-service-account). |
 
@@ -57,15 +58,16 @@ Install-WindowsFeature -Name `
     Web-Filtering, Web-Static-Content, Web-Mgmt-Console
 ```
 
-Install HttpPlatformHandler from the link above, then confirm it registered:
+Install HttpPlatformHandler and URL Rewrite from the links above, then confirm
+both registered:
 
 ```powershell
-Get-WebGlobalModule | Where-Object Name -eq 'httpPlatformHandler'
+Get-WebGlobalModule | Where-Object Name -in 'httpPlatformHandler', 'RewriteModule'
 ```
 
-Empty output means it is unavailable to IIS, and the `<httpPlatform>` section in
-`web.config` will be an unrecognised section — IIS starts no Python process and
-serves a 500.19 for every request. An MSI that appears to succeed but registers
+Two rows are expected. A missing one is unavailable to IIS, and its section in
+`web.config` (`<httpPlatform>` or `<rewrite>`) will be unrecognised — IIS starts
+no Python process and serves a 500.19 for every request. An MSI that appears to succeed but registers
 nothing usually ran against a machine where the IIS role was added afterwards;
 reinstall it.
 
@@ -141,16 +143,18 @@ CREDENTIAL_ENCRYPTION_KEY=<Fernet key, see below>
 # must carry the scheme and any non-default port. See section 6.
 DJANGO_SECURE_SSL_REDIRECT=False
 
-# Leave both of these alone under the layout in this guide.
-#
-# HttpPlatformHandler forwards the client's headers as it received them and adds
-# none of its own, so an X-Forwarded-Proto or X-Forwarded-For arriving here came
-# from the client and is worth exactly nothing. Turning either on without a
-# proxy rule that OVERWRITES the header lets a caller declare its own request
-# secure, and pick its own address for the sign-in throttle and the audit log.
+# HttpPlatformHandler connects to waitress from 127.0.0.1, so without this every
+# visitor has the same address and one client's failed sign-ins lock out
+# everyone. The rewrite rule in web.config overwrites X-Forwarded-For with the
+# real peer; this tells Django to read it. Set the two together, or neither:
+# without the rule the header is whatever the caller sent. See section 6.
+TRUSTED_PROXY_COUNT=1
+
+# Leave this alone unless you add the rule in section 6 that sets it. A forwarded
+# header arriving without a rule that OVERWRITES it came from the client, and
+# turning this on would let a caller declare its own request secure.
 #
 # DJANGO_USE_X_FORWARDED_PROTO=True   # only with the URL Rewrite rule in section 6
-# TRUSTED_PROXY_COUNT=1               # only with ARR, see the appendix
 
 # TLS verification for every connection to a portal. Python does not read the
 # Windows certificate store, so a portal issued by an internal CA needs the
@@ -331,6 +335,50 @@ Each of those app-pool settings matters:
 | Identity              | Domain account  | See [Service account](#8-service-account).                                                            |
 | Preload Enabled       | True            | Warms the process after a recycle or reboot.                                                          |
 
+### Giving Django the client's address
+
+HttpPlatformHandler connects to waitress from `127.0.0.1`, so every request
+reaches Django from the same address. The sign-in throttle (10 failures per 15
+minutes) and the webhook throttle (20 per 5 minutes) count per address, so
+without the client's address they count every visitor as one: anyone can lock
+the whole site out of the sign-in page, or block the portal's webhooks, with a
+handful of bad requests. `LogEntry.client_ip` also records `127.0.0.1` for
+everything.
+
+The `<rewrite>` rule in `web.config` fixes this by overwriting
+`X-Forwarded-For` with the peer address IIS saw, on every request, and
+`TRUSTED_PROXY_COUNT=1` in `.env` tells Django to read it. Both halves are
+required. The rule without the setting changes nothing, and the setting
+without the rule lets a caller pick its own address.
+
+IIS will not let a rule set a server variable unless it is allow-listed
+first, and **`allowedServerVariables` can only be set at server level**: a
+site granting itself server variables would be a privilege escalation.
+Attempting it per-site fails with:
+
+> This configuration section cannot be used at this path. This happens when the
+> section is locked at a parent level.
+
+So the `-PSPath` must be `MACHINE/WEBROOT/APPHOST` rather than the site:
+
+```powershell
+Add-WebConfiguration -Filter "/system.webServer/rewrite/allowedServerVariables" `
+    -PSPath "MACHINE/WEBROOT/APPHOST" `
+    -Value @{name="HTTP_X_FORWARDED_FOR"}
+```
+
+Or in IIS Manager: select the **server** node, then *URL Rewrite → View Server
+Variables → Add*.
+
+Do this before copying `web.config` into place. Until the variable is
+allow-listed IIS cannot resolve the rule and refuses the whole file with a
+500.19, which is loud on purpose: the alternative failure, a site that runs with
+every client sharing one throttle, gives no sign that anything is wrong.
+
+If the host will not allow a server-level change, remove the `<rewrite>` block
+**and** set `TRUSTED_PROXY_COUNT=0`, and accept that the throttles are shared
+by every client. Never keep `TRUSTED_PROXY_COUNT=1` without the rule.
+
 ### Telling Django the request was HTTPS
 
 HttpPlatformHandler forwards to `127.0.0.1` over plain HTTP, so Django cannot
@@ -371,16 +419,9 @@ Both halves are required. Django ignores the header unless
 `DJANGO_USE_X_FORWARDED_PROTO=True` is in `.env`, and that setting is unsafe
 without the rule below — so set the two together, or neither.
 
-Two costs. URL Rewrite becomes a second required IIS extension, and IIS will not
-let a rule set a server variable unless it is allow-listed first —
-**`allowedServerVariables` can only be set at server level**, because a site
-granting itself server variables would be a privilege escalation. Attempting it
-per-site fails with:
-
-> This configuration section cannot be used at this path. This happens when the
-> section is locked at a parent level.
-
-So the `-PSPath` must be `MACHINE/WEBROOT/APPHOST` rather than the site:
+URL Rewrite is already installed for
+[the client's address](#giving-django-the-clients-address). This needs a second
+server variable allow-listed the same way, at server level:
 
 ```powershell
 Add-WebConfiguration -Filter "/system.webServer/rewrite/allowedServerVariables" `
@@ -388,14 +429,11 @@ Add-WebConfiguration -Filter "/system.webServer/rewrite/allowedServerVariables" 
     -Value @{name="HTTP_X_FORWARDED_PROTO"}
 ```
 
-Or in IIS Manager: select the **server** node, then *URL Rewrite → View Server
-Variables → Add*.
-
-That is a server-wide change affecting every site on the machine, and is often
-refused outright on a shared or locked-down host — which is why the `.env`
-approach above is the default here. Add a `<rewrite>` block to `web.config` only
-after the variable is allow-listed; a section IIS cannot resolve makes the whole
-file fail to load.
+Then add rules to the `<rewrite>` block in `web.config` that set it, only after
+the variable is allow-listed; a variable IIS cannot resolve makes the whole file
+fail to load. IIS has no server variable that holds the scheme, so this takes
+two rules conditioned on `{HTTPS}`: one sets `https` when it is `on`, the other
+`http` otherwise.
 
 The rule must **set** the variable rather than pass one through, and it must do
 so on *every* request, including the plain-HTTP ones. HttpPlatformHandler
@@ -581,6 +619,9 @@ Then, in order:
 - [ ] No redirect loop and no mixed-content warnings.
 - [ ] A POST succeeds — saving a setting is enough. This confirms
       `CSRF_TRUSTED_ORIGINS` carries the right scheme and port.
+- [ ] *Logs* show your workstation's address in the Client IP column, not
+      `127.0.0.1`. This confirms the X-Forwarded-For rule and
+      `TRUSTED_PROXY_COUNT=1` are both in place.
 - [ ] Refresh a portal: the progress bar advances and reaches completion.
 - [ ] **Refresh a portal that prompts for credentials.** This exercises the
       credential handoff from the web process to the worker through the database
@@ -618,6 +659,12 @@ dies is requeued by the next worker after `JOB_HEARTBEAT_TIMEOUT` (default
 300s), so nothing is lost either way.
 
 The same two commands restart both processes after an `.env` edit.
+
+**Upgrading a site installed before the X-Forwarded-For rule.** Install URL
+Rewrite, allow-list `HTTP_X_FORWARDED_FOR`, and then, in that order, add the
+`<rewrite>` block from `deploy\iis\web.config` to the site's `web.config` and
+`TRUSTED_PROXY_COUNT=1` to `.env`. See
+[Giving Django the client's address](#giving-django-the-clients-address).
 
 ---
 

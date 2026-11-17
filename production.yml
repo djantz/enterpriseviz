@@ -24,8 +24,8 @@ services:
       # https://gis.example.com. Unset, every form submission fails CSRF.
       DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS}
       # Set to True only when something in front terminates TLS and overwrites
-      # X-Forwarded-Proto. Left False behind such a proxy, SECURE_SSL_REDIRECT
-      # never sees a secure request and the site redirects to itself forever.
+      # X-Forwarded-Proto. SECURE_SSL_REDIRECT defaults to this, so leaving it
+      # False leaves the HTTPS redirect to the proxy.
       DJANGO_USE_X_FORWARDED_PROTO: ${DJANGO_USE_X_FORWARDED_PROTO}
       # Azure postgres sql
       AZURE_POSTGRESQL_HOST: ${AZURE_POSTGRESQL_HOST}

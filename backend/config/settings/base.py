@@ -150,15 +150,19 @@ AUTH_PASSWORD_VALIDATORS = [
 # How many reverse proxies sit in front of this deployment and append to
 # X-Forwarded-For. See app.middleware.client_ip.
 #
-# 0 means the header is ignored and REMOTE_ADDR is used, which is correct for
-# the IIS layout — HttpPlatformHandler proxies from loopback and adds no
-# X-Forwarded-For, so any value present came from the client. Raise it only to
-# the number of proxies you actually run: each one you claim is an entry an
-# attacker gets to choose.
+# 0 means the header is ignored and REMOTE_ADDR is used, which is correct when
+# clients connect to the WSGI server directly. Behind a proxy it is not: every
+# request then arrives from the proxy's address, and the sign-in and webhook
+# throttles count all clients as one. The IIS layout is such a case —
+# HttpPlatformHandler connects from loopback — and its web.config overwrites
+# X-Forwarded-For with the real peer so that 1 is correct there.
+#
+# Raise it only to the number of proxies you actually run, and only when each
+# one writes the header itself: each one you claim is an entry an attacker gets
+# to choose otherwise.
 TRUSTED_PROXY_COUNT = env.int("TRUSTED_PROXY_COUNT", default=0)
 
-# Failed sign-in throttling. See app.throttling; both counters must stay under
-# their limit for an attempt to proceed.
+# Failed sign-in throttling, counted per source address. See app.throttling.
 LOGIN_RATELIMIT_ATTEMPTS = env.int("LOGIN_RATELIMIT_ATTEMPTS", default=10)
 LOGIN_RATELIMIT_WINDOW = env.int("LOGIN_RATELIMIT_WINDOW", default=900)
 WEBHOOK_RATELIMIT_ATTEMPTS = env.int("WEBHOOK_RATELIMIT_ATTEMPTS", default=20)

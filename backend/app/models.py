@@ -39,7 +39,6 @@ class Portal(models.Model):
     """
     alias = models.CharField(verbose_name="Alias", primary_key=True, unique=True, max_length=20)
     url = models.TextField(verbose_name="URL", blank=False, null=False)
-    store_password = models.BooleanField(default=False)
     auth_methods = (
         ("prompt", "Prompt for credentials"),
         ("password", "Stored username and password"),
@@ -80,15 +79,6 @@ class Portal(models.Model):
 
     def __str__(self):
         return self.alias
-
-    def save(self, *args, **kwargs):
-        # store_password is retained for one release; keep it derived from auth_method.
-        update_fields = kwargs.get("update_fields")
-        if update_fields is None or "auth_method" in update_fields:
-            self.store_password = self.auth_method == "password"
-            if update_fields is not None and "store_password" not in update_fields:
-                kwargs["update_fields"] = list(update_fields) + ["store_password"]
-        super().save(*args, **kwargs)
 
     @property
     def requires_interactive_credentials(self):
@@ -296,18 +286,36 @@ class PortalCreateForm(forms.ModelForm):
         # Return cleaned emails (comma-separated, no extra whitespace)
         return ', '.join(email_list)
 
+    def _url_changed(self):
+        """
+        True when this submission points the portal at a different URL.
+
+        Stored secrets were issued for the old URL, and connecting with them is how they
+        reach the new host - a staff user could otherwise have the admin password or OAuth
+        client secret sent to a server of their choosing, though the app never shows staff
+        either one. So a changed URL never inherits them: they must be entered again.
+
+        Fields are cleaned in Meta.fields order, so the url is already in cleaned_data
+        when the secret fields are cleaned. An invalid url counts as unchanged here; the
+        form is rejected for it anyway.
+        """
+        if not self._is_update or "url" not in self.cleaned_data:
+            return False
+        return self.cleaned_data["url"] != self._original_url
+
     def clean_password(self):
-        """Keep the stored password when the field is submitted blank."""
+        """Keep the stored password when the field is submitted blank, unless the URL changed."""
         password = self.cleaned_data.get("password")
         self._password_submitted = bool(password)
-        if not password and self._is_update:
+        if not password and self._is_update and not self._url_changed():
             return self.instance.password
         return password
 
     def clean_oauth_client_secret(self):
-        """Keep the stored client secret when the field is submitted blank."""
+        """Keep the stored client secret when the field is submitted blank, unless the URL changed."""
         secret = self.cleaned_data.get("oauth_client_secret")
-        if not secret and self._is_update:
+        self._oauth_client_secret_submitted = bool(secret)
+        if not secret and self._is_update and not self._url_changed():
             return self.instance.oauth_client_secret
         return secret
 
@@ -383,6 +391,15 @@ class PortalCreateForm(forms.ModelForm):
             return  # New portal; there is nothing stored yet.
 
         portal_changed = portal.url != self._original_url
+
+        # The secrets themselves, too: they were entered for the old URL. clean_password
+        # and clean_oauth_client_secret already decline to carry them over; this keeps the
+        # invariant for any caller that sets the fields without going through them.
+        if portal_changed:
+            if not self._password_submitted:
+                portal.password = ""
+            if not self._oauth_client_secret_submitted:
+                portal.oauth_client_secret = ""
         method_changed = portal.auth_method != self._original_auth_method
         oauth_app_changed = (portal.oauth_client_id != self._original_oauth_client_id
                              or portal.oauth_client_secret != self._original_oauth_client_secret)
@@ -416,6 +433,7 @@ class PortalCreateForm(forms.ModelForm):
         stored = self.instance if self.instance.pk else None
         self._is_update = stored is not None
         self._password_submitted = False  # Set by clean_password()
+        self._oauth_client_secret_submitted = False  # Set by clean_oauth_client_secret()
         self._original_url = stored.url if stored else ""
         self._original_username = stored.username if stored else ""
         self._original_auth_method = stored.auth_method if stored else ""

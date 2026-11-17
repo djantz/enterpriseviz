@@ -107,6 +107,7 @@ class Command(BaseCommand):
             try:
                 if options["once"]:
                     self._tick()
+                    self._drain()
                 else:
                     self._loop()
             finally:
@@ -172,6 +173,28 @@ class Command(BaseCommand):
 
             elapsed = time.monotonic() - started
             self._stop.wait(max(0.0, self.poll_interval - elapsed))
+
+    def _drain(self):
+        """
+        Keep heartbeating until the jobs claimed by a --once tick have finished.
+
+        Without this the pool is drained by ThreadPoolExecutor.__exit__, which
+        does not heartbeat: a job running longer than JOB_HEARTBEAT_TIMEOUT
+        looks abandoned to the next invocation, which requeues it alongside the
+        copy still running, or fails it outright when it is not rerunnable.
+        """
+        while True:
+            with self._running_lock:
+                if not self._running:
+                    return
+            # Not self._stop.wait(): the jobs are already running and have to be
+            # reported as alive until they finish, stop signal or not.
+            time.sleep(self.poll_interval)
+            try:
+                self._heartbeat()
+            except Exception as exc:
+                logger.error(f"Heartbeat failed while draining: {exc}", exc_info=True)
+                discard_connections_after_error()
 
     def _tick(self):
         # Heartbeat first. Anything later in the tick can raise — a schedule row

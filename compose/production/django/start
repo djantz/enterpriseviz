@@ -19,6 +19,8 @@ python /app/manage.py migrate --noinput
 # is idempotent.
 python /app/manage.py createcachetable
 
+python /app/manage.py collectstatic --noinput
+
 # waitress, not gunicorn. The primary deployment is now Windows/IIS, where
 # gunicorn cannot run at all — it imports fcntl — and running the same WSGI
 # server in both places means one set of concurrency behaviour to reason about.

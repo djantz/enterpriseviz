@@ -50,11 +50,19 @@ CACHES = {
 #
 # Turn it on only alongside a proxy rule that *overwrites* the header rather
 # than passing the client's through. See deploy/iis/README.md.
-if env.bool("DJANGO_USE_X_FORWARDED_PROTO", default=False):
+USE_X_FORWARDED_PROTO = env.bool("DJANGO_USE_X_FORWARDED_PROTO", default=False)
+if USE_X_FORWARDED_PROTO:
     # https://docs.djangoproject.com/en/dev/ref/settings/#secure-proxy-ssl-header
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# Redirecting to https is only meaningful when Django can tell that a request
+# already arrived over it, and the header above is the only way it can here:
+# both documented deployments terminate TLS in front and forward plain HTTP.
+# Defaulting this on with the header off sends every request into a redirect
+# loop, so the default follows the header.
 # https://docs.djangoproject.com/en/dev/ref/settings/#secure-ssl-redirect
-SECURE_SSL_REDIRECT = env.bool("DJANGO_SECURE_SSL_REDIRECT", default=True)
+SECURE_SSL_REDIRECT = env.bool("DJANGO_SECURE_SSL_REDIRECT",
+                               default=USE_X_FORWARDED_PROTO)
 # https://docs.djangoproject.com/en/dev/ref/settings/#session-cookie-secure
 SESSION_COOKIE_SECURE = True
 # https://docs.djangoproject.com/en/dev/ref/settings/#csrf-cookie-secure

@@ -105,9 +105,9 @@ deployment guides say where to put it.
 | Variable | Default | Notes |
 |---|---|---|
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | *(empty)* | Scheme + host, and the port when it is not the default. Needed whenever a proxy terminates TLS. |
-| `DJANGO_SECURE_SSL_REDIRECT` | `True` | Set to `False` when the front-end web server owns the HTTPS redirect. |
+| `DJANGO_SECURE_SSL_REDIRECT` | follows `DJANGO_USE_X_FORWARDED_PROTO` | Django can only tell a request arrived over HTTPS from that header, so redirecting without it loops. Set it explicitly to `False` when the front-end web server owns the redirect. |
 | `DJANGO_USE_X_FORWARDED_PROTO` | `False` | Trust `X-Forwarded-Proto` to decide whether a request was HTTPS. Turn on **only** where a proxy rule overwrites that header; otherwise any client can send it and be treated as secure. |
-| `TRUSTED_PROXY_COUNT` | `0` | How many reverse proxies in front of this deployment append to `X-Forwarded-For`. `0` ignores the header and uses the peer address. Each proxy you claim is one entry an attacker gets to choose, so set it to the number you actually run. |
+| `TRUSTED_PROXY_COUNT` | `0` | How many reverse proxies in front of this deployment append to `X-Forwarded-For`. `0` ignores the header and uses the peer address, which behind a proxy is the proxy itself, so every client shares one sign-in throttle. The IIS layout needs `1` together with the rewrite rule in its `web.config`. Each proxy you claim is one entry an attacker gets to choose, so set it to the number you actually run. |
 | `DJANGO_SECURE_HSTS_SECONDS` | `31536000` | Also `DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS` and `DJANGO_SECURE_HSTS_PRELOAD`. |
 | `DJANGO_SECURE_CONTENT_TYPE_NOSNIFF` | `True` | |
 | `CONN_MAX_AGE` | `60` | Seconds a database connection is reused. |
