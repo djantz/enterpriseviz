@@ -2,10 +2,22 @@
 
 -r base.txt
 
-gunicorn==21.2.0  # https://github.com/benoitc/gunicorn
-#psycopg[c]==3.1.9  # https://github.com/psycopg/psycopg
-psycopg2==2.9.5
-psycopg2-binary
-mssql-django
-pyodbc
-django-cryptography
+# WSGI server. gunicorn was removed: it imports fcntl and cannot run on
+# Windows at all. waitress is pure Python, production grade on Windows, and is
+# what IIS starts through HttpPlatformHandler (see deploy/iis/web.config).
+# Concurrency comes from its thread pool, so there is no fork to emulate.
+waitress==3.0.2
+
+# psycopg2 (the source distribution) was removed and only psycopg2-binary is
+# kept. There is no Windows wheel for the former, so pip falls back to building
+# it against libpq, which needs a compiler and the Postgres client headers that
+# a Windows Server host will not have.
+psycopg2-binary==2.9.12
+
+# NOTE: django-cryptography was removed here. base.txt installs
+# django-cryptography-django5, the Django 5 compatible fork, and both packages
+# provide the same `django_cryptography` module — installing them together made
+# which implementation won depend on install order.
+#
+# mssql-django and pyodbc were removed with them: this deployment is PostgreSQL,
+# and they pulled in the Microsoft ODBC driver requirement for nothing.

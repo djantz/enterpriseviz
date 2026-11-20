@@ -19,19 +19,22 @@
 
     <div class="login-content-container">
 
-      <calcite-block open collapsible heading="Use your organization URL"
-                     description="Sign in with your ArcGIS organization">
-        <form>
-          <calcite-input placeholder="{{ login_url }}" read-only label="Organization URL"
-                         value="{{ login_url }}"></calcite-input>
-          <calcite-button width="full" href="{% url 'social:begin' 'arcgis' %}"
-                          label="Continue with organization login">
-            Continue
-          </calcite-button>
-        </form>
-      </calcite-block>
+      {% if login_url %}
+        <calcite-block open collapsible heading="Use your organization URL"
+                       description="Sign in with your ArcGIS organization">
+          <form>
+            <calcite-input placeholder="{{ login_url }}" read-only label="Organization URL"
+                           value="{{ login_url }}"></calcite-input>
+            <calcite-button width="full" href="{% url 'social:begin' 'arcgis' %}"
+                            label="Continue with organization login">
+              Continue
+            </calcite-button>
+          </form>
+        </calcite-block>
+      {% endif %}
 
-      <calcite-block collapsible heading="Use your credentials" description="Sign in with username and password">
+      <calcite-block {% if not login_url %}open{% endif %} collapsible heading="Use your credentials"
+                     description="Sign in with username and password">
         <form id="login_form" method="post" autocomplete="off" aria-label="Login form">
           {% csrf_token %}
           <calcite-input type="text" icon="user" id="{{ form.username.name }}" name="{{ form.username.name }}"

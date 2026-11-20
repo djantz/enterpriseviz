@@ -1,6 +1,3 @@
-{# Swapped into #mainbodycontent when an HTMX navigation hits an error. #}
-{# Server flags these responses with X-Error-Page; custom.js opts them in #}
-{# to swapping (htmx ignores 4xx/5xx bodies by default). #}
 <div style="width: min(90%, 32rem); margin: 2rem auto;">
   <calcite-notice open kind="{{ kind|default:'danger' }}" icon="{{ icon|default:'exclamation-mark-triangle' }}"
                   width="full">

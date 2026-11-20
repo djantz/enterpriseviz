@@ -3,6 +3,7 @@ import json
 import logging
 import zoneinfo
 from datetime import datetime, time
+from urllib.parse import urlparse
 
 from django import forms
 from django.conf import settings
@@ -444,6 +445,21 @@ class SiteSettingsForm(forms.ModelForm):
                 raise ValidationError("Enter a valid port number (1-65535).")
         return port
 
+    def clean_email_password(self):
+        """
+        Keep the stored password when the field is submitted blank.
+
+        The widget never renders the current value, so a blank submission means
+        "unchanged", not "clear it". This has to happen in a field cleaner:
+        cleaned_data is copied onto the instance by _post_clean(), so anything
+        that patches cleaned_data after is_valid() returns is writing to a dict
+        nobody reads again, and the stored password is silently wiped.
+        """
+        password = self.cleaned_data.get("email_password")
+        if not password and self.instance.pk:
+            return self.instance.email_password
+        return password
+
     def clean_webhook_secret(self):
         """Validate webhook secret strength."""
         secret = self.cleaned_data.get('webhook_secret')
@@ -500,6 +516,47 @@ class SiteSettingsForm(forms.ModelForm):
                            f"Port {port} is unusual for plain text. Standard ports are 25 or 587.")
 
 
+class LoggingAndRetentionForm(forms.ModelForm):
+    """
+    The logging level and every retention window in the application.
+
+    None of the three windows was configurable before. Log entries and finished
+    jobs were never trimmed at all, and the replacement backup window was a
+    getattr default no deployment could reach. They sit together because they
+    are one decision made repeatedly: what this application keeps, and for how
+    long.
+    """
+
+    MAX_RETENTION_DAYS = 3650
+
+    class Meta:
+        model = SiteSettings
+        fields = ("logging_level", "log_retention_days", "job_retention_days",
+                  "replacement_backup_retention_days")
+
+    def _clean_retention(self, field_name, label):
+        """Bound a retention window, treating 0 as 'keep everything'."""
+        value = self.cleaned_data.get(field_name)
+        if value is None:
+            raise ValidationError(f"Enter a number of days for {label}, or 0 to keep everything.")
+        if value > self.MAX_RETENTION_DAYS:
+            raise ValidationError(
+                f"{label} must be {self.MAX_RETENTION_DAYS} days (10 years) or fewer. "
+                f"Use 0 to keep everything."
+            )
+        return value
+
+    def clean_log_retention_days(self):
+        return self._clean_retention("log_retention_days", "Log retention")
+
+    def clean_job_retention_days(self):
+        return self._clean_retention("job_retention_days", "Job history retention")
+
+    def clean_replacement_backup_retention_days(self):
+        return self._clean_retention("replacement_backup_retention_days",
+                                     "Replacement backup retention")
+
+
 class ToolsForm(forms.ModelForm):
     """
     Form for configuring portal automation tools.
@@ -516,7 +573,15 @@ class ToolsForm(forms.ModelForm):
             'tool_public_unshare_trigger', 'tool_public_unshare_notify_limit',
             'tool_inactive_user_enabled', 'tool_inactive_user_duration',
             'tool_inactive_user_warning', 'tool_inactive_user_action',
+            'tool_inactive_user_max_actions', 'tool_inactive_user_max_percent',
         ]
+
+    def clean_tool_inactive_user_max_percent(self):
+        """Bound the percentage limit; 0 means the percentage does not apply."""
+        percent = self.cleaned_data.get('tool_inactive_user_max_percent')
+        if percent is not None and percent > 100:
+            raise ValidationError("Enter a percentage between 0 and 100.")
+        return percent
 
     def clean(self):
         """Validates tool-specific fields based on whether the tool is enabled."""
@@ -756,9 +821,101 @@ class PortalCredentialsForm(forms.Form):
         return self.portal
 
 
+class ArcGISSignInForm(forms.ModelForm):
+    """
+    The OAuth application users sign in through, and the role they must hold.
+
+    These were four environment variables read with no default, which meant an
+    installation could not start before an OAuth application existed to name.
+    Here they are blank until configured: the application runs, a local Django
+    account gets in, and the sign-in button appears on the login page once an
+    organization URL is set.
+    """
+
+    arcgis_client_secret = forms.CharField(
+        widget=forms.PasswordInput(render_value=False),
+        required=False,
+        label="App Secret",
+        help_text="Leave blank to keep the stored secret"
+    )
+
+    class Meta:
+        model = SiteSettings
+        fields = ("arcgis_org_url", "arcgis_client_id", "arcgis_client_secret",
+                  "arcgis_user_role")
+
+    def clean_arcgis_org_url(self):
+        """
+        Normalize and bound-check the organization URL.
+
+        A relative or scheme-less value is the failure worth catching here:
+        require_arcgis_org_url() refuses it at sign-in time, but by then the
+        button is on the login page and the person who typed it has gone.
+        """
+        url = (self.cleaned_data.get("arcgis_org_url") or "").strip().strip("'\" ").rstrip("/")
+        if not url:
+            return ""
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValidationError(
+                "Enter the full organization URL including https://, "
+                "e.g. https://example.maps.arcgis.com."
+            )
+        return url
+
+    def clean_arcgis_client_secret(self):
+        """Keep the stored secret when the field is submitted blank."""
+        secret = self.cleaned_data.get("arcgis_client_secret")
+        if not secret and self.instance.pk:
+            return self.instance.arcgis_client_secret
+        return secret or ""
+
+    def clean_arcgis_user_role(self):
+        return (self.cleaned_data.get("arcgis_user_role") or "").strip()
+
+    def clean(self):
+        """
+        The three OAuth fields are only useful together.
+
+        Any one of them on its own produces a login page offering a button the
+        flow cannot complete, so partial configuration is refused rather than
+        saved — except for the empty case, which is how sign-in is switched
+        off.
+        """
+        cleaned_data = super().clean()
+
+        url = cleaned_data.get("arcgis_org_url")
+        client_id = cleaned_data.get("arcgis_client_id")
+
+        if not url and not client_id:
+            cleaned_data["arcgis_client_secret"] = ""
+            return cleaned_data
+
+        required = {
+            "arcgis_org_url": "Organization URL is required to enable ArcGIS sign-in.",
+            "arcgis_client_id": "App ID is required to enable ArcGIS sign-in.",
+            "arcgis_client_secret": "App Secret is required to enable ArcGIS sign-in.",
+        }
+        for field_name, message in required.items():
+            if not cleaned_data.get(field_name):
+                self.add_error(field_name, message)
+
+        if not cleaned_data.get("arcgis_user_role"):
+            self.add_error(
+                "arcgis_user_role",
+                "A required role is needed; leaving it blank refuses every ArcGIS sign-in."
+            )
+
+        return cleaned_data
+
+
 class WebhookSettingsForm(forms.ModelForm):
     """
     Form for configuring webhook settings with enhanced security validation.
+
+    The secret is the only thing to configure. The header it arrives in is a
+    constant in app.utils, because the portal offers no way to choose one.
     """
 
     class Meta:

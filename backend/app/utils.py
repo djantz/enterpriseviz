@@ -32,7 +32,7 @@ from itertools import combinations, groupby
 from operator import itemgetter
 from pathlib import Path
 from typing import Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
 from arcgis import gis
@@ -42,7 +42,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import get_connection, EmailMultiAlternatives, EmailMessage
 from django.core.validators import validate_email
-from django.db import transaction
+from django.db import OperationalError, connections, transaction
 from django.db.models import Count, Exists, F, OuterRef, Prefetch, QuerySet, Q
 from django.http import HttpResponse
 from django.utils import timezone
@@ -54,14 +54,41 @@ from tabulate import tabulate
 from collections import Counter
 
 from . import tasks
+from .jobs import JobCanceled, JobDeadlineExceeded
 from .models import (Webmap, Service, Layer, App, Portal, SiteSettings,
                      Layer_Service, Map_Service, App_Service, App_Map)
 
 logger = logging.getLogger('enterpriseviz.utils')
 
 
+def normalize_portal_url(url):
+    """
+    A portal URL in the form used to compare two of them.
+
+    Scheme and host are case-insensitive and a trailing slash means nothing, so
+    both are folded. The path keeps its case: a Web Adaptor name is part of
+    which portal it is.
+
+    :param url: Portal URL as stored on the model
+    :type url: str
+    :return: Normalized URL
+    :rtype: str
+    """
+    parts = urlsplit((url or "").strip())
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), parts.query, ""))
+
+
 class CredentialManager:
-    """Manages temporary credential storage with encryption and TTL."""
+    """
+    Manages temporary credential storage with encryption and TTL.
+
+    Each handle is bound to the portal the credentials were checked against,
+    by alias and URL. A handle outlives the request that minted it - it waits
+    in a queued job and is re-read by every batch thread - and the portal row
+    can be edited meanwhile. Without the binding, a staff user who repointed the
+    portal's URL while another operator's refresh was queued had that operator's
+    typed password sent to the new host.
+    """
 
     @staticmethod
     def _get_encryption_key():
@@ -102,11 +129,31 @@ class CredentialManager:
         return username.strip(), password
 
     @staticmethod
-    def store_credentials(username, password, ttl_seconds=300):
+    def _ttl():
+        return getattr(settings, "CREDENTIAL_TOKEN_TTL", 900)
+
+    @staticmethod
+    def _binding(portal):
+        return {"portal_alias": portal.alias, "portal_url": normalize_portal_url(portal.url)}
+
+    @staticmethod
+    def store_credentials(username, password, *, portal, ttl_seconds=None):
         """
-        Store credentials temporarily with encryption.
+        Store credentials temporarily with encryption, bound to ``portal``.
+
+        Mint the handle for the portal the credentials were just checked
+        against: retrieve_credentials refuses it for any other alias or URL.
+
+        The lifetime is a sliding window, not a deadline: retrieve_credentials
+        pushes it out on every read. A refresh reconnects to the portal from
+        each batch thread for as long as it runs, so a window measured from the
+        sign-in form expired mid-run, and the job then failed with "Unable to
+        connect" some way into work it had already done.
+
+        :param portal: Portal model instance the credentials belong to
         :return: Unique token to retrieve credentials, or None on failure.
         """
+        ttl_seconds = ttl_seconds or CredentialManager._ttl()
         try:
             username, password = CredentialManager._sanitize_credentials(username, password)
 
@@ -116,7 +163,8 @@ class CredentialManager:
             credential_token = hashlib.sha256(token_data.encode()).hexdigest()
 
             fernet = Fernet(CredentialManager._get_encryption_key())
-            credentials_to_encrypt = f"{username}:{password}"
+            credentials_to_encrypt = json.dumps(
+                {"username": username, "password": password, **CredentialManager._binding(portal)})
             encrypted_data = fernet.encrypt(credentials_to_encrypt.encode())
 
             cache_key = f"portal_creds:{credential_token}"
@@ -130,10 +178,21 @@ class CredentialManager:
             return None
 
     @staticmethod
-    def retrieve_credentials(credential_token):
+    def retrieve_credentials(credential_token, *, portal):
         """
-        Retrieve and decrypt credentials using token.
-        :return: dict {'username': str, 'password': str} or None if not found/expired/decryption error.
+        Retrieve and decrypt credentials using token, for use against ``portal``.
+
+        Extends the entry's lifetime on the way through, so the credential
+        lives as long as something is still using it and expires promptly once
+        nothing is. See store_credentials.
+
+        A handle minted for a different alias or URL is refused and deleted:
+        the portal it was checked against is no longer the one being connected
+        to, so the credentials must not be sent there.
+
+        :param portal: Portal model instance about to receive the credentials
+        :return: dict {'username': str, 'password': str} or None if not found/expired/decryption error
+                 or bound to another portal.
         """
         if not CredentialManager._validate_token(credential_token):
             logger.warning("Invalid credential token format")
@@ -148,13 +207,22 @@ class CredentialManager:
                 return None
 
             fernet = Fernet(CredentialManager._get_encryption_key())
-            decrypted_data_bytes = fernet.decrypt(encrypted_data)
-            decrypted_data_str = decrypted_data_bytes.decode()
+            stored = json.loads(fernet.decrypt(encrypted_data).decode())
 
-            # Split on first colon to handle passwords with colons
-            username, password = decrypted_data_str.split(':', 1)
+            bound = {k: stored.get(k) for k in ("portal_alias", "portal_url")}
+            if bound != CredentialManager._binding(portal):
+                logger.warning(f"Credential token {credential_token[:8]}... was issued for portal "
+                               f"'{bound['portal_alias']}' at {bound['portal_url']}, not "
+                               f"'{portal.alias}' at {normalize_portal_url(portal.url)}; refusing it.")
+                cache.delete(cache_key)
+                return None
 
-            return {'username': username, 'password': password}
+            try:
+                cache.touch(cache_key, CredentialManager._ttl())
+            except Exception as e:
+                logger.warning(f"Could not extend credential lifetime: {e}")
+
+            return {'username': stored['username'], 'password': stored['password']}
 
         except Exception as e:
             logger.error(
@@ -224,7 +292,7 @@ class UpdateResult:
         self.error_messages.append(error_message)
         self.success = False
 
-    def to_json(self):
+    def to_dict(self):
         """Converts the instance to a JSON-serializable dictionary.
 
         :return: Dictionary representation of the UpdateResult.
@@ -329,7 +397,7 @@ Statistics:
 
         return email_content
 
-    def to_json(self):
+    def to_dict(self):
         """Converts the instance to a JSON-serializable dictionary."""
         return asdict(self)
 
@@ -388,7 +456,7 @@ def try_connection(connection_details):
 
     logger.debug(f"Attempting connection to {url} with user {username}.")
     try:
-        target_gis = gis.GIS(url, username, password, verify_cert=False)
+        target_gis = gis.GIS(url, username, password, verify_cert=portal_verify_tls())
         is_agol = target_gis.properties.isPortal is False
 
         # Verify successful authentication by checking if user property is accessible
@@ -403,7 +471,8 @@ def try_connection(connection_details):
 
     except requests.exceptions.SSLError as ssl_e:
         logger.error(
-            f"SSL Error connecting to {url}. Ensure certs are valid or try verify_cert=False if appropriate. Error: {ssl_e}",
+            f"SSL Error connecting to {url}. Trust the portal's issuing CA in the container, "
+            f"or point ARCGIS_VERIFY_TLS at its bundle. Error: {ssl_e}",
             exc_info=True)
         return {"authenticated": False, "is_agol": None, "missing_privileges": [],
                 "error": f"SSL Error connecting to {url}."}
@@ -436,14 +505,14 @@ def connect(portal_model_instance, credential_token=None):
     url = portal_model_instance.url
     logger.debug(f"Preparing to connect to {url} for instance {portal_model_instance.alias}.")
 
-    gis_kwargs = {'verify_cert': False}
+    gis_kwargs = {'verify_cert': portal_verify_tls()}
     target_gis = None
 
     try:
         # Determine credentials to use
         if credential_token:
             # Use temporary credentials from token
-            creds = CredentialManager.retrieve_credentials(credential_token)
+            creds = CredentialManager.retrieve_credentials(credential_token, portal=portal_model_instance)
             if not creds:
                 logger.error(f"Failed to retrieve credentials for portal {portal_model_instance.alias}")
                 raise ConnectionError("Authentication failed. Credentials not found or expired")
@@ -578,18 +647,24 @@ def oauth_authorize_url(portal_url):
     return f"{portal_url.rstrip('/')}/sharing/rest/oauth2/authorize"
 
 
-def oauth_verify_tls():
+def portal_verify_tls():
     """
-    Whether to validate the portal's TLS certificate on OAuth token requests.
+    Whether to validate the portal's TLS certificate.
 
-    These requests carry the client secret and the refresh token, which is long lived and
-    grants unattended administrator access, so the certificate is verified by default.
-    Deployments whose portal uses a certificate the container cannot chain to a trusted
-    root can set OAUTH_VERIFY_TLS to False, or point it at a CA bundle path.
+    Covers every request the application makes to a portal, whichever transport it goes
+    out on: the arcgis GIS client for password, token and OAuth-token sign-in, and the
+    direct requests calls that exchange OAuth authorization and refresh tokens.
 
-    :return: True, False, or a path to a CA bundle, as accepted by requests' verify=
+    All of them carry something worth stealing — a stored administrator password, a
+    session token, the OAuth client secret, or a refresh token granting unattended
+    administrator access — and all of them go to the same host, so they get one answer
+    from one setting. Splitting it per transport would let a deployment verify one path,
+    believe it was covered, and still hand credentials to whatever answered on the other.
+
+    :return: True, False, or a path to a CA bundle, as accepted by both requests' verify=
+             and arcgis' verify_cert=
     """
-    return getattr(settings, "OAUTH_VERIFY_TLS", True)
+    return getattr(settings, "ARCGIS_VERIFY_TLS", True)
 
 
 def _flag_oauth_reconsent(portal_model_instance):
@@ -627,7 +702,7 @@ def exchange_oauth_refresh_token(portal_model_instance):
 
     try:
         response = requests.post(oauth_token_url(portal_model_instance.url), data=payload, timeout=15,
-                                 verify=oauth_verify_tls())
+                                 verify=portal_verify_tls())
         response.raise_for_status()
         data = response.json()
     except Exception as e:
@@ -692,7 +767,7 @@ def exchange_oauth_authorization_code(portal_model_instance, code, redirect_uri)
 
     try:
         response = requests.post(oauth_token_url(portal_model_instance.url), data=payload, timeout=15,
-                                 verify=oauth_verify_tls())
+                                 verify=portal_verify_tls())
         response.raise_for_status()
         data = response.json()
     except Exception as e:
@@ -760,12 +835,26 @@ def _ensure_oauth_access_token(portal_model_instance, buffer_seconds=120):
     """
     Return a valid OAuth access token, refreshing it when the cached one is missing or stale.
 
-    The portal rotates the refresh token on use, so two workers refreshing at once would
-    leave the loser holding a token the portal has already invalidated - which then reads
-    as a revoked authorization and locks the portal out of every later unattended refresh.
-    The batch tasks run as a celery group against one portal, so the refresh is serialized
-    on the portal row and re-checked under the lock: whoever waits usually finds the token
-    another worker just stored and makes no request at all.
+    The portal rotates the refresh token on use, so two refreshes at once would leave the
+    loser holding a token the portal has already invalidated - which then reads as a
+    revoked authorization and locks the portal out of every later unattended refresh. The
+    refresh is therefore serialized on the portal row and re-checked under the lock:
+    whoever waits usually finds the token the other one just stored and makes no request
+    at all.
+
+    All of it runs on the dedicated OAUTH_DB_ALIAS connection, never the caller's. With
+    ATOMIC_REQUESTS on, a refresh performed on the request's own connection would be part
+    of the request's transaction: the portal has already invalidated the old refresh token
+    by the time the new one is written, so any later rollback in that request would throw
+    away the only token that still works and lock the portal out until someone consents
+    again. A separate connection commits the moment the exchange succeeds. It also keeps
+    the row lock to the length of the refresh instead of the length of the request.
+
+    Nothing is exchanged unless the row lock was actually taken. Holding it is what
+    guarantees the UPDATE that stores the rotated token cannot itself block or time out:
+    exchanging first and discovering afterwards that the row cannot be written loses the
+    only working refresh token, which is the lockout this whole function exists to avoid.
+    A busy row therefore fails the refresh, which the next run retries.
 
     :param portal_model_instance: The Portal model instance configured for OAuth.
     :type portal_model_instance: enterpriseviz.models.Portal
@@ -779,24 +868,40 @@ def _ensure_oauth_access_token(portal_model_instance, buffer_seconds=120):
         logger.debug(f"Using cached OAuth access token for {portal_model_instance.alias}.")
         return portal_model_instance.token
 
+    alias = settings.OAUTH_DB_ALIAS
     refresh_error = None
-    with transaction.atomic():
-        locked = Portal.objects.select_for_update().get(pk=portal_model_instance.pk)
 
-        if _oauth_access_token_is_fresh(locked, buffer_seconds):
-            logger.debug(f"Another worker refreshed the OAuth token for {locked.alias}; reusing it.")
+    try:
+        with transaction.atomic(using=alias):
+            # Bounds the wait for the row lock below, so a row someone else holds
+            # fails this refresh instead of wedging the thread.
+            with connections[alias].cursor() as cursor:
+                cursor.execute("SET LOCAL lock_timeout = %s",
+                               [f"{settings.OAUTH_LOCK_TIMEOUT}s"])
+
+            locked = Portal.objects.using(alias).select_for_update().get(
+                pk=portal_model_instance.pk)
+
+            if _oauth_access_token_is_fresh(locked, buffer_seconds):
+                logger.debug(f"The OAuth token for {locked.alias} was refreshed elsewhere; "
+                             f"reusing it.")
+                _copy_oauth_token_state(locked, portal_model_instance)
+                return locked.token
+
+            try:
+                exchange_oauth_refresh_token(locked)
+            except ConnectionError as e:
+                refresh_error = e
+
             _copy_oauth_token_state(locked, portal_model_instance)
-            return locked.token
-
-        try:
-            exchange_oauth_refresh_token(locked)
-        except ConnectionError as e:
-            # Let the atomic block commit: _flag_oauth_reconsent() records the revoked
-            # authorization inside it, and rolling that back would lose the only signal
-            # the UI has to prompt for a reconnect. Re-raised below, outside the block.
-            refresh_error = e
-
-        _copy_oauth_token_state(locked, portal_model_instance)
+    except OperationalError:
+        logger.error(
+            f"Could not lock portal '{portal_model_instance.alias}' to refresh its OAuth "
+            f"token within {settings.OAUTH_LOCK_TIMEOUT}s; no token was exchanged.",
+            exc_info=True)
+        raise ConnectionError(
+            f"Could not refresh the OAuth token for portal "
+            f"'{portal_model_instance.alias}' because its record was busy. Try again.")
 
     if refresh_error:
         raise refresh_error
@@ -837,7 +942,7 @@ def _fetch_and_save_org_id(portal_model_instance, target_gis_connection):
             response = requests.get(f"{target_gis_connection.url}/sharing/rest/portals/self?culture=en&f=pjson",
                                     headers={
                                         'Authorization': f'Bearer {target_gis_connection._con.token}'} if target_gis_connection._con.token else None,
-                                    timeout=10)
+                                    timeout=10, verify=portal_verify_tls())
             if response.status_code == 200:
                 data = response.json()
                 portal_model_instance.org_id = data.get("id")
@@ -858,7 +963,7 @@ def map_details(item_id):
 
     :param item_id: Unique ID of the Webmap.
     :type item_id: str
-    :return: Dictionary with 'graph_data' (JSON string), 'services' (QuerySet),
+    :return: Dictionary with 'graph_data' (nodes/links dict), 'services' (QuerySet),
              'apps' (QuerySet with usage_type), 'layers' (list),
              and 'item' (Webmap model instance). Returns {'error': msg} on failure.
     :rtype: dict
@@ -883,7 +988,7 @@ def map_details(item_id):
         })
         added_node_ids.add(map_node_id)
 
-        services = webmap_item.service_set.select_related('portal_instance').distinct()
+        services = webmap_item.service_set.select_related('portal_instance', 'service_owner').distinct()
         apps = webmap_item.app_set.select_related('portal_instance', 'app_owner') \
             .annotate(usage_type=F("app_map__rel_type")).distinct()
 
@@ -934,10 +1039,10 @@ def map_details(item_id):
             })
 
         return {
-            'graph_data': json.dumps({
+            'graph_data': {
                 'nodes': nodes,
                 'links': links
-            }),
+            },
             "services": services,
             "apps": apps,
             "layers": layers,
@@ -960,7 +1065,7 @@ def service_details(portal_alias, service_name):
     :type portal_alias: str
     :param service_name: Name of the Service.
     :type service_name: str
-    :return: Dictionary with 'graph_data' (JSON string), 'maps' (QuerySet),
+    :return: Dictionary with 'graph_data' (nodes/links dict), 'maps' (QuerySet),
              'apps' (list of combined app dicts), 'layers' (QuerySet),
              and 'item' (Service model instance). Returns {'error': msg} on failure.
     :rtype: dict
@@ -990,9 +1095,9 @@ def service_details(portal_alias, service_name):
         })
         added_node_ids.add(service_node_id)
 
-        layers = Layer.objects.filter(layer_service__service_id=service_item)
+        layers = Layer.objects.filter(layer_service__service_id=service_item).distinct()
         maps = Webmap.objects.filter(map_service__service_id=service_item).select_related(
-            'portal_instance').distinct()
+            'portal_instance', 'webmap_owner').distinct()
 
         # Apps related to this service via maps that use this service
         apps_via_maps = App.objects.filter(app_map__webmap_id__map_service__service_id=service_item) \
@@ -1093,10 +1198,10 @@ def service_details(portal_alias, service_name):
             })
 
         return {
-            'graph_data': json.dumps({
+            'graph_data': {
                 'nodes': nodes,
                 'links': links
-            }),
+            },
             "maps": maps,
             "apps": apps_combined,
             "layers": layers,
@@ -1126,9 +1231,11 @@ def layer_details(dbserver, database, version, name):
     :type version: str
     :param name: Name of the Layer.
     :type name: str
-    :return: Dictionary with 'tree' (Layer details), 'services' (QuerySet),
-             'maps' (QuerySet), 'apps' (list of combined app dicts),
-             and 'item' (Layer name). Returns {'error': msg} on failure.
+    :return: Dictionary with 'graph_data' (nodes/links dict), 'services' (QuerySet),
+             'maps' (QuerySet), 'apps' (list of combined app dicts), and 'item'
+             (Layer model instance, or None when a layer of this name exists but
+             none matches the given server, database and version).
+             Returns {'error': msg} on failure.
     :rtype: dict
     """
 
@@ -1282,10 +1389,10 @@ def layer_details(dbserver, database, version, name):
                 })
 
         return {
-            'graph_data': json.dumps({
+            'graph_data': {
                 'nodes': nodes,
                 'links': links
-            }),
+            },
             "services": services,
             "maps": maps,
             "apps": apps_combined,
@@ -1416,6 +1523,51 @@ def epoch_to_date(epoch_ms):
         return None
 
 
+# A service endpoint, optionally with a layer id: https://host/.../<Type>Server[/<n>]. The match against
+# item data is exact, so this only has to turn away input that cannot be a service URL at all.
+_SERVICE_URL_RE = re.compile(r"^https?://[^/\s?#]+(?:/[^/\s?#]+)*/[a-z]+server(?:/\d+)?$", re.IGNORECASE)
+_EMBEDDED_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+
+
+def _normalize_reference_url(url):
+    """A URL as compared by the layer-usage search: no query or fragment, no trailing slash, lower case."""
+    return url.strip().split("#", 1)[0].split("?", 1)[0].rstrip("/").lower()
+
+
+def _referenced_urls(item_data):
+    """
+    Every URL value in an item's data, normalized for comparison.
+
+    Only whole values that are URLs count. The search used to test whether the input
+    appeared anywhere in str(item.get_data()), which made it a substring oracle over the
+    whole item: any signed-in user could confirm, then recover character by character, a
+    value such as an API key embedded in a private app's configuration, read with the
+    portal's stored admin credential. Comparing whole URL values leaves one observable,
+    whether the item references that service or layer.
+
+    :param item_data: Result of Item.get_data(): a dict or list, or text for some item types
+    :return: Normalized URLs
+    :rtype: set
+    """
+    if isinstance(item_data, str):
+        try:
+            item_data = json.loads(item_data)
+        except ValueError:
+            return {_normalize_reference_url(u) for u in _EMBEDDED_URL_RE.findall(item_data)}
+
+    urls = set()
+    stack = [item_data]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+        elif isinstance(value, str) and value.strip().lower().startswith(("http://", "https://")):
+            urls.add(_normalize_reference_url(value))
+    return urls
+
+
 def service_layer_details(portal_model_instance, layer_url_to_find):
     """
     Identifies web maps and apps in a portal that reference a specific layer URL.
@@ -1427,7 +1579,13 @@ def service_layer_details(portal_model_instance, layer_url_to_find):
 
     :param portal_model_instance: Portal model instance to search.
     :type portal_model_instance: enterpriseviz.models.Portal
-    :param layer_url_to_find: URL of the layer to search for (e.g., "https://server/service/MapServer/5").
+    The input must be an ArcGIS REST service or layer URL, and the live fallback
+    compares it with whole URL values in each item's data (see _referenced_urls).
+
+    :param portal_model_instance: Portal model instance to search.
+    :type portal_model_instance: enterpriseviz.models.Portal
+    :param layer_url_to_find: URL of the layer to search for
+        (e.g., "https://server/arcgis/rest/services/Name/MapServer/5").
     :type layer_url_to_find: str
     :return: Dictionary with 'maps' (list of map dicts) and 'apps' (list of app dicts).
              Returns {'error': msg} on failure.
@@ -1436,7 +1594,10 @@ def service_layer_details(portal_model_instance, layer_url_to_find):
     if not layer_url_to_find:
         return {"error": "Layer URL to find cannot be empty."}
 
-    normalized_layer_url = layer_url_to_find.strip().rstrip('/')
+    normalized_layer_url = layer_url_to_find.strip().split("#", 1)[0].split("?", 1)[0].rstrip('/')
+    if not _SERVICE_URL_RE.match(normalized_layer_url):
+        return {"error": "Provide a full service or layer URL, such as "
+                         "https://server/arcgis/rest/services/Name/MapServer/0."}
 
     # Parse the URL to extract service URL and layer ID
     url_parts = normalized_layer_url.split("/")
@@ -1565,11 +1726,11 @@ def service_layer_details(portal_model_instance, layer_url_to_find):
 
             for item in all_relevant_items:
                 try:
-                    item_data_str = str(item.get_data()).lower()
+                    item_urls = _referenced_urls(item.get_data())
 
                     # Check if this item uses the specific layer or the full service
-                    has_specific_layer = normalized_search_url in item_data_str
-                    has_full_service = service_layer_id is not None and normalized_service_url in item_data_str
+                    has_specific_layer = normalized_search_url in item_urls
+                    has_full_service = service_layer_id is not None and normalized_service_url in item_urls
 
                     if has_specific_layer or has_full_service:
                         usage_type = "specific_layer" if has_specific_layer else "full_service"
@@ -2632,17 +2793,16 @@ def apply_global_log_level(level_name=None, logger_name=None):
     util_logger = logging.getLogger(__name__)
     util_logger.debug("Attempting to apply global log levels...")
 
-    level_to_apply_str = level_name
     source_msg = f"specific parameter '{level_name}'"
 
     if not level_name:
         try:
-            site_settings = SiteSettings.objects.first()
-            if site_settings and site_settings.logging_level:
+            site_settings = SiteSettings.load()
+            if site_settings.logging_level:
                 level_name = site_settings.logging_level
                 source_msg = f"SiteSettings ({level_name})"
             else:
-                util_logger.warning("SiteSettings not found or logging_level not set. No dynamic level applied.")
+                util_logger.warning("SiteSettings.logging_level is not set. No dynamic level applied.")
                 return
         except Exception as e:
             util_logger.error(f"Error fetching SiteSettings: {e}", exc_info=True)
@@ -2674,7 +2834,7 @@ def apply_global_log_level(level_name=None, logger_name=None):
                 target_logger_obj.setLevel(log_level_int)
                 if original_logger_level_int != log_level_int:
                     util_logger.debug(
-                        f"Logger '{logger_name_str or 'root'}': Level changed from {logging.getLevelName(original_logger_level_int)} to {level_to_apply_str}.")
+                        f"Logger '{logger_name_str or 'root'}': Level changed from {logging.getLevelName(original_logger_level_int)} to {level_name}.")
                     changed_loggers += 1
 
                 for handler_obj in target_logger_obj.handlers:
@@ -2683,15 +2843,15 @@ def apply_global_log_level(level_name=None, logger_name=None):
                     if original_handler_level_int != log_level_int:
                         handler_obj.setLevel(log_level_int)
                         util_logger.debug(
-                            f"Handler '{type(handler_obj).__name__}' on logger '{logger_name_str or 'root'}': Level changed from {logging.getLevelName(original_handler_level_int)} to {level_to_apply_str}.")
+                            f"Handler '{type(handler_obj).__name__}' on logger '{logger_name_str or 'root'}': Level changed from {logging.getLevelName(original_handler_level_int)} to {level_name}.")
 
             except Exception as e:
                 util_logger.error(f"Error applying level to logger '{logger_name_str}': {e}", exc_info=False)
 
     if changed_loggers > 0:
-        util_logger.info(f"Finished applying log level {level_to_apply_str}. {changed_loggers} loggers updated.")
+        util_logger.info(f"Finished applying log level {level_name}. {changed_loggers} loggers updated.")
     else:
-        util_logger.debug(f"Log level {level_to_apply_str} was already effectively set or no target loggers changed.")
+        util_logger.debug(f"Log level {level_name} was already effectively set or no target loggers changed.")
 
 
 def generate_notification_tables(maps_qs, apps_qs):
@@ -2772,12 +2932,7 @@ def send_email(recipient_email, subject, message, html_message=None, bcc_emails=
     try:
         # Fetch email settings from SiteSettings
         logger.debug("Retrieving email configuration from SiteSettings")
-        site_settings = SiteSettings.objects.first()
-
-        # Check if email configuration is available
-        if not site_settings:
-            logger.warning("Email failed: No SiteSettings configuration found")
-            return False, "Email configuration not found in SiteSettings."
+        site_settings = SiteSettings.load()
 
         if not site_settings.from_email:
             logger.warning("Email failed: No 'From' address configured in SiteSettings")
@@ -2884,17 +3039,20 @@ def format_notification_email(owner, change_item_desc, maps_for_owner, apps_for_
     return plain_body, html_body, subject
 
 
-def validate_webhook_secret(request):
-    """Validate webhook secret using secret header comparison."""
-    signature = request.headers.get("Secret", "")
-    if not signature:
-        logger.warning("Received webhook request without signature.")
-        return False
+WEBHOOK_SECRET_HEADER = "Secret"
 
-    # Get webhook secret from SiteSettings
+
+def validate_webhook_secret(request):
+    """
+    Authenticate an incoming organization webhook on its shared secret.
+
+    The secret proves the sender knew it; it says nothing about the body not
+    having been altered in transit, because organization webhooks are not
+    signed. TLS to this endpoint is what carries that weight, alongside the
+    rate limit on the view.
+    """
     try:
-        site_settings = SiteSettings.objects.first()
-        webhook_secret = site_settings.webhook_secret if site_settings else None
+        webhook_secret = SiteSettings.load().webhook_secret
     except Exception as e:
         logger.error(f"Failed to retrieve webhook secret from SiteSettings: {e}")
         return False
@@ -2903,8 +3061,19 @@ def validate_webhook_secret(request):
         logger.warning("Webhook secret not configured in SiteSettings.")
         return False
 
-    if not constant_time_compare(signature, webhook_secret):
-        logger.warning("Webhook signature mismatch.")
+    shared_secret = request.headers.get(WEBHOOK_SECRET_HEADER, "")
+    if not shared_secret:
+        # Esri does not document which header the secret arrives in, so name
+        # the ones that did arrive. If a portal is ever seen using a different
+        # name, this line is the evidence for changing the constant above.
+        # Names only — one of these values is the secret.
+        arrived = ", ".join(sorted(request.headers.keys())) or "none"
+        logger.warning(f"Received webhook request with no '{WEBHOOK_SECRET_HEADER}' header. "
+                       f"Headers received: {arrived}.")
+        return False
+
+    if not constant_time_compare(shared_secret, webhook_secret):
+        logger.warning("Webhook secret mismatch.")
         return False
 
     return True
@@ -3023,11 +3192,37 @@ def update_layer_dependency_counts(layer_names=None):
         return 0
 
 
-def process_webhook_events(events, target, portal_instance):
-    """Process multiple webhook events by routing to appropriate handlers."""
-    logger.debug(f"Processing {len(events)} webhook events")
+def process_webhook_events(events, target, portal_instance, context=None):
+    """
+    Route a webhook payload's events to their handlers.
 
-    for event in events:
+    Runs inside the "Process webhook" job rather than the request that received
+    the payload: each item event costs a portal round trip to learn the item's
+    type, and doing that in the view held a web thread and its transaction for
+    as long as the portal took to answer.
+
+    :param events: The payload's ``events`` array.
+    :param target: An authenticated GIS connection to the portal.
+    :param portal_instance: The Portal the payload came from.
+    :param context: The JobContext, when running as a job. Drives the progress
+        bar and lets a long payload be canceled or hit its time limit between
+        events.
+    :return: How many events were handled.
+    :rtype: int
+    """
+    total = len(events)
+    logger.debug(f"Processing {total} webhook events")
+
+    #: Deleting an item invalidates the denormalized "used by" counts. The
+    #: recompute walks every layer, so it is done once here rather than once per
+    #: delete event, which is what a payload of deletions used to cost.
+    deletions = False
+
+    for index, event in enumerate(events, start=1):
+        if context is not None:
+            context.checkpoint()
+            context.progress.set_progress(index, total, f"Event {index} of {total}")
+
         source = event.get("source")
         operation = event.get("operation")
         event_id = event.get("id")
@@ -3036,17 +3231,32 @@ def process_webhook_events(events, target, portal_instance):
 
         try:
             if source == "items":
-                _process_item_event(target, portal_instance, event_id, operation, event)
+                if _process_item_event(target, portal_instance, event_id, operation, event):
+                    deletions = True
             elif source == "user":
                 _process_user_event(portal_instance, event_id, operation)
             else:
                 logger.warning(f"Unhandled event source: {source}")
+        except (JobCanceled, JobDeadlineExceeded):
+            # Stopping is the job's decision, not an event that failed.
+            raise
         except Exception as e:
             logger.error(f"Error processing event {event_id} ({source}/{operation}): {e}", exc_info=True)
 
+    if deletions:
+        update_layer_dependency_counts()
+
+    return total
+
 
 def _process_item_event(target, portal_instance, event_id, operation, event):
-    """Process item webhook events including public sharing validation and CRUD operations."""
+    """
+    Process item webhook events: public sharing validation and CRUD operations.
+
+    :return: True when local rows were deleted, so the caller knows the layer
+        dependency counts need recomputing once the payload is done.
+    :rtype: bool
+    """
 
     # Handle public sharing validation for share operations
     if operation == "share":
@@ -3054,11 +3264,12 @@ def _process_item_event(target, portal_instance, event_id, operation, event):
 
     # Handle item operations
     if operation == "delete":
-        _webhook_item_deletion(portal_instance, event_id)
+        return _webhook_item_deletion(portal_instance, event_id)
     elif operation in ("add", "update", "publish", "share", "unshare"):
         _webhook_item_crud(target, portal_instance, event_id, operation)
     else:
         logger.warning(f"Unhandled item operation: {operation}")
+    return False
 
 def _webhook_public_sharing_validation(portal_instance, event_id, event):
     """Handle public sharing validation when items are shared publicly."""
@@ -3077,7 +3288,7 @@ def _webhook_public_sharing_validation(portal_instance, event_id, event):
 
         logger.info(f"Processing public item share validation for item: {event_id}")
 
-        tasks.process_public_unshare_task.delay(
+        tasks.process_public_unshare_task.enqueue(
             portal_alias=portal_instance.alias,
             score_threshold=tool_settings.tool_public_unshare_score,
             item_id=event_id
@@ -3088,7 +3299,14 @@ def _webhook_public_sharing_validation(portal_instance, event_id, event):
 
 
 def _webhook_item_deletion(portal_instance, event_id):
-    """Handle item deletion by cleaning up local database records."""
+    """
+    Handle item deletion by cleaning up local database records.
+
+    :return: True when anything was deleted. The caller recomputes the layer
+        dependency counts once per payload rather than once per event; that
+        recompute walks every layer row.
+    :rtype: bool
+    """
     try:
         deleted_count = 0
 
@@ -3107,12 +3325,14 @@ def _webhook_item_deletion(portal_instance, event_id):
 
         if deleted_count > 0:
             logger.info(f"Cleaned up {deleted_count} records for deleted item {event_id}")
-            update_layer_dependency_counts()
-        else:
-            logger.debug(f"No records found to delete for item {event_id}")
+            return True
+
+        logger.debug(f"No records found to delete for item {event_id}")
+        return False
 
     except Exception as e:
         logger.error(f"Error processing delete webhook for {event_id}: {e}", exc_info=True)
+        return False
 
 
 def _webhook_item_crud(target, portal_instance, event_id, operation):
@@ -3144,7 +3364,7 @@ def _webhook_item_crud(target, portal_instance, event_id, operation):
         task_name = task_mapping.get(item_type)
         if task_name:
             task = getattr(tasks, task_name)
-            task.delay(portal_instance.alias, event_id, operation)
+            task.enqueue(portal_instance.alias, event_id, operation)
         else:
             logger.info(f"No processing defined for item type: {item_type}")
 
@@ -3155,7 +3375,7 @@ def _webhook_item_crud(target, portal_instance, event_id, operation):
 def _process_user_event(portal_instance, event_id, operation):
     """Process user webhook events."""
     logger.info(f"Processing user webhook - ID: {event_id}, Operation: {operation}")
-    tasks.process_user.delay(portal_instance.alias, event_id, operation)
+    tasks.process_user.enqueue(portal_instance.alias, event_id, operation)
 
 
 @dataclass
@@ -3863,6 +4083,8 @@ def process_msd_layers_for_service(service_manifest, service_name, instance_item
                 if not dataset_name:
                     logger.warning(f"No dataset name for layer '{layer_info.layer_name}' in service '{service_name}'")
                     continue
+                if db_server:
+                    dataset_name = unqualified_dataset_name(dataset_name)
 
                 logger.debug(f"Processing layer: {layer_info.layer_name} (dataset: {dataset_name}, service_layer_id: {layer_info.service_layer_id})")
 
@@ -3887,8 +4109,8 @@ def process_msd_layers_for_service(service_manifest, service_name, instance_item
                     layer_id=layer_obj,
                     service_id=service_obj,
                     service_layer_id=layer_info.service_layer_id,
-                    service_layer_name=layer_info.layer_name,
                     defaults={
+                        "service_layer_name": layer_info.layer_name,
                         "updated_date": update_time
                     }
                 )
@@ -3920,6 +4142,24 @@ def process_msd_layers_for_service(service_manifest, service_name, instance_item
                     logger.debug(f"Cleaned up temporary MSD directory: {temp_dir}")
             except Exception as e:
                 logger.warning(f"Error cleaning up temporary MSD files: {e}")
+
+
+def unqualified_dataset_name(dataset_name):
+    """
+    Strip database and owner/schema qualifiers from an enterprise geodatabase
+    dataset name, e.g. 'GISDB.SDE.Parcels' or 'sde.Parcels' -> 'Parcels'.
+
+    Only call this for enterprise geodatabase datasets; file-based names such
+    as 'roads.shp' contain dots that are not qualifiers.
+
+    :param dataset_name: Dataset name as stored in the MSD or manifest.
+    :type dataset_name: str
+    :return: Table or feature class name only.
+    :rtype: str
+    """
+    if not dataset_name:
+        return dataset_name
+    return dataset_name.rsplit(".", 1)[-1]
 
 
 def _extract_database_info(connection_string):
@@ -3961,20 +4201,6 @@ def _extract_database_info(connection_string):
     return None, None, None
 
 
-# ----------------------------------------------------------------------
-# Service replacement (Replace Service tool)
-#
-# Repoints consuming portal items (web maps, apps, Experience Builder,
-# StoryMaps, ...) from a source service to one or more replacement
-# services by string-level find/replace of service URLs and portal item
-# IDs inside item JSON data, item resources, and the url property.
-# Adapted from the ArcGIS API for Python remap_data() function.
-# ----------------------------------------------------------------------
-
-# Item types whose get_data() content is JSON and can be updated by string
-# replacement (aligned with Esri's remap_data _TEXT_BASED_ITEM_TYPES, plus
-# additional Enterprise types). Items of other types still get their URL
-# property checked.
 TEXT_BASED_ITEM_TYPES = (
     'Web Map', 'Web Scene', 'Map Service', 'Feature Collection',
     'Web Mapping Application', 'Application', 'Dashboard', 'Operation View',
@@ -4078,7 +4304,412 @@ def _item_id_rows(source_service, target_service, warnings):
     return rows
 
 
-def build_mapping_rows(source_service, config):
+SERVICE_SUBLAYER_CACHE_SECONDS = 300
+
+
+def _inventory_endpoint(service):
+    """
+    The service endpoint to ask for a sublayer inventory, preferring MapServer
+    because that is where whole-service references point. A service published
+    as both need not number its layers identically on each endpoint, so one is
+    chosen rather than merged.
+
+    :param service: Service model instance
+    :return: Endpoint URL, or None when the service has none recorded
+    :rtype: str or None
+    """
+    urls = [u.rstrip('/') for u in (service.service_url or []) if u]
+    if not urls:
+        return None
+    for url in urls:
+        if _endpoint_suffix(url).lower() == "mapserver":
+            return url
+    return urls[0]
+
+
+def _portal_token_may_go_to(portal, url):
+    """
+    True when ``url`` belongs to ``portal``, so its session token may be sent there.
+
+    On ArcGIS Online a service's URL is the item's own url, which whoever owns the item
+    chose: an org member can register a service item pointing at a server they run, and
+    a vendor's or another organization's service gets one pointing at theirs. Sending the
+    portal admin's token to such a URL hands that server an administrator-level token for
+    the org. So on AGOL the URL has to be https and either the portal's own host or an
+    Esri-hosted service under this org's id:
+
+    * ``https://services<n>.arcgis.com/<org_id>/arcgis/rest/services/...``
+    * ``https://tiles<n>.arcgis.com/tiles/<org_id>/arcgis/rest/services/...``
+
+    An unknown org id matches nothing. On Enterprise, service URLs are built from the
+    federated servers' own admin data rather than from item urls, so they are trusted as
+    they always were. A portal whose type is not recorded is treated as AGOL.
+
+    :param portal: Portal model instance whose token would be sent
+    :param url: Destination URL
+    :return: Whether the token may be attached
+    :rtype: bool
+    """
+    if portal.portal_type == "portal":
+        return True
+
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if parts.scheme.lower() != "https" or not host:
+        return False
+    if host == (urlsplit(portal.url or "").hostname or ""):
+        return True
+    if not portal.org_id or not host.endswith(".arcgis.com"):
+        return False
+
+    segments = [s for s in parts.path.split("/") if s]
+    if segments[:1] == ["tiles"]:
+        segments = segments[1:]
+    return segments[:1] == [portal.org_id]
+
+
+def fetch_service_sublayers(service, credential_token=None):
+    """
+    Sublayer ids and names read from the service's own REST endpoint.
+
+    This is the only source that works for every service. Layer ids reach the
+    database solely through MSD parsing (referenced services) and
+    _record_hosted_layer (hosted ones), so a referenced service whose MSD
+    cannot be read has its datasets recorded with no numbers at all - and the
+    replacement tool needs numbers, not datasets. It is also live, where the
+    database is only as fresh as the last sync, and a replacement is about to
+    write URLs that have to resolve now.
+
+    Only attempted when the portal can authenticate without prompting, or a
+    credential token is supplied; the callers fall back to the database rather
+    than making an operator sign in to open a dialog. The same fallback applies
+    to an endpoint that does not belong to the portal: the request carries the
+    portal's token, so it is only made where _portal_token_may_go_to allows,
+    and never follows a redirect, which would carry the header along.
+
+    :param service: Service model instance
+    :param credential_token: Optional temporary credential token
+    :type credential_token: str or None
+    :return: [{'id': n, 'name': str}] sorted by id, or None when unavailable
+    :rtype: list or None
+    """
+    portal = service.portal_instance
+    if not credential_token and not portal_has_credentials(portal):
+        return None
+
+    url = _inventory_endpoint(service)
+    if not url:
+        return None
+
+    cache_key = f"service_sublayers:{hashlib.sha256(url.encode()).hexdigest()}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        target = connect(portal, credential_token)
+        # After connect, which records an AGOL portal's org id on first use.
+        if not _portal_token_may_go_to(portal, url):
+            logger.warning(f"Not reading a sublayer inventory from '{url}': it is not a service "
+                           f"of portal '{portal.alias}', so its token is not sent there.")
+            return None
+        token = getattr(getattr(target, "_con", None), "token", None)
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["X-Esri-Authorization"] = f"Bearer {token}"
+        # requests strips Authorization on a cross-host redirect, but not this header.
+        response = requests.get(url, headers=headers, params={"f": "json"},
+                                timeout=10, verify=portal_verify_tls(), allow_redirects=False)
+        if response.status_code != 200:
+            logger.warning(f"Sublayer inventory for '{url}' returned HTTP {response.status_code}")
+            return None
+        data = response.json()
+        if not isinstance(data, dict) or data.get("error"):
+            logger.warning(f"Sublayer inventory for '{url}' returned an error response")
+            return None
+
+        layers = {}
+        # Tables are addressable at .../<n> exactly as layers are
+        for entry in (data.get("layers") or []) + (data.get("tables") or []):
+            if not isinstance(entry, dict):
+                continue
+            layer_id = entry.get("id")
+            if isinstance(layer_id, int) and not isinstance(layer_id, bool):
+                layers[layer_id] = (entry.get("name") or "").strip()
+        inventory = [{"id": i, "name": n} for i, n in sorted(layers.items())]
+    except Exception as e:
+        logger.warning(f"Unable to read a sublayer inventory from '{url}': {e}")
+        return None
+
+    cache.set(cache_key, inventory, SERVICE_SUBLAYER_CACHE_SECONDS)
+    return inventory
+
+
+def resolve_layer_inventory(service, credential_token=None):
+    """
+    The sublayer inventory for a service: live from its REST endpoint where
+    that is reachable, otherwise whatever the database recorded.
+
+    :param service: Service model instance
+    :param credential_token: Optional temporary credential token
+    :type credential_token: str or None
+    :return: [{'id': n, 'name': str}] sorted by id
+    :rtype: list
+    """
+    live = fetch_service_sublayers(service, credential_token)
+    # An empty result falls back too: a service that reports no layers at all
+    # is likelier unreachable in some new way than genuinely empty
+    return live if live else get_source_layer_inventory(service)
+
+
+def _layer_inventory_map(service, credential_token=None):
+    """
+    Layer id -> layer name for a service, from resolve_layer_inventory.
+
+    :param service: Service model instance
+    :param credential_token: Optional temporary credential token
+    :type credential_token: str or None
+    :return: {layer_id: name}, empty when nothing is known for the service
+    :rtype: dict
+    """
+    return {layer["id"]: (layer["name"] or "").strip()
+            for layer in resolve_layer_inventory(service, credential_token)}
+
+
+def get_referenced_layer_ids(service):
+    """
+    Sublayer ids that consuming maps and apps actually point at, and whether
+    any consumer references the whole service (a Map_Service/App_Service row
+    with no sublayer id, left unexpanded because the service has no recorded
+    layers). Coverage warnings are scoped to these rather than to every layer
+    the service publishes, so a wide service replaced by a narrow one is not
+    reported as dozens of missing layers nobody uses.
+
+    :param service: Service model instance
+    :return: (referenced sublayer ids, whether the whole service is referenced)
+    :rtype: tuple
+    """
+    from .models import Map_Service, App_Service
+
+    ids = set()
+    whole = False
+    for model in (Map_Service, App_Service):
+        rows = model.objects.filter(service_id=service).values_list("service_layer_id", flat=True)
+        for layer_id in rows:
+            if layer_id is None:
+                whole = True
+            else:
+                ids.add(layer_id)
+    return ids, whole
+
+
+def build_coverage_context(source_service, config, credential_token=None):
+    """
+    Everything the dry run needs to judge, per item, whether the layers it
+    references still exist on the replacement service: source and target
+    inventories, and how each source sublayer id is routed.
+
+    :param source_service: Source Service model instance
+    :param config: Replacement configuration (see build_mapping_rows)
+    :type config: dict
+    :param credential_token: Optional temporary credential token
+    :type credential_token: str or None
+    :return: {'source_name', 'source_layers', 'targets': {pk: {'name', 'layers'}},
+              'route': {old_id: (target_pk, new_id, explicit)},
+              'default_target': pk or None}
+    :rtype: dict
+    """
+    from .models import Service
+
+    context = {
+        "source_name": source_service.service_name or "",
+        "source_layers": _layer_inventory_map(source_service, credential_token),
+        "targets": {},
+        "route": {},
+        "default_target": None,
+    }
+    if config.get("mode", "simple") == "simple":
+        target = Service.objects.filter(pk=config.get("target_service_id")).first()
+        if target:
+            context["targets"][target.pk] = {"name": target.service_name or "",
+                                             "layers": _layer_inventory_map(target, credential_token)}
+            context["default_target"] = target.pk
+        return context
+
+    mappings = config.get("layer_mappings", [])
+    targets = Service.objects.in_bulk({m["target_service_id"] for m in mappings})
+    for pk, target in targets.items():
+        context["targets"][pk] = {"name": target.service_name or "",
+                                  "layers": _layer_inventory_map(target, credential_token)}
+    for m in mappings:
+        if m["target_service_id"] in targets:
+            # 'explicit' means a target layer was picked in the row's second
+            # select, rather than left on the "Same layer ID" default
+            context["route"][m["old_layer_id"]] = (m["target_service_id"], m["new_layer_id"],
+                                                   bool(m.get("explicit")))
+    return context
+
+
+def _format_layer_ids(layer_ids, limit=10):
+    """
+    Renders a set of layer ids for a results-table note, sorted and capped so
+    a wide service does not produce an unreadable row.
+
+    :param layer_ids: Layer ids to render
+    :type layer_ids: set
+    :param limit: Most ids to name before summarising the rest
+    :type limit: int
+    :return: Comma-separated ids, with a count of any not named
+    :rtype: str
+    """
+    ordered = sorted(layer_ids)
+    if len(ordered) <= limit:
+        return ", ".join(str(i) for i in ordered)
+    named = ", ".join(str(i) for i in ordered[:limit])
+    return f"{named} and {len(ordered) - limit} more"
+
+
+def item_coverage_findings(referenced_ids, references_whole, context):
+    """
+    Per-item layer coverage notes: for each sublayer the item references,
+    whether the replacement service it is routed to publishes that layer
+    under that number, and under the same name.
+
+    A whole-service reference is checked against every recorded source
+    layer; when none are recorded the item is noted as unverifiable rather
+    than as missing everything, mirroring _check_layer_coverage. A layer whose
+    replacement the operator chose by hand is exempt from the name check.
+
+    :param referenced_ids: Sublayer ids the item references
+    :type referenced_ids: set
+    :param references_whole: Whether the item references the service root
+    :type references_whole: bool
+    :param context: From build_coverage_context
+    :type context: dict
+    :return: Short notes, empty when every referenced layer is covered
+    :rtype: list
+    """
+    if not context or not context["targets"]:
+        return []
+
+    ids = set(referenced_ids or ())
+    notes = []
+    if references_whole:
+        if context["source_layers"]:
+            ids |= set(context["source_layers"])
+        elif not ids:
+            notes.append(f"references the whole service; layer coverage could not be checked "
+                         f"(no layer information recorded for {context['source_name']})")
+            return notes
+
+    missing = {}
+    renamed = []
+    unverified = set()
+    seen_renamed = set()
+    for old_id in sorted(ids):
+        routed = context["route"].get(old_id)
+        if routed is None:
+            if context["default_target"] is None:
+                continue  # advanced mode, layer left on the source service
+            routed = (context["default_target"], old_id, False)
+        target_pk, new_id, explicit = routed
+        target = context["targets"].get(target_pk)
+        if target is None:
+            continue
+        if not target["layers"]:
+            unverified.add(target["name"])
+            continue
+        if new_id not in target["layers"]:
+            # A set: two source layers can be mapped onto one replacement id
+            missing.setdefault(target["name"], set()).add(new_id)
+            continue
+        if explicit:
+            # The user picked this target layer from a list showing its
+            # name, so a differing name is their decision, not a surprise.
+            continue
+        source_name = context["source_layers"].get(old_id, "")
+        target_name = target["layers"].get(new_id, "")
+        if source_name and target_name and source_name.casefold() != target_name.casefold():
+            note = (f"layer {new_id} is '{target_name}' on {target['name']}, "
+                    f"was '{source_name}'")
+            if note not in seen_renamed:
+                seen_renamed.add(note)
+                renamed.append(note)
+
+    for target_name, layer_ids in missing.items():
+        notes.append(f"layer(s) {_format_layer_ids(layer_ids)} not published by {target_name}")
+    notes.extend(renamed)
+    for target_name in sorted(unverified):
+        notes.append(f"layer coverage could not be checked against {target_name} "
+                     f"(no layer information recorded)")
+    return notes
+
+
+def _check_layer_coverage(source_service, source_layers, target_service, layer_pairs, warnings,
+                          credential_token=None):
+    """
+    Warns when the replacement service does not carry the layer ids the
+    mapping keeps pointing at it.
+
+    Replacement is a string substitution, so a layer number survives untouched
+    unless an advanced mapping renumbers it - and keeping the number is the
+    default in both modes. That is only correct when the replacement service
+    publishes the same layer at the same id, which nothing else checks. Two
+    ways it goes wrong: the id is absent on the replacement, breaking the
+    layer; or the id exists but publishes different data, which breaks nothing
+    visibly and is the more dangerous of the two.
+
+    Layer ids are only recorded for services whose manifest could be parsed,
+    so an empty target inventory means "unknown", not "no layers" - it must
+    not be reported as every layer missing.
+
+    :param source_service: Source Service model instance
+    :param source_layers: {layer_id: name} for the source service
+    :type source_layers: dict
+    :param target_service: Replacement Service model instance
+    :param layer_pairs: (old_layer_id, new_layer_id) pairs this mapping sends
+                        to the replacement service
+    :type layer_pairs: list
+    :param warnings: Warning list appended to in place
+    :type warnings: list
+    :return: None
+    :rtype: None
+    """
+    if not layer_pairs or not source_layers:
+        return
+
+    target_layers = _layer_inventory_map(target_service, credential_token)
+    if not target_layers:
+        warnings.append(
+            f"No layer information is recorded for {target_service.service_name}, so its "
+            f"layers could not be checked against {source_service.service_name}. Refresh "
+            f"the portal's service data, or verify the affected items after execution."
+        )
+        return
+
+    missing = {new for _, new in layer_pairs if new not in target_layers}
+    if missing:
+        warnings.append(
+            f"Layer(s) {_format_layer_ids(missing)} are not published by "
+            f"{target_service.service_name}. Items pointing at them will reference a layer "
+            f"that does not exist - map those layers to an existing one in Advanced mode, "
+            f"or leave them on {source_service.service_name}."
+        )
+
+    renamed = []
+    for old, new in sorted(set(layer_pairs)):
+        source_name, target_name = source_layers.get(old, ""), target_layers.get(new, "")
+        if source_name and target_name and source_name.casefold() != target_name.casefold():
+            renamed.append(f"layer {new} is '{target_name}' on {target_service.service_name} "
+                           f"but layer {old} is '{source_name}' on {source_service.service_name}")
+    if renamed:
+        warnings.append(
+            f"Layer names do not match: {'; '.join(renamed)}. Items keeping those layer "
+            f"numbers will show different data after replacement - verify them."
+        )
+
+
+def build_mapping_rows(source_service, config, credential_token=None):
     """
     Reduces the UI replacement configuration (simple or advanced mode) to
     mapping rows equivalent to the standalone script's CSV columns.
@@ -4095,10 +4726,16 @@ def build_mapping_rows(source_service, config):
                    {'mode': 'advanced', 'layer_mappings':
                        [{'old_layer_id': n, 'target_service_id': n, 'new_layer_id': n}, ...]}
     :type config: dict
-    :return: (rows, warnings, partial) - rows are dicts with
-             source_url/target_url/source_id/target_id; partial is True when
-             whole-service URL and item-ID references are intentionally left
-             unreplaced, so the dry run should count the remaining references
+    :param credential_token: Optional temporary credential token, used to read
+                             live sublayer inventories for the coverage checks
+    :type credential_token: str or None
+    :return: (rows, warnings, partial, sublayer_renumber) - rows are dicts
+             with source_url/target_url/source_id/target_id; partial is True
+             when whole-service URL and item-ID references are intentionally
+             left unreplaced, so the dry run should count the remaining
+             references; sublayer_renumber is {old_layer_id: new_layer_id} for
+             the bare sublayer integers a whole-service map image layer holds
+             in visibleLayers/layers[].id, which URL replacement cannot reach
     :rtype: tuple
     """
     from .models import Service
@@ -4113,7 +4750,18 @@ def build_mapping_rows(source_service, config):
         for su, tu in _pair_endpoint_urls(source_urls, target_service.service_url or [], warnings):
             rows.append({"source_url": su, "target_url": tu, "source_id": "", "target_id": ""})
         rows.extend(_item_id_rows(source_service, target_service, warnings))
-        return rows, warnings, False
+        # Swapping the whole service keeps every layer number as it is, which
+        # is only right if the replacement publishes the same layer at that id.
+        # Checked for the layers consumers point at, not everything published:
+        # a wide service replaced by a narrow one would otherwise list dozens
+        # of "missing" layers nobody uses. A whole-service consumer uses all.
+        source_layers = _layer_inventory_map(source_service, credential_token)
+        referenced, whole = get_referenced_layer_ids(source_service)
+        if whole:
+            referenced |= set(source_layers)
+        _check_layer_coverage(source_service, source_layers, target_service,
+                              [(i, i) for i in sorted(referenced)], warnings, credential_token)
+        return rows, warnings, False, {}
 
     # Advanced mode: per-sublayer mapping
     layer_mappings = config.get("layer_mappings", [])
@@ -4132,16 +4780,27 @@ def build_mapping_rows(source_service, config):
             rows.append({"source_url": f"{su}/{old_layer}", "target_url": f"{tu}/{new_layer}",
                          "source_id": "", "target_id": ""})
 
+    # "Same layer ID" is the default for every row, so an advanced mapping
+    # carries layer numbers over unchecked just as a simple swap does
+    source_layers = _layer_inventory_map(source_service, credential_token)
+    pairs_by_target = {}
+    for mapping in layer_mappings:
+        if mapping["target_service_id"] in targets:
+            pairs_by_target.setdefault(mapping["target_service_id"], []).append(
+                (mapping["old_layer_id"], mapping["new_layer_id"]))
+    for target_pk, layer_pairs in pairs_by_target.items():
+        _check_layer_coverage(source_service, source_layers, targets[target_pk],
+                              layer_pairs, warnings, credential_token)
+
     if len(target_ids) > 1:
         warnings.append(
             "Layers map to multiple replacement services, so whole-service URL and "
             "item-ID references cannot be replaced automatically. The preview shows "
             "how many such references remain per item."
         )
-        return rows, warnings, True
+        return rows, warnings, True, {}
 
-    unmapped_layer_ids = ({layer["id"] for layer in get_source_layer_inventory(source_service)}
-                          - {m["old_layer_id"] for m in layer_mappings})
+    unmapped_layer_ids = set(source_layers) - {m["old_layer_id"] for m in layer_mappings}
     if unmapped_layer_ids and targets:
         warnings.append(
             f"Layer(s) {', '.join(str(i) for i in sorted(unmapped_layer_ids))} are set to "
@@ -4149,8 +4808,9 @@ def build_mapping_rows(source_service, config):
             f"whole-service URL and item-ID references are left in place. The preview "
             f"shows how many such references remain per item."
         )
-        return rows, warnings, True
+        return rows, warnings, True, {}
 
+    sublayer_renumber = {}
     if targets:
         # Single target covering every known sublayer: whole-service
         # references and item IDs are unambiguous
@@ -4158,14 +4818,18 @@ def build_mapping_rows(source_service, config):
         for su, tu in _pair_endpoint_urls(source_urls, target_service.service_url or [], warnings):
             rows.append({"source_url": su, "target_url": tu, "source_id": "", "target_id": ""})
         rows.extend(_item_id_rows(source_service, target_service, warnings))
-        if any(m["new_layer_id"] != m["old_layer_id"] for m in layer_mappings):
+        # Web maps that added the whole service carry their sublayer numbers as
+        # bare integers, not URL suffixes; analyze_item renumbers those directly
+        sublayer_renumber = {m["old_layer_id"]: m["new_layer_id"] for m in layer_mappings
+                             if m["new_layer_id"] != m["old_layer_id"]}
+        if sublayer_renumber:
             warnings.append(
                 "Some layers change layer id. Items that reference this service by portal "
                 "item ID plus a numeric layerId property (rather than by URL) keep the old "
                 "layer number and may point at the wrong layer after replacement - verify "
                 "those layers in the affected items."
             )
-    return rows, warnings, False
+    return rows, warnings, False, sublayer_renumber
 
 
 def build_replacements(mapping_rows):
@@ -4289,6 +4953,296 @@ def count_occurrences(text, search_strings):
     return total
 
 
+def _iter_service_layers(data):
+    """
+    Yields every layer dict in a web map that can carry a service URL:
+    operational layers (recursing into group layers), tables and basemap
+    layers. Mirrors the traversal in tasks.process_layers, extended to
+    basemaps and tables because the text pass rewrites URLs there too.
+
+    :param data: Parsed web map JSON
+    :type data: dict
+    :return: Generator of layer dicts
+    :rtype: collections.abc.Iterator
+    """
+    if not isinstance(data, dict):
+        return
+
+    def walk(layers):
+        for layer in layers or []:
+            if not isinstance(layer, dict):
+                continue
+            yield layer
+            # Group layers nest their children under the same "layers" key a
+            # map image layer uses for sublayers; only recurse for the former
+            if layer.get("layerType") == "GroupLayer":
+                yield from walk(layer.get("layers"))
+
+    yield from walk(data.get("operationalLayers"))
+    yield from walk(data.get("tables"))
+    basemap = data.get("baseMap")
+    if isinstance(basemap, dict):
+        yield from walk(basemap.get("baseMapLayers"))
+
+
+def _normalize_root_urls(source_root_urls):
+    """
+    Lower-cases and strips trailing slashes from service root URLs for
+    comparison against a web map layer's url property.
+
+    :param source_root_urls: Service endpoint URLs
+    :type source_root_urls: list
+    :return: Normalized URLs
+    :rtype: set
+    """
+    return {u.strip().rstrip('/').lower() for u in (source_root_urls or []) if u}
+
+
+def _matches_service_root(layer, roots):
+    """
+    True when the layer references one of the service root URLs with no
+    sublayer index. Group layers are excluded: their "layers" key holds child
+    operational layers, not the sublayer entries a map image layer carries, so
+    renumbering ids inside one would corrupt the group.
+
+    :param layer: Web map layer dict
+    :type layer: dict
+    :param roots: Normalized service root URLs
+    :type roots: set
+    :return: Whether this layer is a whole-service reference
+    :rtype: bool
+    """
+    if layer.get("layerType") == "GroupLayer":
+        return False
+    url = layer.get("url")
+    if not isinstance(url, str):
+        return False
+    return url.strip().rstrip('/').lower() in roots
+
+
+def _layer_sublayer_ids(layer):
+    """
+    Returns the sublayer ids a whole-service map image layer names explicitly,
+    from its "layers" array or its "visibleLayers" list, or None when it names
+    none (the whole service is used as published).
+
+    :param layer: Web map operational layer dict
+    :type layer: dict
+    :return: Sorted sublayer ids, or None
+    :rtype: list or None
+    """
+    ids = set()
+    for entry in layer.get("layers") or []:
+        if not isinstance(entry, dict):
+            continue
+        for value in _sublayer_entry_ids(entry):
+            ids.add(value)
+    for value in layer.get("visibleLayers") or []:
+        if isinstance(value, int):
+            ids.add(value)
+    return sorted(ids) or None
+
+
+def _sublayer_entry_ids(entry):
+    """
+    Every sublayer number a map image sublayer entry names. Besides its own
+    "id", the web map specification lets an entry point at other sublayers
+    of the same service: "parentLayerId" and "subLayerIds" for group layers
+    inside the service, and "layerDefinition.source.mapLayerId" for a dynamic
+    layer drawn from another sublayer. All are bare integers; -1 means none.
+
+    :param entry: One item of a map image layer's "layers" array
+    :type entry: dict
+    :return: Sublayer ids referenced by the entry
+    :rtype: set
+    """
+    ids = set()
+    for key in ("id", "parentLayerId"):
+        value = entry.get(key)
+        if isinstance(value, int) and value >= 0:
+            ids.add(value)
+    for value in entry.get("subLayerIds") or []:
+        if isinstance(value, int) and value >= 0:
+            ids.add(value)
+    source = (entry.get("layerDefinition") or {}).get("source")
+    if isinstance(source, dict) and isinstance(source.get("mapLayerId"), int):
+        ids.add(source["mapLayerId"])
+    return ids
+
+
+def find_whole_service_layers(data, source_root_urls):
+    """
+    Finds web map layers that reference a service by its root URL, with no
+    sublayer index. Their sublayer numbers live in "visibleLayers" and
+    "layers[].id" as bare integers, so URL text replacement cannot reach
+    them; the dry run reports these when the mapping cannot repoint them.
+
+    :param data: Parsed web map JSON
+    :type data: dict
+    :param source_root_urls: Source service endpoint URLs
+    :type source_root_urls: list
+    :return: [{'title': str, 'url': str, 'sublayers': list or None}]
+    :rtype: list
+    """
+    roots = _normalize_root_urls(source_root_urls)
+    if not roots:
+        return []
+
+    found = []
+    for layer in _iter_service_layers(data):
+        if not _matches_service_root(layer, roots):
+            continue
+        found.append({
+            "title": layer.get("title") or layer.get("id") or "",
+            "url": layer["url"],
+            "sublayers": _layer_sublayer_ids(layer),
+        })
+    return found
+
+
+def remap_webmap_sublayer_ids(data, source_root_urls, renumber):
+    """
+    Renumbers the bare sublayer integers a whole-service map image layer
+    carries: "visibleLayers", and on each "layers[]" entry its "id",
+    "parentLayerId", "subLayerIds" and "layerDefinition.source.mapLayerId"
+    (see _sublayer_entry_ids). These never appear as URL suffixes, so
+    apply_replacements cannot touch them; without this the layer would point
+    at the replacement service while still naming the source service's
+    layer numbers.
+
+    Mutates `data` in place. Each list is rebuilt from its original values in
+    one pass so a swapping mapping such as {0: 1, 1: 0} stays correct.
+
+    :param data: Parsed web map JSON, modified in place
+    :type data: dict
+    :param source_root_urls: Source service endpoint URLs
+    :type source_root_urls: list
+    :param renumber: {old_layer_id: new_layer_id}
+    :type renumber: dict
+    :return: (count of renumbered ids, sublayer ids absent from the mapping)
+    :rtype: tuple
+    """
+    roots = _normalize_root_urls(source_root_urls)
+    if not roots or not renumber:
+        return 0, []
+
+    count = 0
+    unknown = set()
+
+    for layer in _iter_service_layers(data):
+        if not _matches_service_root(layer, roots):
+            continue
+
+        visible = layer.get("visibleLayers")
+        if isinstance(visible, list):
+            new_visible = []
+            for value in visible:
+                if isinstance(value, int) and value in renumber:
+                    new_visible.append(renumber[value])
+                    count += 1
+                else:
+                    if isinstance(value, int):
+                        unknown.add(value)
+                    new_visible.append(value)
+            layer["visibleLayers"] = new_visible
+
+        sublayers = layer.get("layers")
+        if isinstance(sublayers, list):
+            for entry in sublayers:
+                if not isinstance(entry, dict):
+                    continue
+                for key in ("id", "parentLayerId"):
+                    value = entry.get(key)
+                    if not isinstance(value, int) or value < 0:
+                        continue
+                    if value in renumber:
+                        entry[key] = renumber[value]
+                        count += 1
+                    else:
+                        unknown.add(value)
+                children = entry.get("subLayerIds")
+                if isinstance(children, list):
+                    new_children = []
+                    for value in children:
+                        if isinstance(value, int) and value in renumber:
+                            new_children.append(renumber[value])
+                            count += 1
+                        else:
+                            if isinstance(value, int) and value >= 0:
+                                unknown.add(value)
+                            new_children.append(value)
+                    entry["subLayerIds"] = new_children
+                source = (entry.get("layerDefinition") or {}).get("source")
+                if isinstance(source, dict) and isinstance(source.get("mapLayerId"), int):
+                    if source["mapLayerId"] in renumber:
+                        source["mapLayerId"] = renumber[source["mapLayerId"]]
+                        count += 1
+                    else:
+                        unknown.add(source["mapLayerId"])
+
+    return count, sorted(unknown)
+
+
+def _sublayer_url_regex(root_url):
+    """
+    Pattern capturing the sublayer number of any ".../MapServer/<n>" style
+    reference to the service, tolerant of JSON-escaped slashes like the URL
+    matching in apply_replacements.
+
+    :param root_url: Service endpoint URL
+    :type root_url: str
+    :return: Compiled pattern with the sublayer number in group 1
+    :rtype: re.Pattern
+    """
+    root = ''.join(r'\\?/' if ch == '/' else re.escape(ch) for ch in root_url.rstrip('/'))
+    return re.compile(root + r'\\?/([0-9]+)(?![0-9])', re.IGNORECASE)
+
+
+def _root_url_regex(root_url):
+    """
+    Pattern matching a reference to the service root that is NOT followed by
+    a sublayer number - a whole-service reference, as an app holds it.
+
+    :param root_url: Service endpoint URL
+    :type root_url: str
+    :return: Compiled pattern
+    :rtype: re.Pattern
+    """
+    root = ''.join(r'\\?/' if ch == '/' else re.escape(ch) for ch in root_url.rstrip('/'))
+    # Not followed by a sublayer number, and not merely the prefix of a longer
+    # name (".../MapServer" inside ".../MapServer12")
+    return re.compile(root + r'(?![A-Za-z0-9_])(?!\\?/[0-9])', re.IGNORECASE)
+
+
+def find_referenced_sublayers(text, source_root_urls):
+    """
+    Sublayer numbers an item references by URL, plus whether it references the
+    service root without one. Used to check, per item, that the replacement
+    service publishes what this item actually points at.
+
+    :param text: Serialized item data
+    :type text: str
+    :param source_root_urls: Source service endpoint URLs
+    :type source_root_urls: list
+    :return: (sublayer ids referenced by URL, whether the bare root is referenced)
+    :rtype: tuple
+    """
+    ids = set()
+    whole = False
+    for root in source_root_urls or []:
+        if not root:
+            continue
+        for match in _sublayer_url_regex(root).finditer(text):
+            ids.add(int(match.group(1)))
+        encoded = quote(root.rstrip('/'), safe='')
+        for match in re.finditer(re.escape(encoded) + r'%2F([0-9]+)(?![0-9])', text,
+                                 flags=re.IGNORECASE):
+            ids.add(int(match.group(1)))
+        if _root_url_regex(root).search(text):
+            whole = True
+    return ids, whole
+
+
 def get_source_layer_inventory(service):
     """
     Returns the known sublayers of a service for the advanced mapping UI:
@@ -4403,22 +5357,43 @@ def write_resource_text(item, resource_name, text):
         return False
 
 
-def analyze_item(item, replacements):
+def analyze_item(item, replacements, sublayer_renumber=None,
+                 source_root_urls=None, unreplaced_references=None):
     """
     Determines every change the replacements would make to an item without
     modifying anything: the url property, the item data, and item resources
     for resource-based types.
 
+    For a web map, also renumbers the bare sublayer integers a whole-service
+    map image layer holds in visibleLayers/layers[].id, which URL text
+    replacement cannot reach, and records the whole-service layers found so
+    the dry run can report the ones a split mapping cannot repoint.
+
     :param item: arcgis Item to analyze
     :param replacements: List of (old, new) tuples
     :type replacements: list
-    :return: Pending change set, or None if the item is unaffected
+    :param sublayer_renumber: {old_layer_id: new_layer_id} for whole-service
+                              map image layers, or None
+    :type sublayer_renumber: dict or None
+    :param source_root_urls: Source service endpoint URLs, used to spot
+                             whole-service references
+    :type source_root_urls: list or None
+    :param unreplaced_references: Strings left deliberately unreplaced by a
+                                  partial mapping, counted for reporting
+    :type unreplaced_references: list or None
+    :return: Pending change set, or None if the item is unaffected and there
+             is nothing to report
     :rtype: dict or None
     """
     changes = {'newURL': None, 'urlCount': 0,
                'oldDataText': None, 'newDataText': None, 'dataCount': 0,
                'resources': [],  # (name, oldText, newText, count)
                'resourceCount': 0,
+               'sublayerCount': 0,
+               'wholeServiceLayers': [],
+               'referencedSublayers': [],
+               'referencesWholeService': False,
+               'unreplacedCount': 0,
                'warnings': []}
 
     # 1. Item URL property
@@ -4445,7 +5420,59 @@ def analyze_item(item, replacements):
                 text = None
 
             if text:
-                candidate, count = apply_replacements(text, replacements)
+                # Structural pass first, on the parsed JSON: a whole-service
+                # map image layer names its sublayers as bare integers, so the
+                # URL replacements below can never reach them. It runs against
+                # the original root URL, before any URL is rewritten.
+                source_text = text
+                if source_root_urls:
+                    referenced, whole = find_referenced_sublayers(text, source_root_urls)
+                    changes['referencedSublayers'] = sorted(referenced)
+                    changes['referencesWholeService'] = whole
+
+                if item.type == 'Web Map' and isinstance(data, dict) and source_root_urls:
+                    # Its own try: a failure here is a bug in the structural
+                    # pass, not a portal read, and must say so. It works on a
+                    # fresh parse so a half-applied renumber cannot leak into
+                    # the text pass below.
+                    try:
+                        work = json.loads(text)
+                        changes['wholeServiceLayers'] = find_whole_service_layers(
+                            work, source_root_urls)
+                        # For a web map the structure is authoritative: the text
+                        # scan above sees the root URL and calls it "everything",
+                        # but a root with an explicit layers array names exactly
+                        # which sublayers it uses
+                        changes['referencesWholeService'] = False
+                        for layer in changes['wholeServiceLayers']:
+                            if layer['sublayers'] is None:
+                                changes['referencesWholeService'] = True
+                            else:
+                                changes['referencedSublayers'] = sorted(
+                                    set(changes['referencedSublayers']) | set(layer['sublayers']))
+                        if sublayer_renumber:
+                            renumbered, unknown = remap_webmap_sublayer_ids(
+                                work, source_root_urls, sublayer_renumber)
+                            if renumbered:
+                                changes['sublayerCount'] = renumbered
+                                source_text = json.dumps(work)
+                            if unknown:
+                                message = (f"{item.title} ({item.id}) references sublayer(s) "
+                                           f"{', '.join(str(i) for i in unknown)} of the source "
+                                           f"service that are not in the layer mapping; their "
+                                           f"layer numbers were left unchanged")
+                                logger.warning(message)
+                                changes['warnings'].append(message)
+                    except Exception as e:
+                        message = (f"Structural pass failed for {item.title} ({item.id}): {e}; "
+                                   f"layer numbers left unchanged")
+                        logger.error(message, exc_info=True)
+                        changes['warnings'].append(message)
+                        changes['sublayerCount'] = 0
+                        source_text = text
+
+                candidate, count = apply_replacements(source_text, replacements)
+                count += changes['sublayerCount']
                 if count:
                     # Validate the result is still valid JSON before queueing
                     try:
@@ -4458,6 +5485,11 @@ def analyze_item(item, replacements):
                                    f"{item.title} ({item.id}); skipping data update")
                         logger.warning(message)
                         changes['warnings'].append(message)
+                        changes['sublayerCount'] = 0
+
+                if unreplaced_references:
+                    changes['unreplacedCount'] = count_occurrences(
+                        changes['newDataText'] or text, unreplaced_references)
         except Exception:
             logger.warning(f"Unable to read data for {item.title} ({item.id})")
 
@@ -4480,7 +5512,9 @@ def analyze_item(item, replacements):
                 changes['resources'].append((resource_name, old_text, candidate, count))
                 changes['resourceCount'] += count
 
-    if not changes['urlCount'] and not changes['dataCount'] and not changes['resourceCount']:
+    if (not changes['urlCount'] and not changes['dataCount']
+            and not changes['resourceCount']
+            and not changes['wholeServiceLayers'] and not changes['unreplacedCount']):
         return None
     return changes
 
@@ -4512,8 +5546,10 @@ def backup_item(job, item, changes):
                 "data_text": changes['oldDataText'] if changes['dataCount'] else None,
                 "resources": {name: old_text for name, old_text, _, _ in changes['resources']},
                 "item_modified_at": getattr(item, "modified", None),
-                "counts": {"url": changes['urlCount'], "data": changes['dataCount'],
-                           "resources": changes['resourceCount']},
+                "counts": {"url": changes['urlCount'],
+                           "data": changes['dataCount'] - changes.get('sublayerCount', 0),
+                           "resources": changes['resourceCount'],
+                           "sublayers": changes.get('sublayerCount', 0)},
                 "status": "analyzed",
                 "error": "",
             }
@@ -4840,7 +5876,7 @@ def resolve_replacement_credentials(request, portal, job_id=None):
             return {"token": None, "prompt": True,
                     "error": auth_result.get("error", "Authentication failed. Please verify credentials.")}
         token = CredentialManager.store_credentials(
-            username, password, ttl_seconds=REPLACEMENT_CREDENTIAL_TTL_SECONDS)
+            username, password, portal=portal, ttl_seconds=REPLACEMENT_CREDENTIAL_TTL_SECONDS)
         if not token:
             return {"token": None, "prompt": True,
                     "error": "Failed to store credentials. Please try again."}
@@ -4850,7 +5886,7 @@ def resolve_replacement_credentials(request, portal, job_id=None):
 
     if job_id:
         token = cache.get(f"replace_job_creds:{job_id}:{request.user.pk}")
-        if token and CredentialManager.retrieve_credentials(token):
+        if token and CredentialManager.retrieve_credentials(token, portal=portal):
             return {"token": token, "prompt": False, "error": None}
 
     return {"token": None, "prompt": True, "error": None}
@@ -4859,16 +5895,16 @@ def resolve_replacement_credentials(request, portal, job_id=None):
 def purge_expired_replacement_backups():
     """
     Deletes ReplacementItemBackup rows older than the retention window
-    (settings.REPLACEMENT_BACKUP_RETENTION_DAYS, default 90; 0 disables
-    purging). Jobs are kept for audit history; once its backups are purged a
-    job can no longer be reverted.
+    (SiteSettings.replacement_backup_retention_days, set in Settings >
+    Retention; 0 disables purging). Jobs are kept for audit history; once its
+    backups are purged a job can no longer be reverted.
 
     :return: Number of backup rows deleted
     :rtype: int
     """
     from .models import ReplacementItemBackup
 
-    retention_days = getattr(settings, "REPLACEMENT_BACKUP_RETENTION_DAYS", 90)
+    retention_days = SiteSettings.load().replacement_backup_retention_days
     if not retention_days:
         return 0
     cutoff = timezone.now() - timedelta(days=retention_days)
@@ -4878,6 +5914,48 @@ def purge_expired_replacement_backups():
         expired.delete()
         logger.info(f"Purged {count} replacement item backup(s) older than {retention_days} days")
     return count
+
+
+def purge_old_log_entries():
+    """
+    Deletes LogEntry rows older than the retention window
+    (SiteSettings.log_retention_days, set in Settings > Logs; 0 disables
+    purging).
+
+    The log table grows without bound otherwise, and it is the most sensitive
+    table in the database after the credentials: it holds request paths, client
+    IPs, usernames and tracebacks. Keeping years of that is a liability, and a
+    retention window is what most data policies expect to see.
+
+    Deleted in batches so a first run against a large backlog doesn't hold a
+    single long transaction or build one enormous list of ids.
+
+    :return: Number of log rows deleted
+    :rtype: int
+    """
+    from .models import LogEntry
+
+    retention_days = SiteSettings.load().log_retention_days
+    if not retention_days:
+        return 0
+
+    cutoff = timezone.now() - timedelta(days=retention_days)
+    batch_size = 5000
+    total = 0
+    while True:
+        batch_ids = list(
+            LogEntry.objects.filter(timestamp__lt=cutoff).values_list("pk", flat=True)[:batch_size]
+        )
+        if not batch_ids:
+            break
+        deleted, _ = LogEntry.objects.filter(pk__in=batch_ids).delete()
+        total += deleted
+        if len(batch_ids) < batch_size:
+            break
+
+    if total:
+        logger.info(f"Purged {total} log entr(ies) older than {retention_days} days")
+    return total
 
 
 def get_job_target_info(job):

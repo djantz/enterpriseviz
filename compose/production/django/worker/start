@@ -1,0 +1,10 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# Replaces the celery worker and celery beat containers with one process that
+# drains the job queue and fires due schedules. No broker is involved; the
+# queue is the app_job table. See app/management/commands/run_worker.py.
+exec python /app/manage.py run_worker

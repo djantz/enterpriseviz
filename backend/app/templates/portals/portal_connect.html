@@ -1,0 +1,23 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<calcite-dialog id="connect-modal" heading="Connect with ArcGIS" open width="s">
+  <div id="connect-prompt-container">
+    <calcite-notice open kind="warning" icon="exclamation-mark-triangle" scale="s">
+      <div slot="title">Authorization required</div>
+      <div slot="message">
+        {% if reason %}{{ reason }}{% else %}
+          <strong>{{ instance.alias }}</strong> uses OAuth but has not been authorized yet.
+        {% endif %}
+        Sign in with an administrator account to authorize unattended access.
+      </div>
+    </calcite-notice>
+  </div>
+  <calcite-button id="connect-cancel" data-action="close-modal" icon-start="circle-disallowed"
+                  slot="footer-end" appearance="outline" label="Cancel">
+    Cancel
+  </calcite-button>
+  <calcite-button id="connect-start" icon-start="sign-in" slot="footer-end"
+                  href="{% url 'enterpriseviz:portal_oauth_connect' instance=instance.alias %}"
+                  label="Connect with ArcGIS">
+    Connect with ArcGIS
+  </calcite-button>
+</calcite-dialog>

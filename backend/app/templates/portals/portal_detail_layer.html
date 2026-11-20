@@ -121,13 +121,23 @@
             </div>
           </div>
         </div>
-        {% if user.is_superuser %}
+        {% if report_url or user.is_superuser %}
         <div class="x_panel">
-          <calcite-button scale="s" kind="inverse" width="full"
+          {% if report_url %}
+          <calcite-button download scale="s" kind="inverse" width="full"
+                          icon-start="file-excel"
+                          href="{{ report_url }}"
+                          label="Download dependency report for {{ report_label }}">Download report
+          </calcite-button>
+          {% endif %}
+          {% if user.is_superuser %}
+          <calcite-button scale="s" kind="inverse" width="full" class="margin-top-1"
+                          icon-start="send"
                           data-modal-trigger="notify-modal"
                           label="Notify affected users about changes">Notify
           </calcite-button>
           {% include "portals/portal_notify.html" with change_item_name=item %}
+          {% endif %}
         </div>
         {% endif %}
       </div>
@@ -167,7 +177,7 @@
                    width="100%" aria-label="Services using this layer" hx-boost="true">
               <thead>
               <tr>
-                <th scope="col" class="details">Details</th>
+                <th scope="col" class="details no-export">Details</th>
                 <th scope="col">Name</th>
                 <th scope="col">URL</th>
                 <th scope="col">Publishing Server</th>
@@ -290,7 +300,7 @@
                    aria-label="Web maps using this layer" hx-boost="true">
               <thead>
               <tr>
-                <th scope="col" class="details">Details</th>
+                <th scope="col" class="details no-export">Details</th>
                 <th scope="col">Webmap Title</th>
                 <th scope="col">Owner</th>
                 <th scope="col">Access</th>
@@ -377,7 +387,7 @@
                    aria-label="Apps using this layer">
               <thead>
               <tr>
-                <th scope="col" class="details">Details</th>
+                <th scope="col" class="details no-export">Details</th>
                 <th scope="col">Title</th>
                 <th scope="col">Type</th>
                 <th scope="col">Usage</th>
@@ -444,8 +454,6 @@
   </calcite-tooltip>
 {% endblock content %}
 {% block javascripts %}
-  <script id="graph-data" type="application/json">
-    {{ graph_data|safe }}
-  </script>
+  {{ graph_data|json_script:"graph-data" }}
   {{ service_usage|json_script:"chartdata" }}
 {% endblock javascripts %}

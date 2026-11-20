@@ -1,0 +1,8 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+{% include "partials/progress_bar.html" %}
+{% if refresh_control %}
+  {% include "partials/portal_refresh_control.html" with items=refresh_control.items instance=refresh_control.instance active_job=refresh_control.active_job with_modes=refresh_control.with_modes oob=refresh_control.oob %}
+{% endif %}
+{% for status in panel_statuses %}
+  {% include "partials/panel_status.html" with items=status.items last_updated=status.last_updated phase=status.phase oob=status.oob %}
+{% endfor %}

@@ -1,27 +1,21 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
-<calcite-dialog id="log-settings-modal" modal heading="Log Settings" scale="m" open width="m"
+<calcite-dialog id="log-settings-modal" modal heading="Logging and Data Retention" scale="m" open width="m"
                 {% if form.errors %}kind="danger"{% endif %}>
 
   <div id="log-settings-form-container">
-    <form id="log-settings-form" aria-label="Log level configuration">
+    <form id="log-settings-form" class="calcite-form" aria-label="Logging and retention configuration">
       {% csrf_token %}
-      <calcite-select name="level" id="log-level-select" label="Application Log Level"
-                      required
-                      status="{% if form.level.errors %}invalid{% else %}idle{% endif %}"
-                      validation-message="{{ form.level.errors|join:' ' }}"
-                      validation-icon="{% if form.level.errors %}exclamation-mark-triangle{% endif %}">
-        {% for level_name in log_levels %}
-          <calcite-option value="{{ level_name }}"
-                          {% if level_name == current_log_level %}selected{% endif %}
-                          label="{{ level_name }}">{{ level_name }}</calcite-option>
+      <calcite-select name="{{ form.logging_level.name }}" id="log-level-select" label="Application Log Level"
+                      label-text="Application Log Level" required
+                      status="{% if form.logging_level.errors %}invalid{% else %}idle{% endif %}"
+                      validation-message="{{ form.logging_level.errors|join:' ' }}"
+                      validation-icon="{% if form.logging_level.errors %}exclamation-mark-triangle{% endif %}">
+        {% for value, label in form.logging_level.field.choices %}
+          <calcite-option value="{{ value }}"
+                          {% if value == form.logging_level.value %}selected{% endif %}
+                          label="{{ label }}">{{ label }}</calcite-option>
         {% endfor %}
       </calcite-select>
-
-      {% if form.non_field_errors %}
-      <calcite-notice open kind="danger" icon>
-        <div slot="message">{{ form.non_field_errors|join:" " }}</div>
-      </calcite-notice>
-      {% endif %}
 
       <calcite-notice open icon kind="info">
         <div slot="title">Log Level Information</div>
@@ -30,6 +24,53 @@
           Higher levels (ERROR, WARNING) show fewer messages, while lower levels (DEBUG, INFO) show more detail.
         </div>
       </calcite-notice>
+
+      <calcite-input type="number" min="0" max="3650" step="1"
+                     id="log-retention-days" name="{{ form.log_retention_days.name }}"
+                     value="{{ form.log_retention_days.value|default_if_none:'' }}"
+                     label-text="Log Retention (days)" required suffix-text="days"
+                     status="{% if form.log_retention_days.errors %}invalid{% else %}idle{% endif %}"
+                     validation-message="{{ form.log_retention_days.errors|join:' ' }}"
+                     validation-icon="{% if form.log_retention_days.errors %}exclamation-mark-triangle{% endif %}">
+        <calcite-icon slot="label-content" id="log-retention-tooltip" icon="information" scale="s"></calcite-icon>
+      </calcite-input>
+
+      <calcite-input type="number" min="0" max="3650" step="1"
+                     id="job-retention-days" name="{{ form.job_retention_days.name }}"
+                     value="{{ form.job_retention_days.value|default_if_none:'' }}"
+                     label-text="Job History Retention (days)" required suffix-text="days"
+                     status="{% if form.job_retention_days.errors %}invalid{% else %}idle{% endif %}"
+                     validation-message="{{ form.job_retention_days.errors|join:' ' }}"
+                     validation-icon="{% if form.job_retention_days.errors %}exclamation-mark-triangle{% endif %}">
+        <calcite-icon slot="label-content" id="job-retention-tooltip" icon="information" scale="s"></calcite-icon>
+      </calcite-input>
+
+      <calcite-input type="number" min="0" max="3650" step="1"
+                     id="replacement-backup-retention-days" name="{{ form.replacement_backup_retention_days.name }}"
+                     value="{{ form.replacement_backup_retention_days.value|default_if_none:'' }}"
+                     label-text="Replacement Backup Retention (days)" required suffix-text="days"
+                     status="{% if form.replacement_backup_retention_days.errors %}invalid{% else %}idle{% endif %}"
+                     validation-message="{{ form.replacement_backup_retention_days.errors|join:' ' }}"
+                     validation-icon="{% if form.replacement_backup_retention_days.errors %}exclamation-mark-triangle{% endif %}">
+        <calcite-icon slot="label-content" id="backup-retention-tooltip" icon="information" scale="s"></calcite-icon>
+      </calcite-input>
+
+      <calcite-notice open icon kind="warning">
+        <div slot="title">Retention Deletes Data</div>
+        <div slot="message">
+          Anything older than these windows is deleted by the nightly purge and cannot be recovered.
+          Log entries hold request paths, usernames and client IP addresses, so that window is a data
+          policy decision. Replacement backups are what the Replace Service tool reverts from — once
+          they are purged, those replacements can no longer be undone, and the job history that
+          remains is a record rather than something you can roll back. Enter 0 to keep everything.
+        </div>
+      </calcite-notice>
+
+      {% if form.non_field_errors %}
+      <calcite-notice open kind="danger" icon>
+        <div slot="message">{{ form.non_field_errors|join:" " }}</div>
+      </calcite-notice>
+      {% endif %}
     </form>
   </div>
 
@@ -43,8 +84,18 @@
                   hx-post="{% url 'enterpriseviz:log_settings' %}"
                   hx-target="#log-settings-modal"
                   hx-include="#log-settings-form"
-                  icon-start="save" label="Save log level changes">
+                  icon-start="save" label="Save log settings">
     Save
   </calcite-button>
 
 </calcite-dialog>
+
+<calcite-tooltip reference-element="log-retention-tooltip">
+  <span>Days of application log history to keep. 0 keeps every entry indefinitely.</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="job-retention-tooltip">
+  <span>Days of finished background job history to keep. 0 keeps every job indefinitely.</span>
+</calcite-tooltip>
+<calcite-tooltip reference-element="backup-retention-tooltip">
+  <span>Days a Replace Service backup stays revertable. 0 keeps every backup indefinitely.</span>
+</calcite-tooltip>

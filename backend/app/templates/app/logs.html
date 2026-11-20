@@ -127,15 +127,15 @@
               <p>No filters available.</p>
             {% endif %}
             <div class="margin-right-auto">
-              <calcite-button id="log-settings-action" text="Log Settings"
+              <calcite-button id="log-settings-action"
                               icon-start="gear"
-                              text-enabled kind="inverse"
+                              kind="inverse"
                               hx-get="{% url 'enterpriseviz:log_settings' %}"
                               hx-target="#logSettingsModalContent" scale="s"
-                              label="Configure application log settings">
+                              label="Configure the log level and data retention">Logging &amp; Retention
               </calcite-button>
               <calcite-tooltip reference-element="log-settings-action" placement="left" overlay-positioning="fixed" close-on-click>
-                <span>Configure application log level</span>
+                <span>Set the log level and how long logs, jobs and replacement backups are kept</span>
               </calcite-tooltip>
             </div>
           </form>

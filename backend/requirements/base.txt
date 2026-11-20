@@ -1,38 +1,54 @@
+# Versions are pinned so a build is reproducible and so an upgrade is a
+# reviewable change rather than something that happens silently on the next
+# rebuild. Versions below are the ones this application is tested against.
 
-whitenoise  # https://github.com/evansd/whitenoise
-redis  # https://github.com/redis/redis-py
-hiredis  # https://github.com/redis/hiredis-py
-celery  # pyup: < 6.0  # https://github.com/celery/celery
-django-celery-beat  # https://github.com/celery/django-celery-beat
+whitenoise==6.11.0  # https://github.com/evansd/whitenoise
 
+# Background work runs in-process against the database (see app/jobs.py and the
+# run_worker management command); there is no broker and no Redis. celery is
+# still installed, but only as a library: django-celery-beat's CrontabSchedule
+# returns a celery.schedules.crontab whose is_due() does the cron arithmetic for
+# the scheduler. No celery worker, beat process or broker is deployed.
+celery==5.5.3  # pyup: < 6.0  # https://github.com/celery/celery
+django-celery-beat==2.8.1  # https://github.com/celery/django-celery-beat
+
+# Windows has no system time zone database, so zoneinfo cannot resolve
+# TIME_ZONE without this. Django raises ZoneInfoNotFoundError at startup
+# otherwise. Harmless on Linux, where the system database is preferred.
+tzdata==2025.2
 
 # Django
 # ------------------------------------------------------------------------------
-django
-django-environ
-django-redis  # https://github.com/jazzband/django-redis
+django==5.2.8
+django-environ==0.12.0
 # Django REST Framework
-djangorestframework  # https://github.com/encode/django-rest-framework
+djangorestframework==3.16.1  # https://github.com/encode/django-rest-framework
 
 
-arcgis==2.4.1
+arcgis==2.4.2
 arcgis-mapping==4.33.0
-requests
-social-auth-app-django
-django-csp
-beautifulsoup4>=4.12.2
-django-celery-results
-django-htmx
-celery-progress
-social-auth-core
-django-cryptography-django5
-fuzzywuzzy
-django-tasks
-django-tables2
-django-filter
-django-tables2-reports
-django-tables2-simplefilter
-tablib
-cron-descriptor
-python-Levenshtein
-tabulate
+requests==2.32.5
+social-auth-app-django==5.6.0
+django-csp==4.0
+beautifulsoup4==4.14.2
+django-htmx==1.26.0
+social-auth-core==4.8.1
+# Pins Django <= 5.0 in its own metadata and is already a minor past that here.
+# It encrypts Portal.password and Portal.token, so it is what blocks a move to
+# Django 6; replacing it with a Fernet-backed field of our own (CredentialManager
+# already uses Fernet with CREDENTIAL_ENCRYPTION_KEY) is the unblock.
+django-cryptography-django5==2.2
+fuzzywuzzy==0.18.0
+django-tables2==2.8.0
+django-filter==25.2
+django-tables2-reports==0.1.3
+django-tables2-simplefilter==0.1
+tablib==3.9.0
+# tablib's xlsx writer is an optional extra: without openpyxl installed,
+# Dataset.export("xlsx") raises UnsupportedFormat, which is why the dashboard
+# Excel buttons have been dead. Also used directly by app/reports.py to build
+# the multi-sheet dependency reports.
+openpyxl==3.1.5
+cron-descriptor==2.0.6
+python-Levenshtein==0.27.3
+tabulate==0.9.0

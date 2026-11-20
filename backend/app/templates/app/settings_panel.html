@@ -1,19 +1,33 @@
 <!-- Licensed under GPLv3 - See LICENSE file for details. -->
 <div id="settings-container" role="region" aria-label="Application settings">
+  {% if user.is_staff %}
   <calcite-list>
-    <calcite-list-item id="email-action" label="Email" icon-start="envelope"
+    {% if user.is_superuser %}
+    <calcite-list-item id="arcgis-signin-action" label="ArcGIS Sign-In" icon-start="sign-in"
+                  hx-get="{% url 'enterpriseviz:arcgis_signin_settings' %}"
+                  hx-target="#arcgis_signin_modal"></calcite-list-item>
+  <calcite-list-item id="email-action" label="Email" icon-start="envelope"
                   hx-get="{% url 'enterpriseviz:email_settings' %}"
                   hx-target="#email_settings_modal"></calcite-list-item>
   <calcite-list-item id="webhook-action" label="Webhook" icon-start="key"
                   hx-get="{% url 'enterpriseviz:webhook_settings' %}"
                   hx-target="#webhook_settings_modal"></calcite-list-item>
+    {% endif %}
   <calcite-list-item id="log-viewer-action" label="Logs" icon-start="access-string-results"
                   hx-get="{% url 'enterpriseviz:log' %}"
                   hx-target="#mainbodycontent"
                   hx-push-url="true"></calcite-list-item>
+  <calcite-list-item id="retention-action" label="Retention" icon-start="clock-forward"
+                  hx-get="{% url 'enterpriseviz:log_settings' %}"
+                  hx-target="#retention_settings_modal"></calcite-list-item>
   </calcite-list>
 
 
+  {% if user.is_superuser %}
+  <calcite-tooltip reference-element="arcgis-signin-action" placement="left" overlay-positioning="fixed"
+                   close-on-click>
+    <span>Configure the ArcGIS organization and OAuth application users sign in through</span>
+  </calcite-tooltip>
   <calcite-tooltip reference-element="email-action" placement="left" overlay-positioning="fixed"
                    close-on-click>
     <span>Configure email settings for notifications</span>
@@ -22,10 +36,16 @@
                    close-on-click>
     <span>Configure webhook settings for integrations</span>
   </calcite-tooltip>
+  {% endif %}
   <calcite-tooltip reference-element="log-viewer-action" placement="left" overlay-positioning="fixed"
                    close-on-click>
     <span>View application logs and errors</span>
   </calcite-tooltip>
+  <calcite-tooltip reference-element="retention-action" placement="left" overlay-positioning="fixed"
+                   close-on-click>
+    <span>Set the log level and how long logs, jobs and replacement backups are kept</span>
+  </calcite-tooltip>
+  {% endif %}
 
 </div>
 

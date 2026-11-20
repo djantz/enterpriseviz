@@ -61,7 +61,7 @@
             href="https://js.arcgis.com/4.32/esri/themes/light/main.css"/>
     {% endblock stylesheets %}
     <!-- Custom Theme Style -->
-    <link href="{% static '/build/css/custom.css' %}" rel="stylesheet">
+    <link href="{% static 'build/css/custom.css' %}" rel="stylesheet">
   {% endblock head %}
 </head>
 <div id="mode" mode="{{ user.profile.mode }}"></div>
@@ -147,10 +147,10 @@
     <div id="schedule_portal_modal" hx-target="this"></div>
     <div id="tool_settings_modal" hx-target="this"></div>
     <div id="webhook_settings_modal"></div>
+    <div id="retention_settings_modal"></div>
+    <div id="arcgis_signin_modal"></div>
     <div id="alert-container" hx-target="this" role="alert" aria-live="polite" aria-atomic="true"></div>
     {% if messages %}
-      {# Alerts queued before a full-page redirect (e.g. returning from ArcGIS OAuth),
-         where HX-Trigger headers cannot fire. custom.js replays these as Calcite alerts. #}
       <div id="pending-alerts" hidden>
         {% for message in messages %}
           <div class="pending-alert" data-level="{{ message.level_tag }}">{{ message }}</div>
@@ -165,7 +165,7 @@
       </calcite-button>
       {% if user.is_superuser %}
         <calcite-button kind="neutral" scale="s" icon-start="dashboard" class="margin-0-12-12"
-                        href="/enterpriseviz/admin/" label="Admin">
+                        href="{% url 'admin:index' %}" label="Admin">
           Admin
         </calcite-button>
       {% endif %}
@@ -268,9 +268,26 @@
 
   <script src="https://cdn.jsdelivr.net/npm/d3@3.0.0/d3.min.js"
           integrity="sha256-b69VTDu5tPmoLspoBD0rxTFiimxoTONDLrAgF68zU8c=" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-autocolors"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@^1"></script>
+  <!-- Exact versions with integrity hashes, like every other third-party
+       script on this page. Unversioned, jsDelivr served whatever was current:
+       a Chart.js major would have landed here unreviewed, and no integrity
+       hash can be pinned to a moving target. These three are the versions
+       that were already being served, so this changes nothing today.
+
+       The CSP sources in settings/base.py are exact path matches (no trailing
+       slash), so a version bump has to happen in both places at once. That is
+       what the earlier @^1 bug was: a caret is not a legal URL path character,
+       the browser requested it percent-encoded as @%5E1, and the CSP source
+       did not match, so the script was blocked. -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"
+          integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-autocolors@0.3.1"
+          integrity="sha384-aDU+3TkPdUR5RUfutNAoyYT8sgEuuEfKKMG6fRT57xjQHsIA9PRI44w8BaQ35joJ"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.1"
+          integrity="sha384-s5cwu7c1MxOfC90RGRDWeB53/7VpDTxXi0YxKJF5y9oKA99+UYxMk0qvlqso188s"
+          crossorigin="anonymous"></script>
   <script src="{% static 'build/js/cytoscape-dependency-graph.js' %}"></script>
   <script src="{% static 'build/js/custom.js' %}"></script>
   <script src="{% static 'build/js/history-preserve-extension.js' %}"></script>

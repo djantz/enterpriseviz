@@ -9,6 +9,15 @@
             <div class="icon_space">Metadata Report</div>
           </h2>
           <ul class="nav navbar-right panel_toolbox" role="toolbar" aria-label="Panel controls">
+            {% if metadata %}
+            <li>
+              <calcite-button download scale="s" kind="inverse" icon-start="file-excel"
+                              href="{% url 'enterpriseviz:metadata_report' instance=instance_alias %}"
+                              label="Download metadata report for {{ instance_alias }}">
+                Download report
+              </calcite-button>
+            </li>
+            {% endif %}
             <li>
               <calcite-button appearance="transparent" kind="neutral" scale="s"
                               class="collapse-link"

@@ -1,8 +1,18 @@
+"""
+Ambient context for log records.
+
+Two sources feed the log filter in app.log_handlers: the HTTP request being
+served, and the background job being run. Both are stored in thread-locals,
+which is exactly right now that jobs run on worker pool threads — under
+celery's prefork pool this module was relying on each task having a process to
+itself, and would have broken under any threaded pool.
+"""
 import threading
 import time
-from functools import wraps
+from contextlib import contextmanager
 
 from .middleware import get_django_context
+
 
 def get_django_request_context():
     store = get_django_context()
@@ -15,59 +25,52 @@ def get_django_request_context():
         'request_method': getattr(store, 'request_method', None),
     }
 
-_celery_task_context = threading.local()
 
-def get_celery_task_context():
-    """Gets context relevant for Celery task logging."""
+_job_context = threading.local()
+
+
+def get_job_context():
+    """Context for log records emitted from inside a background job."""
     return {
-        'task_start_time': getattr(_celery_task_context, 'task_start_time', None),
-        'request_id_from_caller': getattr(_celery_task_context, 'request_id_from_caller', None),
-        'user_from_caller': getattr(_celery_task_context, 'user_from_caller', None),
-        'client_ip_from_caller': getattr(_celery_task_context, 'client_ip_from_caller', None),
-        'request_path_from_caller': getattr(_celery_task_context, 'request_path_from_caller', None),
+        'task_start_time': getattr(_job_context, 'task_start_time', None),
+        'request_id_from_caller': getattr(_job_context, 'request_id_from_caller', None),
+        'user_from_caller': getattr(_job_context, 'user_from_caller', None),
+        'client_ip_from_caller': getattr(_job_context, 'client_ip_from_caller', None),
+        'request_path_from_caller': getattr(_job_context, 'request_path_from_caller', None),
+        'job_id': getattr(_job_context, 'job_id', None),
     }
 
-def _set_celery_task_context(request_id=None, username=None, client_ip=None, request_path=None):
-    _celery_task_context.task_start_time = time.time()
-    _celery_task_context.request_id_from_caller = request_id
-    _celery_task_context.user_from_caller = username
-    _celery_task_context.client_ip_from_caller = client_ip
-    _celery_task_context.request_path_from_caller = request_path
 
-def _clear_celery_task_context():
-    vars_to_clear = [
-        'task_start_time', 'request_id_from_caller', 'user_from_caller',
-        'client_ip_from_caller', 'request_path_from_caller'
-    ]
-    for var_name in vars_to_clear:
-        if hasattr(_celery_task_context, var_name):
-            delattr(_celery_task_context, var_name)
+def _set_job_context(job):
+    _job_context.task_start_time = time.time()
+    _job_context.job_id = str(job.pk)
+    _job_context.request_id_from_caller = job.request_id or None
+    _job_context.user_from_caller = job.username or None
+    _job_context.client_ip_from_caller = job.client_ip or None
+    _job_context.request_path_from_caller = job.request_path or None
 
-def celery_logging_context(func=None):
+
+def _clear_job_context():
+    for var_name in (
+        'task_start_time', 'job_id', 'request_id_from_caller', 'user_from_caller',
+        'client_ip_from_caller', 'request_path_from_caller',
+    ):
+        if hasattr(_job_context, var_name):
+            delattr(_job_context, var_name)
+
+
+@contextmanager
+def job_logging_context(job):
     """
-    Decorator for Celery tasks to set up basic logging context.
-    Primarily sets task_start_time and handles passed-through HTTP request context.
+    Attribute log records written while a job runs to the request that queued it.
+
+    The context is carried on the Job row rather than smuggled through task
+    kwargs as _request_id/_user/_client_ip/_request_path, which is how the
+    celery version did it and why every task signature had to accept and pop
+    four arguments it never used.
     """
-
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        # Context from the caller (e.g., original HTTP request context)
-        ctx_request_id = kwargs.pop('_request_id', None)
-        ctx_user_id = kwargs.pop('_user', None)
-        ctx_client_ip = kwargs.pop('_client_ip', None)
-        ctx_request_path = kwargs.pop('_request_path', None)
-
-        _set_celery_task_context(
-            request_id=ctx_request_id,
-            username=ctx_user_id,
-            client_ip=ctx_client_ip,
-            request_path=ctx_request_path
-        )
-
-        try:
-            result = func(self, *args, **kwargs)
-        finally:
-            _clear_celery_task_context()
-        return result
-
-    return wrapper
+    _set_job_context(job)
+    try:
+        yield
+    finally:
+        _clear_job_context()

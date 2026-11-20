@@ -1,11 +1,8 @@
 <div class="progress_bar
             {% if progress.state == "SUCCESS" %}progress-success{% endif %}
-            {% if progress.state == "WARNING" %}progress-warning{% endif %}
+            {% if progress.state == "WARNING" or progress.state == "CANCELED" %}progress-warning{% endif %}
             {% if progress.state == "FAILURE" %}progress-failure{% endif %}"
      id="progress-bar"
-     role="status"
-     aria-live="polite"
-     aria-atomic="true"
   {% if not progress.complete %}
      hx-get="{% url "enterpriseviz:refresh_progress" instance task_id %}"
      hx-trigger="every 3s"
@@ -14,16 +11,10 @@
   {% else %}
      hx-trigger="none"
   {% endif %}>
-  {% if task_name or progress.progress.description %}
-    <p class="progress_bar-label">
-      {% if task_name %}<strong>{{ task_name }}</strong>{% endif %}
-      {% if progress.progress.description %}<span>{{ progress.progress.description }}</span>{% endif %}
-    </p>
-  {% endif %}
   <div>
     <calcite-progress
       {% if progress.complete %}type="determinate" value="{{ value|default:100 }}"{% elif value %}type="determinate" value="{{ value }}"{% else %}type="indeterminate"{% endif %}
-      label="{% if progress.state == 'SUCCESS' %}Complete{% elif progress.state == 'WARNING' %}Completed with errors{% elif progress.state == 'FAILURE' %}Failed{% else %}Working…{% endif %}">
+      label="{% if progress.state == 'SUCCESS' %}Complete{% elif progress.state == 'WARNING' %}Completed with errors{% elif progress.state == 'FAILURE' %}Failed{% elif progress.state == 'CANCELED' %}Canceled{% else %}Working…{% endif %}">
     </calcite-progress>
   </div>
 </div>

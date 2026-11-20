@@ -4,13 +4,19 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
-# Get env vars in the Dockerfile to show up in the SSH session
->&2 echo 'Get env vars in the Dockerfile to show up in the SSH session'
-eval $(printenv | sed -n "s/^\([^=]\+\)=\(.*\)$/export \1=\2/p" | sed 's/"/\\\"/g' | sed '/=/s//="/' | sed 's/$/"/' >> /etc/profile)
+# SSH is only started for Azure App Service builds, where the platform reaches
+# port 2222 over an internal tunnel. Both the export of the environment into
+# /etc/profile (so it is visible in the SSH session) and sshd itself are gated
+# on it: on any other target that export would write the database password,
+# Django secret key, ArcGIS client secret and credential encryption key into a
+# file for no benefit.
+if [ "${ENABLE_AZURE_SSH:-0}" = "1" ]; then
+    >&2 echo 'Get env vars in the Dockerfile to show up in the SSH session'
+    eval $(printenv | sed -n "s/^\([^=]\+\)=\(.*\)$/export \1=\2/p" | sed 's/"/\\\"/g' | sed '/=/s//="/' | sed 's/$/"/' >> /etc/profile)
 
-# Starting sshd process
->&2 echo 'Starting SSH...'
-sudo /usr/sbin/sshd -f /etc/ssh/sshd_config
+    >&2 echo 'Starting SSH...'
+    sudo /usr/sbin/sshd -f /etc/ssh/sshd_config
+fi
 
 >&2 echo 'entrypoint is executed'
 

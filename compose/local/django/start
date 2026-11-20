@@ -3,7 +3,13 @@
 set -o errexit
 set -o pipefail
 set -o nounset
-python manage.py makemigrations
+
 python manage.py migrate
-#python /app/manage.py createsuperuser --noinput --username admin --email <email>
+
+python manage.py createcachetable
+
+# local.py prepends whitenoise.runserver_nostatic, so /static is served from
+# STATIC_ROOT here as well as in production and a clean clone has nothing there.
+python manage.py collectstatic --noinput
+
 exec python manage.py runserver 0.0.0.0:8000

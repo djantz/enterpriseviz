@@ -1,0 +1,9 @@
+#!/bin/bash
+
+set -o errexit
+set -o nounset
+
+# watchfiles restarts the worker when task code changes, which is what the
+# celery worker's autoreload did. The worker finishes in-flight jobs on SIGINT
+# before exiting, so a reload does not abandon a running refresh.
+exec watchfiles --filter python "python manage.py run_worker" /app/app /app/config

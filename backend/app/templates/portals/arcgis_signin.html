@@ -1,0 +1,25 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<calcite-dialog id="arcgis-signin-modal" modal heading="ArcGIS Sign-In" scale="m" open
+                width="m" {% if form.errors %}kind="danger"{% endif %}>
+
+  <div id="arcgis-signin-form-container">
+    {% include "partials/arcgis_signin_form.html" %}
+  </div>
+
+  <calcite-button id="arcgis-signin-cancel" data-action="close-modal" slot="footer-end"
+                  appearance="outline" kind="neutral"
+                  icon-start="circle-disallowed"
+                  label="Cancel without saving changes">
+    Cancel
+  </calcite-button>
+
+  <calcite-button type="submit" id="arcgis-signin-save" slot="footer-end"
+                  hx-post="{% url 'enterpriseviz:arcgis_signin_settings' %}"
+                  hx-target="#arcgis-signin-form-container" hx-swap="innerHTML"
+                  hx-include="#arcgis-signin-form"
+                  icon-start="save"
+                  label="Save ArcGIS sign-in configuration">
+    Save
+  </calcite-button>
+
+</calcite-dialog>

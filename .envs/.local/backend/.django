@@ -1,24 +1,41 @@
+# Development settings. manage.py, wsgi.py and asgi.py all default to
+# config.settings.production, so that a server which cannot supply an
+# environment variable still fails closed. Development opts in here.
+DJANGO_SETTINGS_MODULE=config.settings.local
 # General
 # ------------------------------------------------------------------------------
 USE_DOCKER=yes
 IPYTHONDIR=/app/.ipython
 DJANGO_SECRET_KEY=
 DJANGO_ADMIN_URL=admin/
-# Redis
-# ------------------------------------------------------------------------------
-REDIS_URL=redis://redis:6379/0
-CACHE_URL=redis://redis:6379/1
 
-# Celery
+# Background jobs
 # ------------------------------------------------------------------------------
+# REDIS_URL and CACHE_URL used to live here, for the broker and the result
+# backend. There is neither now: jobs are rows in the Job table, the cache is
+# PostgreSQL, and the defaults in config/settings/base.py cover the rest. Set
+# any of JOB_CONCURRENCY, JOB_BATCH_CONCURRENCY, JOB_POLL_INTERVAL,
+# JOB_HEARTBEAT_TIMEOUT or JOB_MAX_ATTEMPTS here to override.
+#
+# How long finished jobs and log entries are kept is not here: both are edited
+# in the app under Settings > Logs and stored on the SiteSettings row.
+
 DJANGO_SUPERUSER_PASSWORD=
 DJANGO_SUPERUSER_USERNAME=
 DJANGO_SUPERUSER_EMAIL=
 
-SOCIAL_AUTH_ARCGIS_KEY = '' # App ID
-SOCIAL_AUTH_ARCGIS_SECRET = '' # App Secret
-SOCIAL_AUTH_ARCGIS_URL = '' # Enterprise Portal or AGOL URL
-ARCGIS_USER_ROLE = 'org_admin'
+# ArcGIS sign-in (App ID, App Secret, organization URL and the role required to
+# sign in) is configured in the running application under Settings > ArcGIS
+# Sign-In, not here. It used to be four variables read with no default, which
+# made registering an OAuth application a precondition for the app starting at
+# all. Start the app, sign in with the Django superuser below, and fill it in.
 USE_SERVICE_USAGE_REPORT=True
+
+# TLS verification for every connection to a portal. Leave unset (verifies) in
+# any environment handling real credentials. For an Enterprise portal using an
+# internal CA, mount the CA and give the path here, e.g.
+# ARCGIS_VERIFY_TLS=/etc/ssl/certs/my-enterprise-ca.pem
+# ARCGIS_VERIFY_TLS=False disables verification everywhere; last resort only.
+ARCGIS_VERIFY_TLS=
 
 CREDENTIAL_ENCRYPTION_KEY = ''

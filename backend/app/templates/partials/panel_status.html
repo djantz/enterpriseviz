@@ -1,0 +1,6 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<p id="panel-status-{{ items }}" class="font-13 m-b-30 panel-status"
+   role="status" aria-live="polite" aria-atomic="true"
+   {% if oob %}hx-swap-oob="true"{% endif %}>
+  {% if phase %}{{ phase }}{% elif last_updated %}This list was last updated {{ last_updated }}{% endif %}
+</p>

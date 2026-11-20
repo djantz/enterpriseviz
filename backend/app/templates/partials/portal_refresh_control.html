@@ -1,0 +1,60 @@
+<!-- Licensed under GPLv3 - See LICENSE file for details. -->
+<div id="refresh-control-{{ items }}" class="refresh-control"
+     {% if oob %}hx-swap-oob="true"{% endif %}>
+  {% if active_job %}
+    {% if active_job.cancel_requested %}
+      <calcite-button kind="neutral" scale="s" width="auto" appearance="outline"
+                      loading disabled label="Cancelling the running refresh">
+        Cancelling…
+      </calcite-button>
+    {% else %}
+      <calcite-button kind="danger" scale="s" width="auto" icon-start="circle-stop"
+                      hx-post="{% url 'enterpriseviz:cancel_refresh' instance=instance task_id=active_job.id %}"
+                      hx-target="closest .refresh-control"
+                      hx-swap="outerHTML"
+                      data-confirm-sheet
+                      data-confirm-message="Stop this refresh?"
+                      data-confirm-details="{{ active_job.name }} for {{ instance }} stops at the next safe point. Everything already written stays; the rest is not read. You can start it again at any time."
+                      data-confirm-button="Stop refresh"
+                      data-confirm-icon="circle-stop"
+                      label="Cancel the running {{ items }} refresh">
+        Cancel
+      </calcite-button>
+    {% endif %}
+  {% elif with_modes %}
+    <calcite-split-button primary-icon-start="refresh" dropdown-icon-type="chevron" kind="inverse"
+                          scale="s" primary-text="Refresh" primary-label="Refresh {{ items }}"
+                          placement="bottom-end" dropdown-label="More refresh options" width="auto"
+                          hx-post="{% url 'enterpriseviz:refresh_portal' %}"
+                          hx-vals='{"instance": "{{ instance }}", "items": "{{ items }}"}'
+                          hx-target="previous #progress-container"
+                          hx-trigger="calciteSplitButtonPrimaryClick"
+                          hx-swap="innerHTML" class="calcite-dropdown-color">
+      <calcite-dropdown-group selection-mode="none" scale="s">
+        <calcite-dropdown-item
+          hx-post="{% url 'enterpriseviz:refresh_portal' %}"
+          hx-vals='{"instance": "{{ instance }}", "items": "{{ items }}", "full_refresh": "false"}'
+          hx-target="previous #progress-container"
+          hx-swap="innerHTML"
+          label="Incremental Refresh" icon-start="clock-forward">
+          Incremental Refresh
+        </calcite-dropdown-item>
+        <calcite-dropdown-item
+          hx-post="{% url 'enterpriseviz:refresh_portal' %}"
+          hx-vals='{"instance": "{{ instance }}", "items": "{{ items }}", "full_refresh": "true"}'
+          hx-target="previous #progress-container"
+          hx-swap="innerHTML"
+          label="Full Refresh" icon-start="arrow-up-down">
+          Full Refresh
+        </calcite-dropdown-item>
+      </calcite-dropdown-group>
+    </calcite-split-button>
+  {% else %}
+    <calcite-button kind="inverse" scale="s" width="auto" icon-start="refresh"
+                    hx-post="{% url 'enterpriseviz:refresh_portal' %}"
+                    hx-vals='{"instance": "{{ instance }}", "items": "{{ items }}"}'
+                    hx-target="previous #progress-container"
+                    hx-swap="innerHTML" label="Refresh {{ items }}">Refresh
+    </calcite-button>
+  {% endif %}
+</div>

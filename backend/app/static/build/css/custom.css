@@ -797,14 +797,13 @@ progress_bar {
   margin-top: 20px;
 }
 
-.progress_bar-label {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  align-items: baseline;
-  margin: 0 0 0.35rem;
-  font-size: 12px;
-  color: var(--calcite-color-text-2);
+.panel-status {
+  min-height: 1.15em;
+  margin-top: 0;
+}
+
+.progress-slot {
+  min-height: 6px;
 }
 
 .replace-report-row-actions {
@@ -1078,6 +1077,9 @@ calcite-dialog#login-modal calcite-block * {
 .chartjs-tooltip-body {
   font-weight: 500;
   color: white;
+  /* The body is set with textContent and its lines joined by a newline, so
+     the breaks have to come from here rather than from <br> elements. */
+  white-space: pre-line;
 }
 
 .table-container {
@@ -1218,4 +1220,14 @@ calcite-chip {
 
 .selected-list {
   --calcite-list-background-color: var(--calcite-color-surface-3);
+}
+
+calcite-alert div[slot="message"] {
+  white-space: pre-line;
+}
+
+/* TEMPORARY: reveals content while the shell hydration stall is unresolved */
+calcite-shell:not([calcite-hydrated]),
+calcite-panel:not([calcite-hydrated]) {
+    visibility: visible;
 }

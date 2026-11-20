@@ -131,13 +131,21 @@
             </div>
           </div>
         </div>
-        {% if user.is_superuser %}
+        {% if item %}
         <div class="x_panel">
-          <calcite-button scale="s" kind="inverse" width="full"
+          <calcite-button download scale="s" kind="inverse" width="full"
+                          icon-start="file-excel"
+                          href="{% url 'enterpriseviz:service_report' instance=item.portal_instance.alias url=item.service_name %}"
+                          label="Download dependency report for {{ item.service_name }}">Download report
+          </calcite-button>
+          {% if user.is_superuser %}
+          <calcite-button scale="s" kind="inverse" width="full" class="margin-top-1"
+                          icon-start="send"
                           data-modal-trigger="notify-modal"
                           label="Notify affected users about changes">Notify
           </calcite-button>
           <calcite-button scale="s" kind="inverse" width="full" class="margin-top-1"
+                          icon-start="overwrite-features"
                           hx-get="{% url 'enterpriseviz:replace_modal' instance=item.portal_instance.alias service_pk=item.pk %}"
                           hx-target="#replace_service_modal"
                           hx-swap="innerHTML"
@@ -145,6 +153,7 @@
           </calcite-button>
           {% include "portals/portal_notify.html" with change_item_name=item %}
           <div id="replace_service_modal"></div>
+          {% endif %}
         </div>
         {% endif %}
       </div>
@@ -184,7 +193,7 @@
                    aria-label="Web Maps using this service" hx-boost="true">
               <thead>
               <tr>
-                <th scope="col" class="details">Details</th>
+                <th scope="col" class="details no-export">Details</th>
                 <th scope="col">Webmap Title</th>
                 <th scope="col">Owner</th>
                 <th scope="col">Access</th>
@@ -373,8 +382,6 @@
   </calcite-tooltip>
 {% endblock content %}
 {% block javascripts %}
-  <script id="graph-data" type="application/json">
-    {{ graph_data|safe }}
-  </script>
+  {{ graph_data|json_script:"graph-data" }}
   {{ service_usage|json_script:"chartdata" }}
 {% endblock javascripts %}
